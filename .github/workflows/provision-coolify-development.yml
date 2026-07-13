@@ -1,0 +1,87 @@
+name: Provision Coolify development environment
+
+on:
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Keep true to only discover resources and print planned changes.'
+        type: choice
+        required: true
+        default: 'true'
+        options:
+          - 'true'
+          - 'false'
+      product:
+        description: 'GoodMorning product slug.'
+        required: true
+        default: factory-smoke-test
+      repository:
+        description: 'GitHub owner/repository.'
+        required: true
+        default: goodmorning-mx/factory-smoke-test
+      branch:
+        description: 'Git branch to deploy.'
+        required: true
+        default: dev
+      compose:
+        description: 'Docker Compose path in the repository.'
+        required: true
+        default: /compose.yaml
+      domain:
+        description: 'Development domain.'
+        required: true
+        default: dev.factory-smoke-test.goodmorning.mx
+
+permissions:
+  contents: read
+
+jobs:
+  provision-coolify-development:
+    name: Provision Coolify development environment
+    runs-on: ubuntu-latest
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Validate safety gates and configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [ -z "${COOLIFY_BASE_URL:-}" ]; then
+            echo "COOLIFY_BASE_URL repository variable is required."
+            exit 1
+          fi
+
+          if [ -z "${COOLIFY_API_TOKEN:-}" ]; then
+            echo "COOLIFY_API_TOKEN repository secret is required."
+            exit 1
+          fi
+
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+
+          if [ "${{ inputs.branch }}" != "dev" ]; then
+            echo "This workflow only provisions development from the dev branch."
+            exit 1
+          fi
+
+          if [ "${{ inputs.domain }}" != dev.* ]; then
+            echo "Development domains must start with dev.; production domains are not allowed."
+            exit 1
+          fi
+
+      - name: Discover and optionally provision Coolify resource
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+          python scripts/provision_coolify_development.py \
+            --dry-run "${{ inputs.dry_run }}" \
+            --product "${{ inputs.product }}" \
+            --repository "${{ inputs.repository }}" \
+            --branch "${{ inputs.branch }}" \
+            --compose "${{ inputs.compose }}" \
+            --domain "${{ inputs.domain }}"
