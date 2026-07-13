@@ -11,6 +11,7 @@ This document describes the manual GitHub Actions workflow for preparing a produ
 | Branch | `dev` |
 | Docker Compose file | `/compose.yaml` |
 | Development domain | `dev.factory-smoke-test.goodmorning.mx` |
+| Coolify GitHub App source | `goodmorning-mx-coolify` |
 
 ## Required GitHub configuration
 
@@ -27,10 +28,12 @@ The manual workflow `.github/workflows/provision-coolify-development.yml` calls 
 
 1. Projects from `GET /projects`.
 2. Servers from `GET /servers`.
-3. GitHub Apps from `GET /github-apps`.
+3. GitHub Apps from `GET /github-apps`, selecting the exact source name from `coolify_github_app_name` (default `goodmorning-mx-coolify`).
 4. Existing applications from `GET /applications`.
 
 If the product project does not exist, `dry_run=true` returns `status: dry_run` and reports `would_create_project` plus `would_create_environment` for the `development` environment without sending writes to Coolify. With `dry_run=false`, the script creates the missing project with `POST /projects`, ensures the `development` environment with `POST /projects/{project_uuid}/environment`, and then continues application provisioning. If the project already exists, the script reuses it idempotently and only creates the `development` environment when the project response does not already list it.
+
+The GitHub App source lookup must find exactly one source with the requested name. It fails when the source is missing or duplicated, and it rejects `Public GitHub` for private GoodMorning repositories so private repositories use the installed GoodMorning Coolify GitHub App.
 
 If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a create request to `POST /applications/dockercompose` with Docker Compose build-pack settings and `instant_deploy=false`.
 
@@ -38,6 +41,7 @@ If an existing application already references the repository/branch or developme
 
 - The workflow is manual only.
 - `dry_run` defaults to `true`.
+- `coolify_github_app_name` defaults to `goodmorning-mx-coolify` and must match a Coolify GitHub App source exactly.
 - The workflow refuses branches other than `dev`.
 - The workflow refuses domains that do not start with `dev.`.
 - The script never deletes Coolify resources.
@@ -56,6 +60,7 @@ Successful dry-runs print JSON similar to:
   "compose": "/compose.yaml",
   "domain": "dev.factory-smoke-test.goodmorning.mx",
   "dry_run": true,
+  "coolify_github_app_name": "goodmorning-mx-coolify",
   "product": "factory-smoke-test",
   "repository": "goodmorning-mx/factory-smoke-test",
   "status": "dry_run",

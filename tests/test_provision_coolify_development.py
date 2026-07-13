@@ -19,6 +19,7 @@ def args(**kw):
         domain=pc.DEFAULT_DOMAIN,
         environment=pc.DEFAULT_ENVIRONMENT,
         dry_run=True,
+        coolify_github_app_name=pc.DEFAULT_COOLIFY_GITHUB_APP_NAME,
     )
     base.update(kw)
     return argparse.Namespace(**base)
@@ -33,7 +34,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             if path == "/servers":
                 return pc.Response(200, [{"uuid": "server-1", "name": "development"}], {})
             if path == "/github-apps":
-                return pc.Response(200, {"github_apps": [{"uuid": "github-app-7", "name": "GitHub App", "html_url": "https://github.com"}]}, {})
+                return pc.Response(200, {"github_apps": [{"uuid": "github-app-7", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME, "html_url": "https://github.com"}]}, {})
             if path == "/applications":
                 return pc.Response(200, [] if existing is None else [existing], {})
             if path == "/applications/dockercompose":
@@ -69,7 +70,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         "github_apps": [
                             {
                                 "uuid": "github-app-current",
-                                "name": "GoodMorning GitHub App",
+                                "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME,
                                 "html_url": "https://github.com/goodmorning-mx",
                                 "api_url": "https://api.github.com",
                             }
@@ -86,11 +87,38 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "dry_run")
         self.assertTrue(result["dry_run"])
-        self.assertEqual(result["github_app"], {"id": "github-app-current", "name": "GoodMorning GitHub App"})
+        self.assertEqual(result["github_app"], {"id": "github-app-current", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME})
         self.assertEqual(result["would_create"]["git_source_id"], "github-app-current")
         self.assertIn(("GET", "/github-apps"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(("GET", "/sources/github"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(("POST", "/applications/dockercompose"), [(m, p) for m, p, _ in calls])
+
+    def test_github_app_selection_requires_exact_name(self):
+        with self.assertRaisesRegex(pc.ProvisioningError, "was not found"):
+            pc.discover_github_app(
+                [{"uuid": "github-app-7", "name": "goodmorning-mx-coolify-extra"}],
+                pc.DEFAULT_COOLIFY_GITHUB_APP_NAME,
+                pc.DEFAULT_REPOSITORY,
+            )
+
+    def test_github_app_selection_rejects_duplicate_exact_names(self):
+        with self.assertRaisesRegex(pc.ProvisioningError, "duplicated"):
+            pc.discover_github_app(
+                [
+                    {"uuid": "github-app-1", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME},
+                    {"uuid": "github-app-2", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME},
+                ],
+                pc.DEFAULT_COOLIFY_GITHUB_APP_NAME,
+                pc.DEFAULT_REPOSITORY,
+            )
+
+    def test_github_app_selection_rejects_public_github_for_private_repository(self):
+        with self.assertRaisesRegex(pc.ProvisioningError, "Public GitHub cannot be used"):
+            pc.discover_github_app(
+                [{"uuid": "public-github", "name": "Public GitHub"}],
+                "Public GitHub",
+                pc.DEFAULT_REPOSITORY,
+            )
 
     def test_missing_project_dry_run_plans_project_and_environment_creation(self):
         calls = []
@@ -102,7 +130,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             if path == "/servers":
                 return pc.Response(200, [{"uuid": "server-1", "name": "development"}], {})
             if path == "/github-apps":
-                return pc.Response(200, {"github_apps": [{"uuid": "github-app-7", "name": "GitHub App", "html_url": "https://github.com"}]}, {})
+                return pc.Response(200, {"github_apps": [{"uuid": "github-app-7", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME, "html_url": "https://github.com"}]}, {})
             if path == "/applications":
                 return pc.Response(200, [], {})
             raise AssertionError((method, path))
@@ -131,7 +159,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             if path == "/servers":
                 return pc.Response(200, [{"uuid": "server-1", "name": "development"}], {})
             if path == "/github-apps":
-                return pc.Response(200, {"github_apps": [{"uuid": "github-app-7", "name": "GitHub App", "html_url": "https://github.com"}]}, {})
+                return pc.Response(200, {"github_apps": [{"uuid": "github-app-7", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME, "html_url": "https://github.com"}]}, {})
             if path == "/applications":
                 return pc.Response(200, [], {})
             if path == "/projects/new-project/environment":
@@ -205,6 +233,9 @@ class ProvisionCoolifyWorkflowTests(unittest.TestCase):
     def test_default_development_domain_reaches_safety_gate_variable(self):
         text = self.workflow_text()
         self.assertIn("default: dev.factory-smoke-test.goodmorning.mx", text)
+        self.assertIn("coolify_github_app_name:", text)
+        self.assertIn("default: goodmorning-mx-coolify", text)
+        self.assertIn("--coolify-github-app-name \"${{ inputs.coolify_github_app_name }}\"", text)
         self.assertIn("DEVELOPMENT_DOMAIN: ${{ inputs.domain }}", text)
         self.assertIn('[[ "${DEVELOPMENT_DOMAIN}" != dev.* ]]', text)
         self.assertNotIn('"${{ inputs.domain }}" != dev.*', text)
