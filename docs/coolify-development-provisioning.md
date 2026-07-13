@@ -30,7 +30,9 @@ The manual workflow `.github/workflows/provision-coolify-development.yml` calls 
 3. GitHub Apps from `GET /github-apps`.
 4. Existing applications from `GET /applications`.
 
-If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a single create request to `POST /applications/dockercompose` with Docker Compose build-pack settings and `instant_deploy=false`.
+If the product project does not exist, `dry_run=true` returns `status: dry_run` and reports `would_create_project` plus `would_create_environment` for the `development` environment without sending writes to Coolify. With `dry_run=false`, the script creates the missing project with `POST /projects`, ensures the `development` environment with `POST /projects/{project_uuid}/environment`, and then continues application provisioning. If the project already exists, the script reuses it idempotently and only creates the `development` environment when the project response does not already list it.
+
+If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a create request to `POST /applications/dockercompose` with Docker Compose build-pack settings and `instant_deploy=false`.
 
 ## Safety rules
 
@@ -39,6 +41,7 @@ If an existing application already references the repository/branch or developme
 - The workflow refuses branches other than `dev`.
 - The workflow refuses domains that do not start with `dev.`.
 - The script never deletes Coolify resources.
+- The script only allows the `dev` branch and `dev.` domains, and it never modifies production resources.
 - The script never deploys immediately; the create payload sets `instant_deploy=false`.
 - The script never prints `COOLIFY_API_TOKEN`.
 - Production provisioning and production deployments are out of scope and require the release PR flow plus Abel's explicit approval.
@@ -56,6 +59,9 @@ Successful dry-runs print JSON similar to:
   "product": "factory-smoke-test",
   "repository": "goodmorning-mx/factory-smoke-test",
   "status": "dry_run",
+  "would_create_environment": {
+    "name": "development"
+  },
   "would_create": {
     "build_pack": "dockercompose",
     "docker_compose_location": "/compose.yaml",

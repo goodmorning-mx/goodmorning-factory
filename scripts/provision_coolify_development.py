@@ -113,14 +113,48 @@ def field(item: dict[str, Any], *names: str) -> Any:
     return None
 
 
-def discover_project(projects: list[dict[str, Any]], product: str) -> dict[str, Any]:
+def discover_project(projects: list[dict[str, Any]], product: str) -> dict[str, Any] | None:
     for project in projects:
         name = str(field(project, "name", "slug", "uuid") or "").lower()
-        if name in {product.lower(), "goodmorning", "goodmorning products", "products"} or product.lower() in name:
+        if name == product.lower() or product.lower() in name:
             return project
-    if len(projects) == 1:
-        return projects[0]
-    raise ProvisioningError(f"Unable to identify a Coolify project for {product}; create or name the project unambiguously.")
+    return None
+
+
+def project_environment_exists(project: dict[str, Any], environment: str) -> bool:
+    raw_environments = field(project, "environments", "environment")
+    if isinstance(raw_environments, list):
+        environments = [item for item in raw_environments if isinstance(item, dict)]
+        for item in environments:
+            name = str(field(item, "name", "slug", "uuid") or "").lower()
+            if name == environment.lower():
+                return True
+    return False
+
+
+def create_project(args: argparse.Namespace) -> dict[str, Any]:
+    created = request("POST", "/projects", body={"name": args.product}).data
+    if not isinstance(created, dict):
+        raise ProvisioningError("Malformed Coolify project creation response.")
+    project = created.get("data") if isinstance(created.get("data"), dict) else created
+    if not isinstance(project, dict) or not field(project, "uuid", "id"):
+        raise ProvisioningError("Coolify project creation response did not include a project identifier.")
+    return project
+
+
+def ensure_environment(project: dict[str, Any], environment: str, *, dry_run: bool) -> tuple[dict[str, Any] | None, bool]:
+    if project_environment_exists(project, environment):
+        return None, False
+    project_uuid = field(project, "uuid", "id")
+    payload = {"name": environment}
+    if dry_run:
+        return payload, True
+    if not project_uuid:
+        raise ProvisioningError("Coolify project is missing an identifier required to ensure the environment.")
+    created = request("POST", f"/projects/{project_uuid}/environment", body=payload).data
+    if created is not None and not isinstance(created, dict):
+        raise ProvisioningError("Malformed Coolify environment creation response.")
+    return payload, True
 
 
 def discover_server(servers: list[dict[str, Any]]) -> dict[str, Any]:
@@ -181,6 +215,16 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
     github_apps = items(request("GET", "/github-apps").data)
     applications = items(request("GET", "/applications").data)
     project = discover_project(projects, args.product)
+    planned_project = None
+    project_created = False
+    if project is None:
+        planned_project = {"name": args.product}
+        if args.dry_run:
+            project = {"uuid": None, "name": args.product}
+        else:
+            project = create_project(args)
+            project_created = True
+    planned_environment, environment_created = ensure_environment(project, args.environment, dry_run=args.dry_run)
     server = discover_server(servers)
     github_app = discover_github_app(github_apps)
     existing = existing_application(applications, args)
@@ -193,10 +237,15 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         "branch": args.branch,
         "compose": args.compose,
         "domain": args.domain,
-        "project": {"uuid": field(project, "uuid", "id"), "name": field(project, "name", "slug")},
+        "project": {"uuid": field(project, "uuid", "id"), "name": field(project, "name", "slug"), "created": project_created},
+        "environment": {"name": args.environment, "created": environment_created},
         "server": {"uuid": field(server, "uuid", "id"), "name": field(server, "name", "description")},
         "github_app": {"id": field(github_app, "id", "uuid"), "name": field(github_app, "name")},
     }
+    if planned_project is not None:
+        result["would_create_project"] = planned_project
+    if planned_environment is not None:
+        result["would_create_environment"] = planned_environment
     if existing:
         result["application"] = {"uuid": field(existing, "uuid", "id"), "name": field(existing, "name")}
         return result
