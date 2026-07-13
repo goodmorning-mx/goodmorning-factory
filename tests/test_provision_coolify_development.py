@@ -44,6 +44,19 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             if path == "/applications/private-github-app":
                 self.assertFalse(kwargs["body"]["instant_deploy"])
                 return pc.Response(201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {})
+            if path == "/applications/app-1" or path == "/applications/existing-app":
+                self.assertEqual(method, "PATCH")
+                self.assertEqual(
+                    kwargs["body"],
+                    {
+                        "docker_compose_domains": [
+                            {"name": "frontend", "domain": "https://dev.factory-smoke-test.goodmorning.mx"},
+                            {"name": "backend", "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"},
+                        ],
+                        "force_domain_override": False,
+                    },
+                )
+                return pc.Response(200, {"uuid": path.rsplit("/", 1)[-1]}, {})
             raise AssertionError((method, path))
         return fake_request
 
@@ -54,9 +67,29 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(result["status"], "dry_run")
         self.assertEqual(result["would_create"]["git_repository"], pc.DEFAULT_REPOSITORY)
         self.assertEqual(result["would_create"]["docker_compose_location"], pc.DEFAULT_COMPOSE)
+        self.assertEqual(
+            result["would_patch"],
+            {
+                "docker_compose_domains": [
+                    {"name": "frontend", "domain": "https://dev.factory-smoke-test.goodmorning.mx"},
+                    {"name": "backend", "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"},
+                ],
+                "force_domain_override": False,
+            },
+        )
         self.assertIn(("GET", "/github-apps"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(("GET", "/sources/github"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(("POST", "/applications/private-github-app"), [(m, p) for m, p, _ in calls])
+        self.assertNotIn(("PATCH", "/applications/app-1"), [(m, p) for m, p, _ in calls])
+
+    def test_docker_compose_domains_are_derived_from_development_domain(self):
+        self.assertEqual(
+            pc.docker_compose_domains("https://dev.example.goodmorning.mx"),
+            [
+                {"name": "frontend", "domain": "https://dev.example.goodmorning.mx"},
+                {"name": "backend", "domain": "https://api.dev.example.goodmorning.mx"},
+            ],
+        )
 
     def test_github_apps_parser_accepts_current_nested_response_shape(self):
         calls = []
@@ -184,6 +217,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(200, [], {})
             if path == "/applications/private-github-app":
                 return pc.Response(201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {})
+            if path == "/applications/app-1":
+                self.assertEqual(method, "PATCH")
+                return pc.Response(200, {"uuid": "app-1"}, {})
             raise AssertionError((method, path))
 
         with mock.patch.object(pc, "request", side_effect=fake_request):
@@ -203,6 +239,8 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "exists")
         self.assertEqual(result["application"]["uuid"], "existing-app")
+        self.assertTrue(result["domain_reconciled"])
+        self.assertIn(("PATCH", "/applications/existing-app"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(("POST", "/applications/private-github-app"), [(m, p) for m, p, _ in calls])
 
     def test_real_creation_posts_once_when_dry_run_false(self):
@@ -219,6 +257,10 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(posts[0][2]["base_directory"], "/")
         self.assertEqual(posts[0][2]["docker_compose_location"], "/compose.yaml")
         self.assertEqual(posts[0][2]["environment_name"], "production")
+        patches = [call for call in calls if call[0] == "PATCH" and call[1] == "/applications/app-1"]
+        self.assertEqual(len(patches), 1)
+        self.assertFalse(patches[0][2]["force_domain_override"])
+        self.assertEqual(patches[0][2]["docker_compose_domains"][1]["domain"], "https://api.dev.factory-smoke-test.goodmorning.mx")
 
     def test_refuses_non_dev_branch_before_api_calls(self):
         with mock.patch.object(pc, "request") as request:

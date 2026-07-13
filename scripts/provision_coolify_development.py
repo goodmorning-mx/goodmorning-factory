@@ -7,10 +7,10 @@ import json
 import os
 import sys
 import urllib.error
-import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlparse
 
 DEFAULT_PRODUCT = "factory-smoke-test"
 DEFAULT_REPOSITORY = "goodmorning-mx/factory-smoke-test"
@@ -206,6 +206,29 @@ def discover_github_app(sources: list[dict[str, Any]], app_name: str, repository
     return match
 
 
+def docker_compose_domains(development_domain: str) -> list[dict[str, str]]:
+    frontend_host = development_domain.removeprefix("https://").removeprefix("http://").strip().rstrip("/")
+    return [
+        {"name": "frontend", "domain": f"https://{frontend_host}"},
+        {"name": "backend", "domain": f"https://api.{frontend_host}"},
+    ]
+
+
+def domain_patch_payload(args: argparse.Namespace) -> dict[str, Any]:
+    return {"docker_compose_domains": docker_compose_domains(args.domain), "force_domain_override": False}
+
+
+def application_summary(application: dict[str, Any]) -> dict[str, Any]:
+    data = application.get("data") if isinstance(application.get("data"), dict) else application
+    return {"uuid": field(data, "uuid", "id"), "name": field(data, "name")}
+
+
+def reconcile_application_domains(application_uuid: Any, args: argparse.Namespace) -> dict[str, Any]:
+    if not application_uuid:
+        raise ProvisioningError("Coolify application response did not include an identifier required to configure Docker Compose domains.")
+    return request("PATCH", f"/applications/{application_uuid}", body=domain_patch_payload(args)).data
+
+
 def existing_application(applications: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any] | None:
     repo_url = f"https://github.com/{args.repository}"
     for app in applications:
@@ -242,8 +265,12 @@ def creation_payload(args: argparse.Namespace, project: dict[str, Any], server: 
 def validate_inputs(args: argparse.Namespace) -> None:
     if args.branch != DEFAULT_BRANCH:
         raise ProvisioningError("Only the dev branch can be provisioned by this development workflow.")
-    if not args.domain.startswith("dev."):
+    parsed = urlparse(args.domain if "://" in args.domain else f"//{args.domain}")
+    host = parsed.netloc or parsed.path
+    if not host.startswith("dev."):
         raise ProvisioningError("Development domain must start with dev.; production domains are not allowed.")
+    if "/" in host or not host.strip() or parsed.path not in ("", host):
+        raise ProvisioningError("Development domain must be a host name without a path.")
 
 
 def provision(args: argparse.Namespace) -> dict[str, Any]:
@@ -279,6 +306,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         "branch": args.branch,
         "compose": args.compose,
         "domain": args.domain,
+        "docker_compose_domains": docker_compose_domains(args.domain),
         "project": {"uuid": field(project, "uuid", "id"), "name": field(project, "name", "slug"), "created": project_created},
         "environment": {"name": args.environment, "coolify_name": field(coolify_environment, "name", "slug", "uuid"), "created": False},
         "server": {"uuid": field(server, "uuid", "id"), "name": field(server, "name", "description")},
@@ -288,15 +316,23 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
     if planned_project is not None:
         result["would_create_project"] = planned_project
     if existing:
-        result["application"] = {"uuid": field(existing, "uuid", "id"), "name": field(existing, "name")}
+        result["application"] = application_summary(existing)
+        if args.dry_run:
+            result["would_patch"] = domain_patch_payload(args)
+        else:
+            reconcile_application_domains(result["application"]["uuid"], args)
+            result["domain_reconciled"] = True
         return result
     if args.dry_run:
         result["would_create"] = payload
+        result["would_patch"] = domain_patch_payload(args)
         return result
     created = request("POST", "/applications/private-github-app", body=payload).data
     if not isinstance(created, dict):
         raise ProvisioningError("Malformed Coolify application creation response.")
-    result["application"] = {"uuid": field(created, "uuid", "id"), "name": field(created, "name")}
+    result["application"] = application_summary(created)
+    reconcile_application_domains(result["application"]["uuid"], args)
+    result["domain_reconciled"] = True
     return result
 
 
