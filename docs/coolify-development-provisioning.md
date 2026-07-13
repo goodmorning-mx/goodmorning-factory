@@ -17,7 +17,7 @@ This document describes the manual GitHub Actions workflow for preparing a produ
 Configure these repository-level values before running the workflow:
 
 - `vars.COOLIFY_BASE_URL`: Coolify instance base URL.
-- `secrets.COOLIFY_API_TOKEN`: Coolify API token with the least permissions needed to read projects, servers, GitHub sources, and applications; write permission is only needed when running with `dry_run=false`.
+- `secrets.COOLIFY_API_TOKEN`: Coolify API token with the least permissions needed to read projects, servers, GitHub Apps, and applications; write permission is only needed when running with `dry_run=false`.
 
 Never commit or print Coolify tokens. The workflow masks `COOLIFY_API_TOKEN`, and the provisioner redacts it from errors.
 
@@ -27,7 +27,7 @@ The manual workflow `.github/workflows/provision-coolify-development.yml` calls 
 
 1. Projects from `GET /projects`.
 2. Servers from `GET /servers`.
-3. GitHub App sources from `GET /sources/github`.
+3. GitHub Apps from `GET /github-apps`.
 4. Existing applications from `GET /applications`.
 
 If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a single create request to `POST /applications/dockercompose` with Docker Compose build-pack settings and `instant_deploy=false`.
