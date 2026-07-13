@@ -99,7 +99,7 @@ def items(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     if isinstance(data, dict):
-        for key in ("data", "items", "projects", "servers", "sources", "applications"):
+        for key in ("data", "items", "projects", "servers", "sources", "applications", "github_apps", "githubApps"):
             value = data.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
@@ -178,11 +178,11 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
     validate_inputs(args)
     projects = items(request("GET", "/projects").data)
     servers = items(request("GET", "/servers").data)
-    sources = items(request("GET", "/sources/github").data)
+    github_apps = items(request("GET", "/github-apps").data)
     applications = items(request("GET", "/applications").data)
     project = discover_project(projects, args.product)
     server = discover_server(servers)
-    github_app = discover_github_app(sources)
+    github_app = discover_github_app(github_apps)
     existing = existing_application(applications, args)
     payload = creation_payload(args, project, server, github_app)
     result = {

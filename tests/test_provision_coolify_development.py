@@ -32,8 +32,8 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(200, [{"uuid": "project-1", "name": "factory-smoke-test"}], {})
             if path == "/servers":
                 return pc.Response(200, [{"uuid": "server-1", "name": "development"}], {})
-            if path == "/sources/github":
-                return pc.Response(200, [{"id": 7, "name": "GitHub App"}], {})
+            if path == "/github-apps":
+                return pc.Response(200, {"github_apps": [{"uuid": "github-app-7", "name": "GitHub App", "html_url": "https://github.com"}]}, {})
             if path == "/applications":
                 return pc.Response(200, [] if existing is None else [existing], {})
             if path == "/applications/dockercompose":
@@ -49,6 +49,48 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(result["status"], "dry_run")
         self.assertEqual(result["would_create"]["git_repository"], pc.DEFAULT_REPOSITORY)
         self.assertEqual(result["would_create"]["docker_compose_location"], pc.DEFAULT_COMPOSE)
+        self.assertIn(("GET", "/github-apps"), [(m, p) for m, p, _ in calls])
+        self.assertNotIn(("GET", "/sources/github"), [(m, p) for m, p, _ in calls])
+        self.assertNotIn(("POST", "/applications/dockercompose"), [(m, p) for m, p, _ in calls])
+
+
+    def test_github_apps_parser_accepts_current_nested_response_shape(self):
+        calls = []
+
+        def fake_request(method, path, **kwargs):
+            calls.append((method, path, kwargs.get("body")))
+            if path == "/projects":
+                return pc.Response(200, {"data": [{"uuid": "project-1", "name": "factory-smoke-test"}]}, {})
+            if path == "/servers":
+                return pc.Response(200, {"servers": [{"uuid": "server-1", "name": "development"}]}, {})
+            if path == "/github-apps":
+                return pc.Response(
+                    200,
+                    {
+                        "github_apps": [
+                            {
+                                "uuid": "github-app-current",
+                                "name": "GoodMorning GitHub App",
+                                "html_url": "https://github.com/goodmorning-mx",
+                                "api_url": "https://api.github.com",
+                            }
+                        ]
+                    },
+                    {},
+                )
+            if path == "/applications":
+                return pc.Response(200, {"applications": []}, {})
+            raise AssertionError((method, path))
+
+        with mock.patch.object(pc, "request", side_effect=fake_request):
+            result = pc.provision(args())
+
+        self.assertEqual(result["status"], "dry_run")
+        self.assertTrue(result["dry_run"])
+        self.assertEqual(result["github_app"], {"id": "github-app-current", "name": "GoodMorning GitHub App"})
+        self.assertEqual(result["would_create"]["git_source_id"], "github-app-current")
+        self.assertIn(("GET", "/github-apps"), [(m, p) for m, p, _ in calls])
+        self.assertNotIn(("GET", "/sources/github"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(("POST", "/applications/dockercompose"), [(m, p) for m, p, _ in calls])
 
     def test_existing_application_is_idempotent_and_not_duplicated(self):
