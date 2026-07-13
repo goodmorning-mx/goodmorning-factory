@@ -30,7 +30,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         def fake_request(method, path, **kwargs):
             calls.append((method, path, kwargs.get("body")))
             if path == "/projects":
-                return pc.Response(200, [{"uuid": "project-1", "name": "factory-smoke-test", "environments": [{"name": "development"}]}], {})
+                return pc.Response(200, [{"uuid": "project-1", "name": "factory-smoke-test"}], {})
+            if path == "/projects/project-1":
+                return pc.Response(200, {"uuid": "project-1", "name": "factory-smoke-test", "environments": [{"name": "production"}]}, {})
+            if path == "/projects/new-project":
+                return pc.Response(200, {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "environments": [{"name": "production"}]}, {})
             if path == "/servers":
                 return pc.Response(200, [{"uuid": "server-1", "name": "development"}], {})
             if path == "/github-apps":
@@ -60,7 +64,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         def fake_request(method, path, **kwargs):
             calls.append((method, path, kwargs.get("body")))
             if path == "/projects":
-                return pc.Response(200, {"data": [{"uuid": "project-1", "name": "factory-smoke-test", "environments": [{"name": "development"}]}]}, {})
+                return pc.Response(200, {"data": [{"uuid": "project-1", "name": "factory-smoke-test"}]}, {})
+            if path == "/projects/project-1":
+                return pc.Response(200, {"data": {"uuid": "project-1", "name": "factory-smoke-test", "environments": [{"name": "production"}]}}, {})
             if path == "/servers":
                 return pc.Response(200, {"servers": [{"uuid": "server-1", "name": "development"}]}, {})
             if path == "/github-apps":
@@ -120,13 +126,15 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 pc.DEFAULT_REPOSITORY,
             )
 
-    def test_missing_project_dry_run_plans_project_and_environment_creation(self):
+    def test_missing_project_dry_run_plans_project_creation_and_default_environment_reuse(self):
         calls = []
 
         def fake_request(method, path, **kwargs):
             calls.append((method, path, kwargs.get("body")))
             if path == "/projects":
                 return pc.Response(200, [], {})
+            if path == "/projects/new-project":
+                return pc.Response(200, {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "environments": [{"name": "production"}]}, {})
             if path == "/servers":
                 return pc.Response(200, [{"uuid": "server-1", "name": "development"}], {})
             if path == "/github-apps":
@@ -140,13 +148,13 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "dry_run")
         self.assertEqual(result["project"], {"uuid": None, "name": pc.DEFAULT_PRODUCT, "created": False})
-        self.assertEqual(result["environment"], {"name": "development", "created": True})
+        self.assertEqual(result["environment"], {"name": "development", "coolify_name": "production", "created": False})
         self.assertEqual(result["would_create_project"], {"name": pc.DEFAULT_PRODUCT})
-        self.assertEqual(result["would_create_environment"], {"name": "development"})
+        self.assertNotIn("would_create_environment", result)
         self.assertNotIn(("POST", "/projects"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(("POST", "/projects/new-project/environment"), [(m, p) for m, p, _ in calls])
 
-    def test_missing_project_real_run_creates_project_and_environment_before_application(self):
+    def test_missing_project_real_run_creates_project_and_reuses_default_environment_before_application(self):
         calls = []
 
         def fake_request(method, path, **kwargs):
@@ -156,14 +164,14 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                     return pc.Response(200, [], {})
                 if method == "POST":
                     return pc.Response(201, {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT}, {})
+            if path == "/projects/new-project":
+                return pc.Response(200, {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "environments": [{"name": "production"}]}, {})
             if path == "/servers":
                 return pc.Response(200, [{"uuid": "server-1", "name": "development"}], {})
             if path == "/github-apps":
                 return pc.Response(200, {"github_apps": [{"uuid": "github-app-7", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME, "html_url": "https://github.com"}]}, {})
             if path == "/applications":
                 return pc.Response(200, [], {})
-            if path == "/projects/new-project/environment":
-                return pc.Response(201, {"uuid": "env-1", "name": "development"}, {})
             if path == "/applications/dockercompose":
                 return pc.Response(201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {})
             raise AssertionError((method, path))
@@ -173,12 +181,10 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "created")
         self.assertEqual(result["project"], {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "created": True})
-        self.assertEqual(result["environment"], {"name": "development", "created": True})
+        self.assertEqual(result["environment"], {"name": "development", "coolify_name": "production", "created": False})
         self.assertEqual(calls.index(("POST", "/projects", {"name": pc.DEFAULT_PRODUCT})), 4)
-        self.assertLess(
-            calls.index(("POST", "/projects/new-project/environment", {"name": "development"})),
-            calls.index(("POST", "/applications/dockercompose", mock.ANY)),
-        )
+        self.assertIn(("GET", "/projects/new-project", None), calls)
+        self.assertNotIn(("POST", "/projects/new-project/environment", {"name": "development"}), calls)
 
     def test_existing_application_is_idempotent_and_not_duplicated(self):
         calls = []
@@ -198,6 +204,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(len(posts), 1)
         self.assertEqual(posts[0][2]["git_branch"], "dev")
         self.assertEqual(posts[0][2]["domains"], pc.DEFAULT_DOMAIN)
+        self.assertEqual(posts[0][2]["environment_name"], "production")
 
     def test_refuses_non_dev_branch_before_api_calls(self):
         with mock.patch.object(pc, "request") as request:

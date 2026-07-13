@@ -27,11 +27,14 @@ Never commit or print Coolify tokens. The workflow masks `COOLIFY_API_TOKEN`, an
 The manual workflow `.github/workflows/provision-coolify-development.yml` calls `scripts/provision_coolify_development.py`. The script queries the current Coolify API under `/api/v1` to discover:
 
 1. Projects from `GET /projects`.
-2. Servers from `GET /servers`.
-3. GitHub Apps from `GET /github-apps`, selecting the exact source name from `coolify_github_app_name` (default `goodmorning-mx-coolify`).
-4. Existing applications from `GET /applications`.
+2. Project details from `GET /projects/{project_uuid}` after creating or finding a project, so the script can reuse Coolify 4.1.2's default internal `production` environment.
+3. Servers from `GET /servers`.
+4. GitHub Apps from `GET /github-apps`, selecting the exact source name from `coolify_github_app_name` (default `goodmorning-mx-coolify`).
+5. Existing applications from `GET /applications`.
 
-If the product project does not exist, `dry_run=true` returns `status: dry_run` and reports `would_create_project` plus `would_create_environment` for the `development` environment without sending writes to Coolify. With `dry_run=false`, the script creates the missing project with `POST /projects`, ensures the `development` environment with `POST /projects/{project_uuid}/environment`, and then continues application provisioning. If the project already exists, the script reuses it idempotently and only creates the `development` environment when the project response does not already list it.
+If the product project does not exist, `dry_run=true` returns `status: dry_run` and reports `would_create_project` without sending writes to Coolify. With `dry_run=false`, the script creates the missing project with `POST /projects`, queries the new project details with `GET /projects/{project_uuid}`, and then continues application provisioning. If the project already exists, including the already-created `factory-smoke-test` project, the script reuses it idempotently and queries its details before building the application payload.
+
+Coolify 4.1.2 creates a default internal environment named `production` for each project. This workflow does **not** call `POST /projects/{project_uuid}/environment`; instead, it maps GoodMorning stage `development` to that Coolify internal `production` environment while preserving the `dev` branch, `dev.*` domain, and application name `factory-smoke-test-development`.
 
 The GitHub App source lookup must find exactly one source with the requested name. It fails when the source is missing or duplicated, and it rejects `Public GitHub` for private GoodMorning repositories so private repositories use the installed GoodMorning Coolify GitHub App.
 
@@ -45,7 +48,7 @@ If an existing application already references the repository/branch or developme
 - The workflow refuses branches other than `dev`.
 - The workflow refuses domains that do not start with `dev.`.
 - The script never deletes Coolify resources.
-- The script only allows the `dev` branch and `dev.` domains, and it never modifies production resources.
+- The script only allows the `dev` branch and `dev.` domains. Coolify's internal environment name is `production`, but this workflow uses it only as the Coolify 4.1.2 default environment representing the GoodMorning `development` stage.
 - The script never deploys immediately; the create payload sets `instant_deploy=false`.
 - The script never prints `COOLIFY_API_TOKEN`.
 - Production provisioning and production deployments are out of scope and require the release PR flow plus Abel's explicit approval.
@@ -64,7 +67,9 @@ Successful dry-runs print JSON similar to:
   "product": "factory-smoke-test",
   "repository": "goodmorning-mx/factory-smoke-test",
   "status": "dry_run",
-  "would_create_environment": {
+  "environment": {
+    "coolify_name": "production",
+    "created": false,
     "name": "development"
   },
   "would_create": {
@@ -72,6 +77,7 @@ Successful dry-runs print JSON similar to:
     "docker_compose_location": "/compose.yaml",
     "domains": "dev.factory-smoke-test.goodmorning.mx",
     "git_branch": "dev",
+    "environment_name": "production",
     "git_repository": "goodmorning-mx/factory-smoke-test",
     "instant_deploy": false
   }

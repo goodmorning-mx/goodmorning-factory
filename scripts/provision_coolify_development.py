@@ -18,6 +18,7 @@ DEFAULT_BRANCH = "dev"
 DEFAULT_COMPOSE = "/compose.yaml"
 DEFAULT_DOMAIN = "dev.factory-smoke-test.goodmorning.mx"
 DEFAULT_ENVIRONMENT = "development"
+COOLIFY_DEFAULT_ENVIRONMENT = "production"
 DEFAULT_COOLIFY_GITHUB_APP_NAME = "goodmorning-mx-coolify"
 TIMEOUT_SECONDS = 30
 SENSITIVE_ENV = ("COOLIFY_API_TOKEN",)
@@ -122,15 +123,19 @@ def discover_project(projects: list[dict[str, Any]], product: str) -> dict[str, 
     return None
 
 
-def project_environment_exists(project: dict[str, Any], environment: str) -> bool:
+def project_environment(project: dict[str, Any], environment: str) -> dict[str, Any] | None:
     raw_environments = field(project, "environments", "environment")
     if isinstance(raw_environments, list):
         environments = [item for item in raw_environments if isinstance(item, dict)]
         for item in environments:
             name = str(field(item, "name", "slug", "uuid") or "").lower()
             if name == environment.lower():
-                return True
-    return False
+                return item
+    return None
+
+
+def project_environment_exists(project: dict[str, Any], environment: str) -> bool:
+    return project_environment(project, environment) is not None
 
 
 def create_project(args: argparse.Namespace) -> dict[str, Any]:
@@ -143,19 +148,30 @@ def create_project(args: argparse.Namespace) -> dict[str, Any]:
     return project
 
 
-def ensure_environment(project: dict[str, Any], environment: str, *, dry_run: bool) -> tuple[dict[str, Any] | None, bool]:
-    if project_environment_exists(project, environment):
-        return None, False
+def project_details(project: dict[str, Any], *, dry_run: bool) -> dict[str, Any]:
     project_uuid = field(project, "uuid", "id")
-    payload = {"name": environment}
-    if dry_run:
-        return payload, True
     if not project_uuid:
-        raise ProvisioningError("Coolify project is missing an identifier required to ensure the environment.")
-    created = request("POST", f"/projects/{project_uuid}/environment", body=payload).data
-    if created is not None and not isinstance(created, dict):
-        raise ProvisioningError("Malformed Coolify environment creation response.")
-    return payload, True
+        if dry_run:
+            return project
+        raise ProvisioningError("Coolify project is missing an identifier required to query project details.")
+    detailed = request("GET", f"/projects/{project_uuid}").data
+    if not isinstance(detailed, dict):
+        raise ProvisioningError("Malformed Coolify project details response.")
+    data = detailed.get("data") if isinstance(detailed.get("data"), dict) else detailed
+    if not isinstance(data, dict):
+        raise ProvisioningError("Malformed Coolify project details response.")
+    return data
+
+
+def coolify_environment_for_stage(project: dict[str, Any], stage: str) -> dict[str, Any]:
+    if stage != DEFAULT_ENVIRONMENT:
+        raise ProvisioningError("Only the GoodMorning development stage can be provisioned by this workflow.")
+    environment = project_environment(project, COOLIFY_DEFAULT_ENVIRONMENT)
+    if environment is None:
+        raise ProvisioningError(
+            "Coolify project details did not include the default production environment required for the GoodMorning development stage."
+        )
+    return environment
 
 
 def discover_server(servers: list[dict[str, Any]]) -> dict[str, Any]:
@@ -205,7 +221,7 @@ def creation_payload(args: argparse.Namespace, project: dict[str, Any], server: 
         "name": f"{args.product}-{args.environment}",
         "project_uuid": field(project, "uuid", "id"),
         "server_uuid": field(server, "uuid", "id"),
-        "environment_name": args.environment,
+        "environment_name": COOLIFY_DEFAULT_ENVIRONMENT,
         "git_repository": args.repository,
         "git_branch": args.branch,
         "git_source_id": field(github_app, "id", "uuid"),
@@ -240,7 +256,11 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         else:
             project = create_project(args)
             project_created = True
-    planned_environment, environment_created = ensure_environment(project, args.environment, dry_run=args.dry_run)
+    if field(project, "uuid", "id"):
+        project = project_details(project, dry_run=args.dry_run)
+        coolify_environment = coolify_environment_for_stage(project, args.environment)
+    else:
+        coolify_environment = {"name": COOLIFY_DEFAULT_ENVIRONMENT}
     server = discover_server(servers)
     github_app = discover_github_app(github_apps, args.coolify_github_app_name, args.repository)
     existing = existing_application(applications, args)
@@ -254,15 +274,13 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         "compose": args.compose,
         "domain": args.domain,
         "project": {"uuid": field(project, "uuid", "id"), "name": field(project, "name", "slug"), "created": project_created},
-        "environment": {"name": args.environment, "created": environment_created},
+        "environment": {"name": args.environment, "coolify_name": field(coolify_environment, "name", "slug", "uuid"), "created": False},
         "server": {"uuid": field(server, "uuid", "id"), "name": field(server, "name", "description")},
         "github_app": {"id": field(github_app, "id", "uuid"), "name": field(github_app, "name")},
         "coolify_github_app_name": args.coolify_github_app_name,
     }
     if planned_project is not None:
         result["would_create_project"] = planned_project
-    if planned_environment is not None:
-        result["would_create_environment"] = planned_environment
     if existing:
         result["application"] = {"uuid": field(existing, "uuid", "id"), "name": field(existing, "name")}
         return result
