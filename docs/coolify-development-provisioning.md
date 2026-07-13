@@ -38,7 +38,7 @@ Coolify 4.1.2 creates a default internal environment named `production` for each
 
 The GitHub App source lookup must find exactly one source with the requested name. It fails when the source is missing or duplicated, and it rejects `Public GitHub` for private GoodMorning repositories so private repositories use the installed GoodMorning Coolify GitHub App.
 
-If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a create request to `POST /applications/private-github-app` with Docker Compose build-pack settings, the selected source's `github_app_uuid`, and `instant_deploy=false`.
+If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. Existing applications are still reconciled for Docker Compose domains when `dry_run=false`. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload and planned domain patch. If `dry_run=false`, it sends a create request to `POST /applications/private-github-app` with Docker Compose build-pack settings, the selected source's `github_app_uuid`, and `instant_deploy=false`, then configures Docker Compose service domains with `PATCH /applications/{application_uuid}`. The frontend domain is derived from `development_domain` as `https://dev...`; the backend domain is derived as `https://api.dev...`.
 
 ## Safety rules
 
@@ -50,6 +50,7 @@ If an existing application already references the repository/branch or developme
 - The script never deletes Coolify resources.
 - The script only allows the `dev` branch and `dev.` domains. Coolify's internal environment name is `production`, but this workflow uses it only as the Coolify 4.1.2 default environment representing the GoodMorning `development` stage.
 - The script never deploys immediately; the create payload sets `instant_deploy=false`.
+- The script configures Docker Compose domains without forcing overrides: `frontend` uses the HTTPS development domain and `backend` uses the same host prefixed with `api.`.
 - The script never prints `COOLIFY_API_TOKEN`.
 - Production provisioning and production deployments are out of scope and require the release PR flow plus Abel's explicit approval.
 
@@ -63,6 +64,16 @@ Successful dry-runs print JSON similar to:
   "compose": "/compose.yaml",
   "domain": "dev.factory-smoke-test.goodmorning.mx",
   "dry_run": true,
+  "docker_compose_domains": [
+    {
+      "name": "frontend",
+      "domain": "https://dev.factory-smoke-test.goodmorning.mx"
+    },
+    {
+      "name": "backend",
+      "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"
+    }
+  ],
   "coolify_github_app_name": "goodmorning-mx-coolify",
   "product": "factory-smoke-test",
   "repository": "goodmorning-mx/factory-smoke-test",
@@ -71,6 +82,19 @@ Successful dry-runs print JSON similar to:
     "coolify_name": "production",
     "created": false,
     "name": "development"
+  },
+  "would_patch": {
+    "docker_compose_domains": [
+      {
+        "name": "frontend",
+        "domain": "https://dev.factory-smoke-test.goodmorning.mx"
+      },
+      {
+        "name": "backend",
+        "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"
+      }
+    ],
+    "force_domain_override": false
   },
   "would_create": {
     "build_pack": "dockercompose",
