@@ -216,19 +216,25 @@ def existing_application(applications: list[dict[str, Any]], args: argparse.Name
     return None
 
 
+def github_app_uuid(github_app: dict[str, Any]) -> Any:
+    uuid = field(github_app, "uuid")
+    if not uuid:
+        raise ProvisioningError("Selected Coolify GitHub App source did not include a uuid; refusing to use its numeric id for private repository creation.")
+    return uuid
+
+
 def creation_payload(args: argparse.Namespace, project: dict[str, Any], server: dict[str, Any], github_app: dict[str, Any]) -> dict[str, Any]:
     return {
-        "name": f"{args.product}-{args.environment}",
         "project_uuid": field(project, "uuid", "id"),
         "server_uuid": field(server, "uuid", "id"),
         "environment_name": COOLIFY_DEFAULT_ENVIRONMENT,
+        "github_app_uuid": github_app_uuid(github_app),
         "git_repository": args.repository,
         "git_branch": args.branch,
-        "git_source_id": field(github_app, "id", "uuid"),
         "build_pack": "dockercompose",
-        "docker_compose_location": args.compose,
         "base_directory": "/",
-        "domains": args.domain,
+        "docker_compose_location": args.compose,
+        "name": f"{args.product}-{args.environment}",
         "instant_deploy": False,
     }
 
@@ -276,7 +282,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         "project": {"uuid": field(project, "uuid", "id"), "name": field(project, "name", "slug"), "created": project_created},
         "environment": {"name": args.environment, "coolify_name": field(coolify_environment, "name", "slug", "uuid"), "created": False},
         "server": {"uuid": field(server, "uuid", "id"), "name": field(server, "name", "description")},
-        "github_app": {"id": field(github_app, "id", "uuid"), "name": field(github_app, "name")},
+        "github_app": {"uuid": github_app_uuid(github_app), "name": field(github_app, "name")},
         "coolify_github_app_name": args.coolify_github_app_name,
     }
     if planned_project is not None:
@@ -287,7 +293,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
     if args.dry_run:
         result["would_create"] = payload
         return result
-    created = request("POST", "/applications/dockercompose", body=payload).data
+    created = request("POST", "/applications/private-github-app", body=payload).data
     if not isinstance(created, dict):
         raise ProvisioningError("Malformed Coolify application creation response.")
     result["application"] = {"uuid": field(created, "uuid", "id"), "name": field(created, "name")}

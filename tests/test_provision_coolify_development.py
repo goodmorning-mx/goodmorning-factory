@@ -41,7 +41,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(200, {"github_apps": [{"uuid": "github-app-7", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME, "html_url": "https://github.com"}]}, {})
             if path == "/applications":
                 return pc.Response(200, [] if existing is None else [existing], {})
-            if path == "/applications/dockercompose":
+            if path == "/applications/private-github-app":
                 self.assertFalse(kwargs["body"]["instant_deploy"])
                 return pc.Response(201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {})
             raise AssertionError((method, path))
@@ -56,7 +56,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(result["would_create"]["docker_compose_location"], pc.DEFAULT_COMPOSE)
         self.assertIn(("GET", "/github-apps"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(("GET", "/sources/github"), [(m, p) for m, p, _ in calls])
-        self.assertNotIn(("POST", "/applications/dockercompose"), [(m, p) for m, p, _ in calls])
+        self.assertNotIn(("POST", "/applications/private-github-app"), [(m, p) for m, p, _ in calls])
 
     def test_github_apps_parser_accepts_current_nested_response_shape(self):
         calls = []
@@ -93,11 +93,21 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "dry_run")
         self.assertTrue(result["dry_run"])
-        self.assertEqual(result["github_app"], {"id": "github-app-current", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME})
-        self.assertEqual(result["would_create"]["git_source_id"], "github-app-current")
+        self.assertEqual(result["github_app"], {"uuid": "github-app-current", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME})
+        self.assertEqual(result["would_create"]["github_app_uuid"], "github-app-current")
         self.assertIn(("GET", "/github-apps"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(("GET", "/sources/github"), [(m, p) for m, p, _ in calls])
-        self.assertNotIn(("POST", "/applications/dockercompose"), [(m, p) for m, p, _ in calls])
+        self.assertNotIn(("POST", "/applications/private-github-app"), [(m, p) for m, p, _ in calls])
+
+
+    def test_github_app_uuid_is_required_instead_of_numeric_id(self):
+        with self.assertRaisesRegex(pc.ProvisioningError, "numeric id"):
+            pc.creation_payload(
+                args(),
+                {"uuid": "project-1"},
+                {"uuid": "server-1"},
+                {"id": 123, "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME},
+            )
 
     def test_github_app_selection_requires_exact_name(self):
         with self.assertRaisesRegex(pc.ProvisioningError, "was not found"):
@@ -172,7 +182,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(200, {"github_apps": [{"uuid": "github-app-7", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME, "html_url": "https://github.com"}]}, {})
             if path == "/applications":
                 return pc.Response(200, [], {})
-            if path == "/applications/dockercompose":
+            if path == "/applications/private-github-app":
                 return pc.Response(201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {})
             raise AssertionError((method, path))
 
@@ -193,17 +203,21 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "exists")
         self.assertEqual(result["application"]["uuid"], "existing-app")
-        self.assertNotIn(("POST", "/applications/dockercompose"), [(m, p) for m, p, _ in calls])
+        self.assertNotIn(("POST", "/applications/private-github-app"), [(m, p) for m, p, _ in calls])
 
     def test_real_creation_posts_once_when_dry_run_false(self):
         calls = []
         with mock.patch.object(pc, "request", side_effect=self.api_side_effect(calls)):
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "created")
-        posts = [call for call in calls if call[0] == "POST" and call[1] == "/applications/dockercompose"]
+        posts = [call for call in calls if call[0] == "POST" and call[1] == "/applications/private-github-app"]
         self.assertEqual(len(posts), 1)
         self.assertEqual(posts[0][2]["git_branch"], "dev")
-        self.assertEqual(posts[0][2]["domains"], pc.DEFAULT_DOMAIN)
+        self.assertEqual(posts[0][2]["github_app_uuid"], "github-app-7")
+        self.assertNotIn("git_source_id", posts[0][2])
+        self.assertNotIn("domains", posts[0][2])
+        self.assertEqual(posts[0][2]["base_directory"], "/")
+        self.assertEqual(posts[0][2]["docker_compose_location"], "/compose.yaml")
         self.assertEqual(posts[0][2]["environment_name"], "production")
 
     def test_refuses_non_dev_branch_before_api_calls(self):

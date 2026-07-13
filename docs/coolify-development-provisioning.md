@@ -38,13 +38,13 @@ Coolify 4.1.2 creates a default internal environment named `production` for each
 
 The GitHub App source lookup must find exactly one source with the requested name. It fails when the source is missing or duplicated, and it rejects `Public GitHub` for private GoodMorning repositories so private repositories use the installed GoodMorning Coolify GitHub App.
 
-If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a create request to `POST /applications/dockercompose` with Docker Compose build-pack settings and `instant_deploy=false`.
+If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a create request to `POST /applications/private-github-app` with Docker Compose build-pack settings, the selected source's `github_app_uuid`, and `instant_deploy=false`.
 
 ## Safety rules
 
 - The workflow is manual only.
 - `dry_run` defaults to `true`.
-- `coolify_github_app_name` defaults to `goodmorning-mx-coolify` and must match a Coolify GitHub App source exactly.
+- `coolify_github_app_name` defaults to `goodmorning-mx-coolify` and must match a Coolify GitHub App source exactly; the script uses the source `uuid` as `github_app_uuid` and refuses to fall back to any numeric `id`.
 - The workflow refuses branches other than `dev`.
 - The workflow refuses domains that do not start with `dev.`.
 - The script never deletes Coolify resources.
@@ -75,10 +75,13 @@ Successful dry-runs print JSON similar to:
   "would_create": {
     "build_pack": "dockercompose",
     "docker_compose_location": "/compose.yaml",
-    "domains": "dev.factory-smoke-test.goodmorning.mx",
     "git_branch": "dev",
     "environment_name": "production",
+    "github_app_uuid": "github-app-uuid-from-selected-source",
     "git_repository": "goodmorning-mx/factory-smoke-test",
+    "name": "factory-smoke-test-development",
+    "project_uuid": "project-uuid",
+    "server_uuid": "server-uuid",
     "instant_deploy": false
   }
 }
