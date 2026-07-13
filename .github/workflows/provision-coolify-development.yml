@@ -31,6 +31,10 @@ on:
         description: 'Development domain.'
         required: true
         default: dev.factory-smoke-test.goodmorning.mx
+      coolify_github_app_name:
+        description: 'Exact Coolify GitHub App source name.'
+        required: true
+        default: goodmorning-mx-coolify
 
 permissions:
   contents: read
@@ -85,4 +89,5 @@ jobs:
             --repository "${{ inputs.repository }}" \
             --branch "${{ inputs.branch }}" \
             --compose "${{ inputs.compose }}" \
-            --domain "${{ inputs.domain }}"
+            --domain "${{ inputs.domain }}" \
+            --coolify-github-app-name "${{ inputs.coolify_github_app_name }}"

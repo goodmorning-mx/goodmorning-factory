@@ -18,6 +18,7 @@ DEFAULT_BRANCH = "dev"
 DEFAULT_COMPOSE = "/compose.yaml"
 DEFAULT_DOMAIN = "dev.factory-smoke-test.goodmorning.mx"
 DEFAULT_ENVIRONMENT = "development"
+DEFAULT_COOLIFY_GITHUB_APP_NAME = "goodmorning-mx-coolify"
 TIMEOUT_SECONDS = 30
 SENSITIVE_ENV = ("COOLIFY_API_TOKEN",)
 
@@ -167,11 +168,26 @@ def discover_server(servers: list[dict[str, Any]]) -> dict[str, Any]:
     raise ProvisioningError("Unable to identify one non-production Coolify server unambiguously.")
 
 
-def discover_github_app(sources: list[dict[str, Any]]) -> dict[str, Any]:
-    github_sources = [s for s in sources if "github" in str(field(s, "type", "name", "html_url", "api_url") or "").lower()]
-    if len(github_sources) == 1:
-        return github_sources[0]
-    raise ProvisioningError("Unable to identify one Coolify GitHub App source unambiguously.")
+def is_private_repository(repository: str) -> bool:
+    return repository.lower().startswith("goodmorning-mx/")
+
+
+def is_public_github_source(source: dict[str, Any]) -> bool:
+    name = str(field(source, "name") or "").strip().lower()
+    source_type = str(field(source, "type") or "").strip().lower()
+    return name == "public github" or source_type == "public github"
+
+
+def discover_github_app(sources: list[dict[str, Any]], app_name: str, repository: str) -> dict[str, Any]:
+    matches = [s for s in sources if str(field(s, "name") or "") == app_name]
+    if not matches:
+        raise ProvisioningError(f"Coolify GitHub App source named {app_name!r} was not found.")
+    if len(matches) > 1:
+        raise ProvisioningError(f"Coolify GitHub App source named {app_name!r} is duplicated; exact source selection is ambiguous.")
+    match = matches[0]
+    if is_private_repository(repository) and is_public_github_source(match):
+        raise ProvisioningError("Public GitHub cannot be used for private GoodMorning repositories; select the GoodMorning Coolify GitHub App source.")
+    return match
 
 
 def existing_application(applications: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any] | None:
@@ -226,7 +242,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
             project_created = True
     planned_environment, environment_created = ensure_environment(project, args.environment, dry_run=args.dry_run)
     server = discover_server(servers)
-    github_app = discover_github_app(github_apps)
+    github_app = discover_github_app(github_apps, args.coolify_github_app_name, args.repository)
     existing = existing_application(applications, args)
     payload = creation_payload(args, project, server, github_app)
     result = {
@@ -241,6 +257,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         "environment": {"name": args.environment, "created": environment_created},
         "server": {"uuid": field(server, "uuid", "id"), "name": field(server, "name", "description")},
         "github_app": {"id": field(github_app, "id", "uuid"), "name": field(github_app, "name")},
+        "coolify_github_app_name": args.coolify_github_app_name,
     }
     if planned_project is not None:
         result["would_create_project"] = planned_project
@@ -267,6 +284,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--compose", default=DEFAULT_COMPOSE)
     p.add_argument("--domain", default=DEFAULT_DOMAIN)
     p.add_argument("--environment", default=DEFAULT_ENVIRONMENT)
+    p.add_argument("--coolify-github-app-name", default=DEFAULT_COOLIFY_GITHUB_APP_NAME)
     p.add_argument("--dry-run", default="true", choices=("true", "false"))
     return p
 
