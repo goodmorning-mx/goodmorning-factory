@@ -2,6 +2,7 @@ import argparse
 import io
 import json
 import os
+from pathlib import Path
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest import mock
@@ -94,6 +95,18 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             code = pc.main(["--product", "secret-token"])
         self.assertNotEqual(code, 0)
         self.assertNotIn("secret-token", err.getvalue())
+
+
+class ProvisionCoolifyWorkflowTests(unittest.TestCase):
+    def workflow_text(self):
+        return (Path(__file__).resolve().parents[1] / ".github" / "workflows" / "provision-coolify-development.yml").read_text(encoding="utf-8")
+
+    def test_default_development_domain_reaches_safety_gate_variable(self):
+        text = self.workflow_text()
+        self.assertIn("default: dev.factory-smoke-test.goodmorning.mx", text)
+        self.assertIn("DEVELOPMENT_DOMAIN: ${{ inputs.domain }}", text)
+        self.assertIn('[[ "${DEVELOPMENT_DOMAIN}" != dev.* ]]', text)
+        self.assertNotIn('"${{ inputs.domain }}" != dev.*', text)
 
 
 if __name__ == "__main__":
