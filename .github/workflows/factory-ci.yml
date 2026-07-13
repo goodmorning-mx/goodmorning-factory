@@ -1,0 +1,92 @@
+name: GoodMorning Factory CI
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+  push:
+    branches:
+      - dev
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  factory-ci:
+    name: Validate factory provisioning code
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate Python syntax
+        run: python -m py_compile scripts/create_product.py tests/test_create_product.py
+
+      - name: Run dependency-free unit tests
+        run: python -m unittest discover -s tests -v
+
+      - name: Verify expected provisioning files exist
+        run: |
+          set -euo pipefail
+          test -f .github/workflows/create-product.yml
+          test -f scripts/create_product.py
+          test -f tests/test_create_product.py
+          test -f docs/product-provisioning.md
+
+      - name: Verify no destructive GitHub repository operations are implemented
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('scripts/create_product.py').read_text()
+          forbidden = {
+              'DELETE /repos': ['DELETE /repos', 'request("DELETE"', "request('DELETE'"],
+              'repository transfer endpoints': ['/transfer', 'transfer_repository'],
+              'archive operations': ['archive', 'archived'],
+              'public visibility changes': ['"visibility": "public"', "'visibility': 'public'", 'private": False', "private': False"],
+          }
+          failures = [label for label, needles in forbidden.items() if any(needle in text for needle in needles)]
+          if failures:
+              raise SystemExit('Forbidden operation markers found: ' + ', '.join(failures))
+          print('No destructive repository operation markers found.')
+          PY
+
+      - name: Verify no credential-like files or private keys are committed
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          forbidden_file_names = {
+              '.env', '.env.local', '.env.production', 'id_rsa', 'id_dsa',
+              'id_ecdsa', 'id_ed25519', 'credentials.json', 'service-account.json',
+          }
+          private_key = re.compile(r'-----BEGIN [A-Z ]*PRIVATE KEY-----')
+          token = re.compile(r'(ghp_|github_pat_|gho_|ghu_|ghs_|ghr_)[A-Za-z0-9_]{20,}')
+          failures = []
+          for path in Path('.').rglob('*'):
+              if '.git' in path.parts or not path.is_file():
+                  continue
+              if path.name in forbidden_file_names or path.suffix in {'.pem', '.key', '.p12', '.pfx'}:
+                  failures.append(f'credential-like file: {path}')
+                  continue
+              try:
+                  text = path.read_text(encoding='utf-8')
+              except UnicodeDecodeError:
+                  continue
+              if private_key.search(text):
+                  failures.append(f'private key material: {path}')
+              if token.search(text):
+                  failures.append(f'GitHub token-like value: {path}')
+          if failures:
+              raise SystemExit('\n'.join(failures))
+          print('No credential-like files, private keys, or GitHub token-like values found.')
+          PY

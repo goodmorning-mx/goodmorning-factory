@@ -1,0 +1,102 @@
+name: Create GoodMorning product repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      product_name:
+        description: Repository slug for the new product.
+        required: true
+        type: string
+      description:
+        description: Product repository description.
+        required: true
+        type: string
+      confirm_provision:
+        description: Confirm that a private product repository should be provisioned.
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: create-product-${{ github.event.inputs.product_name }}
+  cancel-in-progress: false
+
+jobs:
+  create-product:
+    name: Provision product repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Refuse unconfirmed provisioning
+        if: ${{ github.event.inputs.confirm_provision != 'true' }}
+        run: |
+          echo "confirm_provision must be true before provisioning." >&2
+          exit 1
+
+      - name: Validate product name before requesting token
+        run: |
+          python3 - <<'PY'
+          import re
+          import sys
+          name = "${{ github.event.inputs.product_name }}"
+          reserved = {"goodmorning-factory", "goodmorning-mvp-template"}
+          if not name or len(name) > 100 or name in reserved or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", name):
+              print("Invalid product_name. Use lowercase letters, numbers, and hyphens; start/end with a letter or number; avoid reserved names; max 100 characters.", file=sys.stderr)
+              sys.exit(1)
+          PY
+
+      - name: Check out factory repository
+        uses: actions/checkout@v4
+
+      - name: Create GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
+          private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
+          owner: goodmorning-mx
+
+      - name: Provision repository from template
+        id: provision
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          if python3 scripts/create_product.py \
+            --name "${{ github.event.inputs.product_name }}" \
+            --description "${{ github.event.inputs.description }}" \
+            --owner goodmorning-mx \
+            --template-owner goodmorning-mx \
+            --template-repo goodmorning-mvp-template \
+            > provisioning-result.json 2> provisioning-error.json; then
+            cat provisioning-result.json
+          else
+            cat provisioning-error.json >&2
+            cp provisioning-error.json provisioning-result.json
+            exit 1
+          fi
+
+      - name: Publish provisioning summary
+        if: always()
+        run: |
+          {
+            echo "## GoodMorning product provisioning"
+            echo
+            echo "- Product: \`${{ github.event.inputs.product_name }}\`"
+            echo "- Template: \`goodmorning-mx/goodmorning-mvp-template\`"
+            echo "- Owner: \`goodmorning-mx\`"
+            echo
+            if [ -f provisioning-result.json ]; then
+              echo "### Result"
+              echo '```json'
+              cat provisioning-result.json
+              echo '```'
+            else
+              echo "Provisioning did not produce a result file. Check job logs for the validation or API error."
+            fi
+            echo
+            echo "The workflow never prints token or private-key material."
+          } >> "$GITHUB_STEP_SUMMARY"
