@@ -474,6 +474,8 @@ def creation_payload(
         "build_pack": "dockercompose",
         "base_directory": "/",
         "docker_compose_location": args.compose,
+        "docker_compose_domains": docker_compose_domains(args.domain),
+        "force_domain_override": False,
         "name": f"{args.product}-{args.environment}",
         "instant_deploy": False,
     }
@@ -567,23 +569,27 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         result["would_create_project"] = planned_project
     if existing:
         result["application"] = application_summary(existing)
-        if args.dry_run:
-            result["would_patch"] = domain_patch_payload(args)
+        if docker_compose_raw_loaded(existing):
+            if args.dry_run:
+                result["would_patch"] = domain_patch_payload(args)
+            else:
+                reconcile_application_domains(result["application"]["uuid"], args)
+                result["domain_reconciled"] = True
         else:
-            wait_for_docker_compose_raw(result["application"]["uuid"])
-            reconcile_application_domains(result["application"]["uuid"], args)
-            result["domain_reconciled"] = True
+            result["status"] = "recreate_required"
+            result["recreate_required"] = True
+            result["reason"] = (
+                "Existing Coolify application has empty docker_compose_raw; "
+                "manual recreation is required before domains can be reconciled."
+            )
         return result
     if args.dry_run:
         result["would_create"] = payload
-        result["would_patch"] = domain_patch_payload(args)
         return result
     created = request("POST", "/applications/private-github-app", body=payload).data
     if not isinstance(created, dict):
         raise ProvisioningError("Malformed Coolify application creation response.")
     result["application"] = application_summary(created)
-    wait_for_docker_compose_raw(result["application"]["uuid"])
-    reconcile_application_domains(result["application"]["uuid"], args)
     result["domain_reconciled"] = True
     return result
 
