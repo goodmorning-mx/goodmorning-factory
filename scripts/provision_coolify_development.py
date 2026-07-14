@@ -469,6 +469,27 @@ def environment_variable_summary(variables: dict[str, str]) -> list[dict[str, st
     return [{"key": key, "value": value} for key, value in variables.items()]
 
 
+def environment_variable_key(item: dict[str, Any]) -> str | None:
+    key = field(
+        item,
+        "key",
+        "name",
+        "variable",
+        "variable_name",
+        "variableName",
+        "env_key",
+        "envKey",
+    )
+    if key is None:
+        return None
+    normalized = str(key).strip()
+    return normalized or None
+
+
+def environment_variable_uuid(item: dict[str, Any]) -> Any:
+    return field(item, "uuid")
+
+
 def application_environment_variables(application_uuid: Any) -> list[dict[str, Any]]:
     if not application_uuid:
         raise ProvisioningError(
@@ -481,22 +502,30 @@ def configure_application_environment_variables(
     application_uuid: Any, args: argparse.Namespace
 ) -> list[dict[str, str]]:
     desired = desired_environment_variables(args)
+    existing_variables = application_environment_variables(application_uuid)
     existing_by_key = {
-        str(field(item, "key") or ""): item
-        for item in application_environment_variables(application_uuid)
+        key: item
+        for item in existing_variables
+        if (key := environment_variable_key(item)) is not None
     }
     for key, value in desired.items():
         existing = existing_by_key.get(key)
         body = {"key": key, "value": value}
-        existing_uuid = field(existing or {}, "uuid", "id")
-        if existing_uuid:
-            request(
-                "PATCH",
-                f"/applications/{application_uuid}/envs/{existing_uuid}",
-                body=body,
-            )
-        else:
+        if existing is None:
             request("POST", f"/applications/{application_uuid}/envs", body=body)
+            continue
+
+        existing_uuid = environment_variable_uuid(existing)
+        if not existing_uuid:
+            raise ProvisioningError(
+                f"Existing Coolify environment variable {key!r} did not include a uuid; refusing to create a duplicate.",
+                code=2,
+            )
+        request(
+            "PATCH",
+            f"/applications/{application_uuid}/envs/{existing_uuid}",
+            body=body,
+        )
     return environment_variable_summary(desired)
 
 
