@@ -28,14 +28,15 @@ class CoolifyComposeTests(unittest.TestCase):
         self.assertNotIn("\nports:", compose)
         self.assertIn('image: ${FRONTEND_IMAGE:-nginx:1.27-alpine}', compose)
         frontend = self.service_block(compose, "frontend")
-        self.assertIn('      - "80"', frontend)
-        self.assertNotIn('      - "8080"', frontend)
+        self.assertIn('listen 8080;', frontend)
+        self.assertIn('      - "8080"', frontend)
+        self.assertNotIn('      - "80"', frontend)
 
-    def test_local_override_maps_host_8080_to_frontend_container_80(self):
+    def test_local_override_maps_host_8080_to_frontend_container_8080(self):
         local = (ROOT / "compose.local.yaml").read_text()
 
         self.assertEqual(local.count("ports:"), 2)
-        self.assertIn('      - "8080:80"', local)
+        self.assertIn('      - "8080:8080"', local)
         self.assertIn('      - "8000:8000"', local)
         self.assertNotIn("5432:5432", local)
 

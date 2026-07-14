@@ -635,10 +635,10 @@ def discover_github_app(
     return match
 
 
-def docker_compose_domains(development_domain: str) -> list[dict[str, str]]:
+def docker_compose_domains(development_domain: str) -> list[dict[str, str | int]]:
     return [
-        {"name": "frontend", "domain": frontend_url(development_domain)},
-        {"name": "backend", "domain": backend_url(development_domain)},
+        {"name": "frontend", "domain": frontend_url(development_domain), "port": 8080},
+        {"name": "backend", "domain": backend_url(development_domain), "port": 8000},
     ]
 
 
