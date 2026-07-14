@@ -49,8 +49,8 @@ jobs:
       DEVELOPMENT_DOMAIN: ${{ inputs.domain }}
       COOLIFY_SSH_HOST: ${{ vars.COOLIFY_SSH_HOST }}
       COOLIFY_SSH_USER: ${{ vars.COOLIFY_SSH_USER }}
-      COOLIFY_SSH_PRIVATE_KEY: ${{ secrets.COOLIFY_SSH_PRIVATE_KEY }}
-      COOLIFY_SSH_KNOWN_HOSTS: ${{ secrets.COOLIFY_SSH_KNOWN_HOSTS }}
+      COOLIFY_SSH_PRIVATE_KEY: ${{ secrets.GOODMORNING_FACTORY_COOLIFY_SSH_KEY }}
+      COOLIFY_SSH_KNOWN_HOSTS: ${{ secrets.GOODMORNING_FACTORY_COOLIFY_KNOWN_HOSTS }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
