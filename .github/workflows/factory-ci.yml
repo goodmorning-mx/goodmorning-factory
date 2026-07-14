@@ -57,7 +57,7 @@ jobs:
           if '\n    ports:' in compose or '\nports:' in compose:
               raise SystemExit('compose.yaml must not publish host ports; use expose and compose.local.yaml instead.')
           expected_exposes = {
-              'frontend': '      - "8080"',
+              'frontend': '      - "80"',
               'backend': '      - "8000"',
           }
           service_markers = [
@@ -78,7 +78,7 @@ jobs:
                   raise SystemExit(f'{service} must use expose for its internal port: {expose_line.strip()}')
           if local.count('ports:') != 2:
               raise SystemExit('compose.local.yaml must publish only local frontend and backend ports.')
-          for mapping in ('      - "8080:8080"', '      - "8000:8000"'):
+          for mapping in ('      - "8080:80"', '      - "8000:8000"'):
               if mapping not in local:
                   raise SystemExit(f'missing local port mapping: {mapping.strip()}')
           if '5432:5432' in local:
