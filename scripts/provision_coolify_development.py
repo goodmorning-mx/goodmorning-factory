@@ -13,7 +13,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 DEFAULT_PRODUCT = "factory-smoke-test"
 DEFAULT_REPOSITORY = "goodmorning-mx/factory-smoke-test"
@@ -27,6 +27,9 @@ DEFAULT_COOLIFY_GITHUB_APP_NAME = "goodmorning-mx-coolify"
 TIMEOUT_SECONDS = 30
 COMPOSE_READY_TIMEOUT_SECONDS = 120
 COMPOSE_READY_POLL_SECONDS = 5
+DEPLOYMENT_TIMEOUT_SECONDS = 600
+DEPLOYMENT_POLL_SECONDS = 10
+HEALTH_TIMEOUT_SECONDS = 30
 SENSITIVE_ENV = ("COOLIFY_API_TOKEN",)
 ENVIRONMENT_UUID_RE = re.compile(r"^[a-z0-9]{24}$")
 
@@ -310,6 +313,119 @@ def ensure_dev_environment(project_uuid: Any) -> dict[str, Any]:
     )
 
 
+def extract_deployment_uuid(data: Any) -> Any:
+    if isinstance(data, dict):
+        for key in (
+            "deployment_uuid",
+            "deploymentUuid",
+            "uuid",
+            "id",
+        ):
+            value = data.get(key)
+            if value:
+                return value
+        nested = data.get("data")
+        if isinstance(nested, dict):
+            return extract_deployment_uuid(nested)
+    raise ProvisioningError(
+        "Coolify deployment response did not include a deployment UUID.", code=2
+    )
+
+
+def deployment_status(data: Any) -> str:
+    source = (
+        data.get("data")
+        if isinstance(data, dict) and isinstance(data.get("data"), dict)
+        else data
+    )
+    if not isinstance(source, dict):
+        raise ProvisioningError("Malformed Coolify deployment status response.", code=2)
+    status = field(source, "status", "state", "deployment_status")
+    if not status:
+        raise ProvisioningError(
+            "Coolify deployment status response did not include a status.", code=2
+        )
+    return str(status).lower()
+
+
+def deployment_succeeded(status: str) -> bool:
+    return status in {
+        "success",
+        "successful",
+        "finished",
+        "succeeded",
+        "complete",
+        "completed",
+    }
+
+
+def deployment_failed(status: str) -> bool:
+    return status in {"failed", "failure", "error", "cancelled", "canceled"}
+
+
+def queue_deployment(application_uuid: Any) -> dict[str, Any]:
+    if not application_uuid:
+        raise ProvisioningError(
+            "Coolify application identifier is required before deployment.", code=2
+        )
+    query = urlencode({"uuid": application_uuid, "force": "true"})
+    data = request("POST", f"/deploy?{query}").data
+    deployment_uuid = extract_deployment_uuid(data)
+    return {"uuid": deployment_uuid, "force": True}
+
+
+def wait_for_deployment(deployment_uuid: Any) -> dict[str, Any]:
+    deadline = time.monotonic() + DEPLOYMENT_TIMEOUT_SECONDS
+    last_status = None
+    while True:
+        data = request("GET", f"/deployments/{deployment_uuid}").data
+        last_status = deployment_status(data)
+        if deployment_succeeded(last_status):
+            return {"uuid": deployment_uuid, "status": last_status}
+        if deployment_failed(last_status):
+            raise ProvisioningError(
+                f"Coolify deployment {deployment_uuid} failed with status {last_status}.",
+                code=2,
+            )
+        if time.monotonic() >= deadline:
+            raise ProvisioningError(
+                f"Timed out waiting for Coolify deployment {deployment_uuid}; last status was {last_status}.",
+                status="timeout",
+                code=2,
+            )
+        time.sleep(DEPLOYMENT_POLL_SECONDS)
+
+
+def verify_url(url: str) -> dict[str, Any]:
+    req = urllib.request.Request(
+        url,
+        method="GET",
+        headers={"User-Agent": "goodmorning-factory-coolify-provisioner"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=HEALTH_TIMEOUT_SECONDS) as resp:
+            if 200 <= resp.status < 400:
+                return {"url": url, "status": resp.status, "ok": True}
+            raise ProvisioningError(
+                f"Health check {url} returned HTTP {resp.status}.", code=2
+            )
+    except urllib.error.HTTPError as exc:
+        raise ProvisioningError(f"Health check {url} returned HTTP {exc.code}.", code=2)
+    except (urllib.error.URLError, TimeoutError) as exc:
+        raise ProvisioningError(f"Health check {url} failed: {exc}", code=2)
+
+
+def verify_development_health(args: argparse.Namespace) -> list[dict[str, Any]]:
+    host = (
+        args.domain.removeprefix("https://")
+        .removeprefix("http://")
+        .strip()
+        .rstrip("/")
+    )
+    urls = [f"https://{host}", f"https://api.{host}/health"]
+    return [verify_url(url) for url in urls]
+
+
 def docker_compose_raw_loaded(application: Any) -> bool:
     data = (
         application.get("data")
@@ -575,6 +691,10 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 reconcile_application_domains(result["application"]["uuid"], args)
                 result["domain_reconciled"] = True
+                deployment = queue_deployment(result["application"]["uuid"])
+                deployment.update(wait_for_deployment(deployment["uuid"]))
+                result["deployment"] = deployment
+                result["health_checks"] = verify_development_health(args)
         else:
             result["status"] = "recreate_required"
             result["recreate_required"] = True
@@ -591,6 +711,10 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         raise ProvisioningError("Malformed Coolify application creation response.")
     result["application"] = application_summary(created)
     result["domain_reconciled"] = True
+    deployment = queue_deployment(result["application"]["uuid"])
+    deployment.update(wait_for_deployment(deployment["uuid"]))
+    result["deployment"] = deployment
+    result["health_checks"] = verify_development_health(args)
     return result
 
 

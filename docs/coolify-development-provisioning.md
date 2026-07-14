@@ -38,7 +38,9 @@ Coolify development applications are created in the Coolify `dev` environment. T
 
 The GitHub App source lookup must find exactly one source with the requested name. It fails when the source is missing or duplicated, and it rejects `Public GitHub` for private GoodMorning repositories so private repositories use the installed GoodMorning Coolify GitHub App.
 
-If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. Existing applications with loaded `docker_compose_raw` are still reconciled for Docker Compose domains when `dry_run=false`. Existing applications with empty `docker_compose_raw` return `status: recreate_required` and do not delete or modify anything, because Coolify cannot safely reconcile Docker Compose service domains without parsed Compose data. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a single create request to `POST /applications/private-github-app` with Docker Compose build-pack settings, the selected source's `github_app_uuid`, `docker_compose_domains`, and `instant_deploy=false`; it does not poll or send a follow-up domain `PATCH` for newly-created applications. The frontend domain is derived from `development_domain` as `https://dev...`; the backend domain is derived as `https://api.dev...`.
+If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. Existing applications with loaded `docker_compose_raw` are still reconciled for Docker Compose domains when `dry_run=false`. Existing applications with empty `docker_compose_raw` return `status: recreate_required` and do not delete or modify anything, because Coolify cannot safely reconcile Docker Compose service domains without parsed Compose data. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a single create request to `POST /applications/private-github-app` with Docker Compose build-pack settings, the selected source's `github_app_uuid`, `docker_compose_domains`, and `instant_deploy=false`; it does not send a follow-up domain `PATCH` for newly-created applications. The frontend domain is derived from `development_domain` as `https://dev...`; the backend domain is derived as `https://api.dev...`.
+
+After a successful `dry_run=false` provisioning or idempotent reuse of an existing application, the script triggers the development deployment with `POST /api/v1/deploy?uuid={application_uuid}&force=true`. It reads the deployment UUID from the Coolify response, polls `GET /api/v1/deployments/{deployment_uuid}` until a successful terminal status, a failed terminal status, or timeout, and then verifies both development smoke endpoints: `https://dev.factory-smoke-test.goodmorning.mx` and `https://api.dev.factory-smoke-test.goodmorning.mx/health`. These deployment and smoke-check calls are never executed for `dry_run=true`.
 
 ## Safety rules
 
@@ -49,12 +51,12 @@ If an existing application already references the repository/branch or developme
 - The workflow refuses domains that do not start with `dev.`.
 - The script never deletes Coolify resources.
 - The script only allows the `dev` branch and `dev.` domains.
-- With `dry_run=true`, the script does not create projects, environments, applications, or domain patches.
+- With `dry_run=true`, the script does not create projects, environments, applications, domain patches, deployments, or smoke checks.
 - With `dry_run=false`, the script uses the official Coolify environment API only: `GET /projects/{project_uuid}/environments`, then `POST /projects/{project_uuid}/environments` with `{"name":"dev"}` if needed. It handles `201`, `409`, and `422` explicitly and does not require SSH configuration.
 - New application creation sends `docker_compose_domains` directly in the `POST /applications/private-github-app` payload and does not issue a follow-up domain patch.
 - Coolify `422` API errors are reported with sanitized structured details, including `message`, `errors`, `conflicts`, and `warning` when present.
 - The application create payload uses `environment_name=dev`; it does not create the development application inside Coolify `production`.
-- The script never deploys immediately; the create payload sets `instant_deploy=false`.
+- The application create payload sets `instant_deploy=false`; the explicit deployment step only runs later in the same workflow when `dry_run=false` and provisioning or idempotent reuse succeeds.
 - The script configures Docker Compose domains without forcing overrides: `frontend` uses the HTTPS development domain and `backend` uses the same host prefixed with `api.`.
 - The script never prints `COOLIFY_API_TOKEN`.
 - Production provisioning and production deployments are out of scope and require the release PR flow plus Abel's explicit approval.
@@ -120,7 +122,7 @@ The JSON also includes the discovered project, server, and GitHub App identifier
 
 ## Running the real creation later
 
-Do not run the real creation until the dry-run output has been reviewed and the Coolify API token has the least required read/write permissions. When approved for development provisioning, manually rerun the workflow with `dry_run=false`. This ensures the Coolify `dev` environment exists through the official API, creates or reuses the Coolify development application in `dev`, but still does not deploy production and does not delete anything.
+Do not run the real creation until the dry-run output has been reviewed and the Coolify API token has the least required read/write permissions. When approved for development provisioning, manually rerun the workflow with `dry_run=false`. This ensures the Coolify `dev` environment exists through the official API, creates or reuses the Coolify development application in `dev`, queues a forced Coolify deployment, waits for completion, and verifies the frontend and API health endpoints. It still does not deploy production and does not delete anything.
 
 ## Rollback
 
