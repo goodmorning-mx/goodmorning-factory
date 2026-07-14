@@ -1,0 +1,49 @@
+# Coolify-safe default Compose file.
+# Public routing is owned by Coolify/Traefik; do not publish service ports to the host here.
+services:
+  frontend:
+    image: ${FRONTEND_IMAGE:-nginx:1.27-alpine}
+    depends_on:
+      - backend
+    environment:
+      BACKEND_URL: http://backend:8000
+    expose:
+      - "3000"
+    networks:
+      - app
+
+  backend:
+    image: ${BACKEND_IMAGE:-python:3.12-alpine}
+    command: python -m http.server 8000
+    depends_on:
+      - postgres
+    environment:
+      DATABASE_URL: postgresql://goodmorning:${POSTGRES_PASSWORD:-change-me-for-local-only}@postgres:5432/goodmorning
+    expose:
+      - "8000"
+    networks:
+      - app
+      - data
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: goodmorning
+      POSTGRES_USER: goodmorning
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-for-local-only}
+    expose:
+      - "5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - data
+
+networks:
+  app:
+    driver: bridge
+  data:
+    driver: bridge
+    internal: true
+
+volumes:
+  postgres-data:

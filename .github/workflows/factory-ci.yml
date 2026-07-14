@@ -45,6 +45,26 @@ jobs:
           test -f tests/test_provision_coolify_development.py
           test -f docs/coolify-development-provisioning.md
 
+
+      - name: Verify Coolify Compose defaults do not publish host ports
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+
+          compose = Path('compose.yaml').read_text()
+          local = Path('compose.local.yaml').read_text()
+          if '\n    ports:' in compose or '\nports:' in compose:
+              raise SystemExit('compose.yaml must not publish host ports; use expose and compose.local.yaml instead.')
+          for service in ('frontend', 'backend', 'postgres'):
+              marker = f'  {service}:\n'
+              if marker not in compose:
+                  raise SystemExit(f'missing {service} service in compose.yaml')
+          if local.count('ports:') != 3:
+              raise SystemExit('compose.local.yaml must retain local host ports for frontend, backend, and postgres.')
+          print('Coolify compose defaults avoid host port publishing; local override retains developer ports.')
+          PY
+
       - name: Verify no destructive GitHub repository operations are implemented
         run: |
           set -euo pipefail
