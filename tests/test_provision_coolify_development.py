@@ -77,6 +77,19 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(200, [] if existing is None else [existing], {})
             if path == "/applications/private-github-app":
                 self.assertFalse(kwargs["body"]["instant_deploy"])
+                self.assertEqual(
+                    kwargs["body"]["docker_compose_domains"],
+                    [
+                        {
+                            "name": "frontend",
+                            "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+                        },
+                        {
+                            "name": "backend",
+                            "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                        },
+                    ],
+                )
                 return pc.Response(
                     201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
                 )
@@ -124,21 +137,19 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             result["would_create"]["docker_compose_location"], pc.DEFAULT_COMPOSE
         )
         self.assertEqual(
-            result["would_patch"],
-            {
-                "docker_compose_domains": [
-                    {
-                        "name": "frontend",
-                        "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-                    },
-                    {
-                        "name": "backend",
-                        "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
-                    },
-                ],
-                "force_domain_override": False,
-            },
+            result["would_create"]["docker_compose_domains"],
+            [
+                {
+                    "name": "frontend",
+                    "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+                },
+                {
+                    "name": "backend",
+                    "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                },
+            ],
         )
+        self.assertNotIn("would_patch", result)
         self.assertIn(("GET", "/github-apps"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(("GET", "/sources/github"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(
@@ -373,13 +384,6 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(
                     201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
                 )
-            if path == "/applications/app-1":
-                if method == "GET":
-                    return pc.Response(
-                        200, {"uuid": "app-1", "docker_compose_raw": "services: {}"}, {}
-                    )
-                self.assertEqual(method, "PATCH")
-                return pc.Response(200, {"uuid": "app-1"}, {})
             raise AssertionError((method, path))
 
         with mock.patch.object(
@@ -392,6 +396,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             result = pc.provision(args(dry_run=False))
 
         self.assertEqual(result["status"], "created")
+        self.assertTrue(result["domain_reconciled"])
+        self.assertNotIn(("GET", "/applications/app-1", None), calls)
+        self.assertNotIn(("PATCH", "/applications/app-1"), [(m, p) for m, p, _ in calls])
         self.assertEqual(
             result["project"],
             {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "created": True},
@@ -416,6 +423,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             "uuid": "existing-app",
             "name": "factory-smoke-test",
             "domains": pc.DEFAULT_DOMAIN,
+            "docker_compose_raw": "services: {}",
         }
         with mock.patch.object(
             pc, "request", side_effect=self.api_side_effect(calls, existing=existing)
@@ -446,19 +454,38 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(posts[0][2]["github_app_uuid"], "github-app-7")
         self.assertNotIn("git_source_id", posts[0][2])
         self.assertNotIn("domains", posts[0][2])
+        self.assertEqual(
+            posts[0][2]["docker_compose_domains"][0]["domain"],
+            "https://dev.factory-smoke-test.goodmorning.mx",
+        )
+        self.assertFalse(posts[0][2]["force_domain_override"])
         self.assertEqual(posts[0][2]["base_directory"], "/")
         self.assertEqual(posts[0][2]["docker_compose_location"], "/compose.yaml")
         self.assertEqual(posts[0][2]["environment_name"], "dev")
-        patches = [
-            call
-            for call in calls
-            if call[0] == "PATCH" and call[1] == "/applications/app-1"
-        ]
-        self.assertEqual(len(patches), 1)
-        self.assertFalse(patches[0][2]["force_domain_override"])
-        self.assertEqual(
-            patches[0][2]["docker_compose_domains"][1]["domain"],
-            "https://api.dev.factory-smoke-test.goodmorning.mx",
+        self.assertNotIn(("GET", "/applications/app-1"), [(m, p) for m, p, _ in calls])
+        self.assertNotIn(("PATCH", "/applications/app-1"), [(m, p) for m, p, _ in calls])
+
+    def test_existing_application_with_empty_compose_requires_manual_recreation(self):
+        calls = []
+        existing = {
+            "uuid": "existing-app",
+            "name": "factory-smoke-test",
+            "domains": pc.DEFAULT_DOMAIN,
+            "docker_compose_raw": "",
+        }
+        with mock.patch.object(
+            pc, "request", side_effect=self.api_side_effect(calls, existing=existing)
+        ):
+            result = pc.provision(args(dry_run=False))
+
+        self.assertEqual(result["status"], "recreate_required")
+        self.assertTrue(result["recreate_required"])
+        self.assertIn("docker_compose_raw", result["reason"])
+        self.assertNotIn(
+            ("POST", "/applications/private-github-app"), [(m, p) for m, p, _ in calls]
+        )
+        self.assertNotIn(
+            ("PATCH", "/applications/existing-app"), [(m, p) for m, p, _ in calls]
         )
 
     def test_real_run_gets_project_details_before_environment_api_when_dev_is_missing(
@@ -516,12 +543,6 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(
                     201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
                 )
-            if path == "/applications/app-1":
-                if method == "GET":
-                    return pc.Response(
-                        200, {"uuid": "app-1", "docker_compose_raw": "services: {}"}, {}
-                    )
-                return pc.Response(200, {"uuid": "app-1"}, {})
             raise AssertionError((method, path))
 
         with mock.patch.object(
