@@ -487,7 +487,7 @@ def environment_variable_key(item: dict[str, Any]) -> str | None:
 
 
 def environment_variable_uuid(item: dict[str, Any]) -> Any:
-    return field(item, "uuid")
+    return field(item, "uuid", "id")
 
 
 def application_environment_variables(application_uuid: Any) -> list[dict[str, Any]]:
@@ -496,6 +496,22 @@ def application_environment_variables(application_uuid: Any) -> list[dict[str, A
             "Coolify application identifier is required before configuring environment variables."
         )
     return items(request("GET", f"/applications/{application_uuid}/envs").data)
+
+
+def patch_application_environment_variable(
+    application_uuid: Any, key: str, value: str, existing: dict[str, Any]
+) -> None:
+    existing_uuid = environment_variable_uuid(existing)
+    if not existing_uuid:
+        raise ProvisioningError(
+            f"Existing Coolify environment variable {key!r} did not include a uuid; refusing to create a duplicate.",
+            code=2,
+        )
+    request(
+        "PATCH",
+        f"/applications/{application_uuid}/envs/{existing_uuid}",
+        body={"key": key, "value": value},
+    )
 
 
 def configure_application_environment_variables(
@@ -510,22 +526,34 @@ def configure_application_environment_variables(
     }
     for key, value in desired.items():
         existing = existing_by_key.get(key)
-        body = {"key": key, "value": value}
-        if existing is None:
-            request("POST", f"/applications/{application_uuid}/envs", body=body)
+        if existing is not None:
+            patch_application_environment_variable(
+                application_uuid, key, value, existing
+            )
             continue
 
-        existing_uuid = environment_variable_uuid(existing)
-        if not existing_uuid:
+        body = {"key": key, "value": value}
+        response = request(
+            "POST",
+            f"/applications/{application_uuid}/envs",
+            body=body,
+            allowed_statuses=(201, 409),
+        )
+        if response.status != 409:
+            continue
+
+        reloaded_by_key = {
+            reloaded_key: item
+            for item in application_environment_variables(application_uuid)
+            if (reloaded_key := environment_variable_key(item)) is not None
+        }
+        reloaded = reloaded_by_key.get(key)
+        if reloaded is None:
             raise ProvisioningError(
-                f"Existing Coolify environment variable {key!r} did not include a uuid; refusing to create a duplicate.",
+                f"Coolify reported environment variable {key!r} already exists, but it was not returned by the envs endpoint.",
                 code=2,
             )
-        request(
-            "PATCH",
-            f"/applications/{application_uuid}/envs/{existing_uuid}",
-            body=body,
-        )
+        patch_application_environment_variable(application_uuid, key, value, reloaded)
     return environment_variable_summary(desired)
 
 
