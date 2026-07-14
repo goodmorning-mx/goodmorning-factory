@@ -75,6 +75,24 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 )
             if path == "/applications":
                 return pc.Response(200, [] if existing is None else [existing], {})
+            if path in ("/applications/app-1/envs", "/applications/existing-app/envs"):
+                if method == "GET":
+                    return pc.Response(200, [], {})
+                self.assertIn(
+                    kwargs["body"],
+                    [
+                        {
+                            "key": "VITE_API_URL",
+                            "value": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                        },
+                        {
+                            "key": "CORS_ORIGINS",
+                            "value": "https://dev.factory-smoke-test.goodmorning.mx",
+                        },
+                        {"key": "APP_ENV", "value": "dev"},
+                    ],
+                )
+                return pc.Response(201, kwargs["body"], {})
             if path == "/applications/private-github-app":
                 self.assertFalse(kwargs["body"]["instant_deploy"])
                 self.assertEqual(
@@ -82,11 +100,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                     [
                         {
                             "name": "frontend",
-                            "domain": "https://dev.factory-smoke-test.goodmorning.mx:8080",
+                            "domain": "https://dev.factory-smoke-test.goodmorning.mx",
                         },
                         {
                             "name": "backend",
-                            "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
+                            "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
                         },
                     ],
                 )
@@ -110,11 +128,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         "docker_compose_domains": [
                             {
                                 "name": "frontend",
-                                "domain": "https://dev.factory-smoke-test.goodmorning.mx:8080",
+                                "domain": "https://dev.factory-smoke-test.goodmorning.mx",
                             },
                             {
                                 "name": "backend",
-                                "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
+                                "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
                             },
                         ],
                         "force_domain_override": False,
@@ -141,11 +159,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             [
                 {
                     "name": "frontend",
-                    "domain": "https://dev.factory-smoke-test.goodmorning.mx:8080",
+                    "domain": "https://dev.factory-smoke-test.goodmorning.mx",
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
+                    "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
                 },
             ],
         )
@@ -161,20 +179,20 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
     def test_docker_compose_domains_are_derived_from_development_domain(self):
         self.assertEqual(
-            pc.docker_compose_domains("https://dev.example.goodmorning.mx:8080"),
+            pc.docker_compose_domains("https://dev.example.goodmorning.mx"),
             [
                 {
                     "name": "frontend",
-                    "domain": "https://dev.example.goodmorning.mx:8080",
+                    "domain": "https://dev.example.goodmorning.mx",
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.example.goodmorning.mx:8000",
+                    "domain": "https://api.dev.example.goodmorning.mx",
                 },
             ],
         )
         for compose_domain in pc.docker_compose_domains(
-            "https://dev.example.goodmorning.mx:8080"
+            "https://dev.example.goodmorning.mx"
         ):
             self.assertEqual(set(compose_domain), {"name", "domain"})
 
@@ -184,12 +202,81 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             [
                 {
                     "name": "frontend",
-                    "domain": "https://dev.example.goodmorning.mx:8080",
+                    "domain": "https://dev.example.goodmorning.mx",
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.example.goodmorning.mx:8000",
+                    "domain": "https://api.dev.example.goodmorning.mx",
                 },
+            ],
+        )
+
+    def test_desired_environment_variables_are_derived_from_product_slug(self):
+        self.assertEqual(
+            pc.desired_environment_variables(args(product="ledger")),
+            {
+                "VITE_API_URL": "https://api.dev.ledger.goodmorning.mx",
+                "CORS_ORIGINS": "https://dev.ledger.goodmorning.mx",
+                "APP_ENV": "dev",
+            },
+        )
+
+    def test_configure_application_environment_variables_updates_existing_and_creates_missing(
+        self,
+    ):
+        calls = []
+
+        def fake_request(method, path, **kwargs):
+            calls.append((method, path, kwargs.get("body")))
+            if path == "/applications/app-1/envs" and method == "GET":
+                return pc.Response(
+                    200,
+                    [{"uuid": "env-var-1", "key": "APP_ENV", "value": "old"}],
+                    {},
+                )
+            return pc.Response(200, kwargs.get("body"), {})
+
+        with mock.patch.object(pc, "request", side_effect=fake_request):
+            result = pc.configure_application_environment_variables(
+                "app-1", args(product="ledger")
+            )
+
+        self.assertEqual(
+            result,
+            [
+                {
+                    "key": "VITE_API_URL",
+                    "value": "https://api.dev.ledger.goodmorning.mx",
+                },
+                {"key": "CORS_ORIGINS", "value": "https://dev.ledger.goodmorning.mx"},
+                {"key": "APP_ENV", "value": "dev"},
+            ],
+        )
+        self.assertEqual(
+            calls,
+            [
+                ("GET", "/applications/app-1/envs", None),
+                (
+                    "POST",
+                    "/applications/app-1/envs",
+                    {
+                        "key": "VITE_API_URL",
+                        "value": "https://api.dev.ledger.goodmorning.mx",
+                    },
+                ),
+                (
+                    "POST",
+                    "/applications/app-1/envs",
+                    {
+                        "key": "CORS_ORIGINS",
+                        "value": "https://dev.ledger.goodmorning.mx",
+                    },
+                ),
+                (
+                    "PATCH",
+                    "/applications/app-1/envs/env-var-1",
+                    {"key": "APP_ENV", "value": "dev"},
+                ),
             ],
         )
 
@@ -198,21 +285,21 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             pc, "verify_url", side_effect=lambda url: {"url": url}
         ) as verify:
             result = pc.verify_development_health(
-                args(domain="https://dev.example.goodmorning.mx:8080")
+                args(domain="https://dev.example.goodmorning.mx")
             )
 
         self.assertEqual(
             result,
             [
-                {"url": "https://dev.example.goodmorning.mx:8080/"},
-                {"url": "https://api.dev.example.goodmorning.mx:8000/health"},
+                {"url": "https://dev.example.goodmorning.mx/"},
+                {"url": "https://api.dev.example.goodmorning.mx/health"},
             ],
         )
         self.assertEqual(
             [call.args[0] for call in verify.call_args_list],
             [
-                "https://dev.example.goodmorning.mx:8080/",
-                "https://api.dev.example.goodmorning.mx:8000/health",
+                "https://dev.example.goodmorning.mx/",
+                "https://api.dev.example.goodmorning.mx/health",
             ],
         )
 
@@ -432,6 +519,12 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(
                     201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
                 )
+            if path == "/applications/app-1/envs":
+                return pc.Response(
+                    200 if method == "GET" else 201,
+                    [] if method == "GET" else kwargs.get("body"),
+                    {},
+                )
             raise AssertionError((method, path))
 
         with mock.patch.object(
@@ -544,7 +637,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertNotIn("domains", posts[0][2])
         self.assertEqual(
             posts[0][2]["docker_compose_domains"][0]["domain"],
-            "https://dev.factory-smoke-test.goodmorning.mx:8080",
+            "https://dev.factory-smoke-test.goodmorning.mx",
         )
         self.assertFalse(posts[0][2]["force_domain_override"])
         self.assertEqual(posts[0][2]["base_directory"], "/")
@@ -741,6 +834,12 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             if path == "/applications/private-github-app":
                 return pc.Response(
                     201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
+                )
+            if path == "/applications/app-1/envs":
+                return pc.Response(
+                    200 if method == "GET" else 201,
+                    [] if method == "GET" else kwargs.get("body"),
+                    {},
                 )
             raise AssertionError((method, path))
 
