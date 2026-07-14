@@ -19,8 +19,8 @@ Factory smoke-test development provisioning should create a Docker Compose appli
 - Branch: `dev`.
 - Compose path: `/compose.yaml`.
 - Coolify environment name: `dev`.
-- Frontend domain: `https://dev.factory-smoke-test.goodmorning.mx` routed to service `frontend`, port `80`.
-- Backend domain: `https://api.dev.factory-smoke-test.goodmorning.mx` routed to service `backend`, port `8000`.
+- Frontend domain: `https://dev.factory-smoke-test.goodmorning.mx:80` routed to service `frontend`, port `80`.
+- Backend domain: `https://api.dev.factory-smoke-test.goodmorning.mx:8000` routed to service `backend`, port `8000`.
 - Initial application payload: `instant_deploy=false`.
 
 ## Review checklist

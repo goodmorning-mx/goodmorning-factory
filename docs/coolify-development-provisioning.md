@@ -38,7 +38,7 @@ Coolify development applications are created in the Coolify `dev` environment. T
 
 The GitHub App source lookup must find exactly one source with the requested name. It fails when the source is missing or duplicated, and it rejects `Public GitHub` for private GoodMorning repositories so private repositories use the installed GoodMorning Coolify GitHub App.
 
-If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. Existing applications with loaded `docker_compose_raw` are still reconciled for Docker Compose domains and Coolify application environment variables when `dry_run=false`. Missing, redacted, or empty `docker_compose_raw` is not treated as proof that Compose is unconfigured, because Coolify API tokens can lack `read:sensitive`; when the existing application still exposes the expected repository, branch, and Docker Compose path, the script continues with domain reconciliation without deploying. `status: recreate_required` is reserved for existing applications that lack both loaded Compose data and verifiable repository/branch/compose path configuration, and the CLI/workflow fail on that status. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a single create request to `POST /applications/private-github-app` with Docker Compose build-pack settings, the selected source's `github_app_uuid`, `docker_compose_domains`, and `instant_deploy=false`; it does not send a follow-up domain `PATCH` for newly-created applications. It configures `VITE_API_URL=https://api.dev.<product>.goodmorning.mx`, `CORS_ORIGINS=https://dev.<product>.goodmorning.mx`, and `APP_ENV=dev` as Coolify application environment variables. For Coolify v4.1.2, the provisioner first reads the current variables with `GET /applications/{application_uuid}/envs`; existing keys are updated through `PATCH /applications/{application_uuid}/envs` with the key/value payload returned from the current list, while missing keys are created with `POST /applications/{application_uuid}/envs`. It intentionally does not call `PATCH /applications/{application_uuid}/envs/{env_uuid}`, because the v4.1.2 OpenAPI only documents `DELETE` on that item route. The frontend domain is derived from `development_domain` as `https://dev...`; the backend domain is derived as `https://api.dev...`.
+If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. Existing applications with loaded `docker_compose_raw` are still reconciled for Docker Compose domains and Coolify application environment variables when `dry_run=false`. Missing, redacted, or empty `docker_compose_raw` is not treated as proof that Compose is unconfigured, because Coolify API tokens can lack `read:sensitive`; when the existing application still exposes the expected repository, branch, and Docker Compose path, the script continues with domain reconciliation without deploying. `status: recreate_required` is reserved for existing applications that lack both loaded Compose data and verifiable repository/branch/compose path configuration, and the CLI/workflow fail on that status. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a single create request to `POST /applications/private-github-app` with Docker Compose build-pack settings, the selected source's `github_app_uuid`, `docker_compose_domains`, and `instant_deploy=false`; it does not send a follow-up domain `PATCH` for newly-created applications. It configures `VITE_API_URL=https://api.dev.<product>.goodmorning.mx`, `CORS_ORIGINS=https://dev.<product>.goodmorning.mx`, and `APP_ENV=dev` as Coolify application environment variables. For Coolify v4.1.2, the provisioner first reads the current variables with `GET /applications/{application_uuid}/envs`; existing keys are updated through `PATCH /applications/{application_uuid}/envs` with the key/value payload returned from the current list, while missing keys are created with `POST /applications/{application_uuid}/envs`. It intentionally does not call `PATCH /applications/{application_uuid}/envs/{env_uuid}`, because the v4.1.2 OpenAPI only documents `DELETE` on that item route. The frontend domain is derived from `development_domain` as `https://dev...:80`; the backend domain is derived as `https://api.dev...:8000`, so Coolify routes each public hostname to the correct container port.
 
 After a successful `dry_run=false` provisioning or idempotent reuse of an existing application, the script configures or reconciles the required Coolify application settings and reports `deployment.queued=false`. It intentionally does not call `POST /api/v1/deploy` or run post-deployment smoke checks during this initial alignment step. Deployment and endpoint smoke checks must be triggered later after manual review.
 
@@ -59,7 +59,7 @@ After a successful `dry_run=false` provisioning or idempotent reuse of an existi
 - The application create payload sets `instant_deploy=false`; this workflow does not queue a deployment during initial provisioning.
 
 - During any `dry_run=false` provisioning or reconciliation operation, the script upserts Coolify application environment variables with safe dev values: `VITE_API_URL=https://api.dev.<product>.goodmorning.mx`, `CORS_ORIGINS=https://dev.<product>.goodmorning.mx`, and `APP_ENV=dev`. Existing variables are discovered with `GET /applications/{application_uuid}/envs` before each update path; the script updates only variables that Coolify currently returns and uses the Coolify v4.1.2 collection update endpoint `PATCH /applications/{application_uuid}/envs`, not the item delete-only route `PATCH /applications/{application_uuid}/envs/{env_uuid}`.
-- The script configures Docker Compose domains without forcing overrides or host port publishing: `frontend` uses the HTTPS development domain and `backend` uses the same host prefixed with `api.`. Public Coolify domains omit explicit ports. Each Docker Compose domain item contains only `name` and `domain`; no additional keys are sent in the Coolify payload.
+- The script configures Docker Compose domains without forcing overrides or host port publishing: `frontend` uses the HTTPS development domain with explicit container port `:80` and `backend` uses the same host prefixed with `api.` plus explicit container port `:8000`. Public Coolify domains include explicit container ports to prevent proxy port misdetection and Bad Gateway responses. Each Docker Compose domain item contains only `name` and `domain`; no additional keys are sent in the Coolify payload.
 - The script never prints `COOLIFY_API_TOKEN`.
 - Production provisioning and production deployments are out of scope and require the release PR flow plus Abel's explicit approval.
 
@@ -76,11 +76,11 @@ Successful dry-runs print JSON similar to:
   "docker_compose_domains": [
     {
       "name": "frontend",
-      "domain": "https://dev.factory-smoke-test.goodmorning.mx"
+      "domain": "https://dev.factory-smoke-test.goodmorning.mx:80"
     },
     {
       "name": "backend",
-      "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"
+      "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000"
     }
   ],
   "coolify_github_app_name": "goodmorning-mx-coolify",
@@ -96,11 +96,11 @@ Successful dry-runs print JSON similar to:
     "docker_compose_domains": [
       {
         "name": "frontend",
-        "domain": "https://dev.factory-smoke-test.goodmorning.mx"
+        "domain": "https://dev.factory-smoke-test.goodmorning.mx:80"
       },
       {
         "name": "backend",
-        "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"
+        "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000"
       }
     ],
     "force_domain_override": false
