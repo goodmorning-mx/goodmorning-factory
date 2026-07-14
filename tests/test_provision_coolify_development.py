@@ -83,10 +83,12 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         {
                             "name": "frontend",
                             "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+                            "port": 8080,
                         },
                         {
                             "name": "backend",
                             "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                            "port": 8000,
                         },
                     ],
                 )
@@ -111,10 +113,12 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                             {
                                 "name": "frontend",
                                 "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+                                "port": 8080,
                             },
                             {
                                 "name": "backend",
                                 "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                                "port": 8000,
                             },
                         ],
                         "force_domain_override": False,
@@ -142,10 +146,12 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 {
                     "name": "frontend",
                     "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+                    "port": 8080,
                 },
                 {
                     "name": "backend",
                     "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                    "port": 8000,
                 },
             ],
         )
@@ -163,8 +169,16 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(
             pc.docker_compose_domains("https://dev.example.goodmorning.mx"),
             [
-                {"name": "frontend", "domain": "https://dev.example.goodmorning.mx"},
-                {"name": "backend", "domain": "https://api.dev.example.goodmorning.mx"},
+                {
+                    "name": "frontend",
+                    "domain": "https://dev.example.goodmorning.mx",
+                    "port": 8080,
+                },
+                {
+                    "name": "backend",
+                    "domain": "https://api.dev.example.goodmorning.mx",
+                    "port": 8000,
+                },
             ],
         )
 
