@@ -758,6 +758,44 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
         self.assertEqual(calls, [("POST", "/deploy?uuid=app-1&force=true")])
 
+    def test_queue_deployment_extracts_uuid_from_coolify_4_1_2_deployments_list(self):
+        def fake_request(method, path, **kwargs):
+            self.assertEqual((method, path), ("POST", "/deploy?uuid=app-1&force=true"))
+            return pc.Response(
+                200,
+                {
+                    "message": "Deployment queued.",
+                    "deployments": [
+                        {
+                            "application_uuid": "app-1",
+                            "deployment_uuid": "deploy-real-1",
+                        }
+                    ],
+                },
+                {},
+            )
+
+        with mock.patch.object(pc, "request", side_effect=fake_request):
+            self.assertEqual(
+                pc.queue_deployment("app-1"),
+                {"uuid": "deploy-real-1", "force": True},
+            )
+
+    def test_extract_deployment_uuid_prefers_deployment_uuid_over_application_uuid(self):
+        self.assertEqual(
+            pc.extract_deployment_uuid(
+                {
+                    "deployments": [
+                        {
+                            "uuid": "application-uuid",
+                            "deployment_uuid": "deployment-uuid",
+                        }
+                    ]
+                }
+            ),
+            "deployment-uuid",
+        )
+
     def test_wait_for_deployment_polls_until_success(self):
         statuses = iter(["in_progress", "success"])
 
