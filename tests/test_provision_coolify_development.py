@@ -101,12 +101,10 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         {
                             "name": "frontend",
                             "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-                            "port": 80,
                         },
                         {
                             "name": "backend",
                             "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
-                            "port": 8000,
                         },
                     ],
                 )
@@ -131,12 +129,10 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                             {
                                 "name": "frontend",
                                 "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-                                "port": 80,
                             },
                             {
                                 "name": "backend",
                                 "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
-                                "port": 8000,
                             },
                         ],
                         "force_domain_override": False,
@@ -164,12 +160,10 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 {
                     "name": "frontend",
                     "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-                    "port": 80,
                 },
                 {
                     "name": "backend",
                     "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
-                    "port": 8000,
                 },
             ],
         )
@@ -190,19 +184,17 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 {
                     "name": "frontend",
                     "domain": "https://dev.example.goodmorning.mx",
-                    "port": 80,
                 },
                 {
                     "name": "backend",
                     "domain": "https://api.dev.example.goodmorning.mx",
-                    "port": 8000,
                 },
             ],
         )
         for compose_domain in pc.docker_compose_domains(
             "https://dev.example.goodmorning.mx"
         ):
-            self.assertEqual(set(compose_domain), {"name", "domain", "port"})
+            self.assertEqual(set(compose_domain), {"name", "domain"})
 
     def test_docker_compose_domains_normalize_unported_development_domain(self):
         self.assertEqual(
@@ -211,12 +203,10 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 {
                     "name": "frontend",
                     "domain": "https://dev.example.goodmorning.mx",
-                    "port": 80,
                 },
                 {
                     "name": "backend",
                     "domain": "https://api.dev.example.goodmorning.mx",
-                    "port": 8000,
                 },
             ],
         )
