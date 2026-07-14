@@ -435,10 +435,7 @@ def verify_url(url: str) -> dict[str, Any]:
 
 def verify_development_health(args: argparse.Namespace) -> list[dict[str, Any]]:
     host = (
-        args.domain.removeprefix("https://")
-        .removeprefix("http://")
-        .strip()
-        .rstrip("/")
+        args.domain.removeprefix("https://").removeprefix("http://").strip().rstrip("/")
     )
     urls = [f"https://{host}", f"https://api.{host}/health"]
     return [verify_url(url) for url in urls]
@@ -583,6 +580,44 @@ def existing_application(
     return None
 
 
+def scalar_values(data: Any) -> list[str]:
+    if isinstance(data, dict):
+        values: list[str] = []
+        for value in data.values():
+            values.extend(scalar_values(value))
+        return values
+    if isinstance(data, list):
+        values: list[str] = []
+        for item in data:
+            values.extend(scalar_values(item))
+        return values
+    if isinstance(data, (str, int, float, bool)):
+        return [str(data)]
+    return []
+
+
+def application_deployment_source_configured(
+    application: dict[str, Any], args: argparse.Namespace
+) -> bool:
+    data = (
+        application.get("data")
+        if isinstance(application.get("data"), dict)
+        else application
+    )
+    if not isinstance(data, dict):
+        return False
+    values = {value.strip().lower() for value in scalar_values(data) if value.strip()}
+    repository_values = {
+        args.repository.lower(),
+        f"https://github.com/{args.repository}".lower(),
+    }
+    return (
+        bool(values & repository_values)
+        and args.branch.lower() in values
+        and args.compose.lower() in values
+    )
+
+
 def github_app_uuid(github_app: dict[str, Any]) -> Any:
     uuid = field(github_app, "uuid")
     if not uuid:
@@ -703,7 +738,10 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         result["would_create_project"] = planned_project
     if existing:
         result["application"] = application_summary(existing)
-        if docker_compose_raw_loaded(existing):
+        source_configured = application_deployment_source_configured(existing, args)
+        if docker_compose_raw_loaded(existing) or source_configured:
+            if source_configured:
+                result["source_configured"] = True
             if args.dry_run:
                 result["would_patch"] = domain_patch_payload(args)
             else:
@@ -717,8 +755,9 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
             result["status"] = "recreate_required"
             result["recreate_required"] = True
             result["reason"] = (
-                "Existing Coolify application has empty docker_compose_raw; "
-                "manual recreation is required before domains can be reconciled."
+                "Existing Coolify application is missing verified repository, branch, "
+                "compose path, and loaded docker_compose_raw data; manual review is "
+                "required before domains can be reconciled."
             )
         return result
     if args.dry_run:
@@ -755,7 +794,10 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     args.dry_run = args.dry_run == "true"
     try:
-        print(json.dumps(provision(args), sort_keys=True))
+        result = provision(args)
+        print(json.dumps(result, sort_keys=True))
+        if result.get("status") == "recreate_required":
+            return 2
         return 0
     except ProvisioningError as exc:
         print(

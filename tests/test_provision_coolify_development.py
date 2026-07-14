@@ -406,7 +406,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(result["status"], "created")
         self.assertTrue(result["domain_reconciled"])
         self.assertNotIn(("GET", "/applications/app-1", None), calls)
-        self.assertNotIn(("PATCH", "/applications/app-1"), [(m, p) for m, p, _ in calls])
+        self.assertNotIn(
+            ("PATCH", "/applications/app-1"), [(m, p) for m, p, _ in calls]
+        )
         self.assertEqual(
             result["project"],
             {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "created": True},
@@ -501,9 +503,13 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(posts[0][2]["docker_compose_location"], "/compose.yaml")
         self.assertEqual(posts[0][2]["environment_name"], "dev")
         self.assertNotIn(("GET", "/applications/app-1"), [(m, p) for m, p, _ in calls])
-        self.assertNotIn(("PATCH", "/applications/app-1"), [(m, p) for m, p, _ in calls])
+        self.assertNotIn(
+            ("PATCH", "/applications/app-1"), [(m, p) for m, p, _ in calls]
+        )
 
-    def test_existing_application_with_empty_compose_requires_manual_recreation(self):
+    def test_existing_application_without_compose_raw_or_source_config_requires_manual_recreation(
+        self,
+    ):
         calls = []
         existing = {
             "uuid": "existing-app",
@@ -518,13 +524,120 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "recreate_required")
         self.assertTrue(result["recreate_required"])
-        self.assertIn("docker_compose_raw", result["reason"])
+        self.assertIn("repository, branch, compose path", result["reason"])
         self.assertNotIn(
             ("POST", "/applications/private-github-app"), [(m, p) for m, p, _ in calls]
         )
         self.assertNotIn(
             ("PATCH", "/applications/existing-app"), [(m, p) for m, p, _ in calls]
         )
+
+    def test_existing_application_with_empty_compose_raw_deploys_when_source_is_configured(
+        self,
+    ):
+        calls = []
+        existing = {
+            "uuid": "existing-app",
+            "name": "factory-smoke-test",
+            "domains": pc.DEFAULT_DOMAIN,
+            "git_repository": pc.DEFAULT_REPOSITORY,
+            "git_branch": pc.DEFAULT_BRANCH,
+            "docker_compose_location": pc.DEFAULT_COMPOSE,
+            "docker_compose_raw": "",
+        }
+        with mock.patch.object(
+            pc, "request", side_effect=self.api_side_effect(calls, existing=existing)
+        ), mock.patch.object(
+            pc,
+            "queue_deployment",
+            return_value={"uuid": "deploy-existing", "force": True},
+        ) as queue, mock.patch.object(
+            pc,
+            "wait_for_deployment",
+            return_value={"uuid": "deploy-existing", "status": "success"},
+        ), mock.patch.object(
+            pc, "verify_development_health", return_value=[]
+        ):
+            result = pc.provision(args(dry_run=False))
+
+        self.assertEqual(result["status"], "exists")
+        self.assertTrue(result["source_configured"])
+        self.assertTrue(result["domain_reconciled"])
+        self.assertIn(
+            ("PATCH", "/applications/existing-app"), [(m, p) for m, p, _ in calls]
+        )
+        queue.assert_called_once_with("existing-app")
+
+    def test_existing_application_with_redacted_compose_raw_deploys_when_source_is_configured(
+        self,
+    ):
+        calls = []
+        existing = {
+            "uuid": "existing-app",
+            "name": "factory-smoke-test",
+            "domains": pc.DEFAULT_DOMAIN,
+            "git_repository": f"https://github.com/{pc.DEFAULT_REPOSITORY}",
+            "git_branch": pc.DEFAULT_BRANCH,
+            "docker_compose_location": pc.DEFAULT_COMPOSE,
+            "docker_compose_raw": "[REDACTED]",
+        }
+        with mock.patch.object(
+            pc, "request", side_effect=self.api_side_effect(calls, existing=existing)
+        ), mock.patch.object(
+            pc,
+            "queue_deployment",
+            return_value={"uuid": "deploy-existing", "force": True},
+        ), mock.patch.object(
+            pc,
+            "wait_for_deployment",
+            return_value={"uuid": "deploy-existing", "status": "success"},
+        ), mock.patch.object(
+            pc, "verify_development_health", return_value=[]
+        ):
+            result = pc.provision(args(dry_run=False))
+
+        self.assertEqual(result["status"], "exists")
+        self.assertTrue(result["source_configured"])
+        self.assertTrue(result["domain_reconciled"])
+
+    def test_existing_application_with_absent_compose_raw_deploys_when_source_is_configured(
+        self,
+    ):
+        calls = []
+        existing = {
+            "uuid": "existing-app",
+            "name": "factory-smoke-test",
+            "domains": pc.DEFAULT_DOMAIN,
+            "git_repository": pc.DEFAULT_REPOSITORY,
+            "git_branch": pc.DEFAULT_BRANCH,
+            "docker_compose_location": pc.DEFAULT_COMPOSE,
+        }
+        with mock.patch.object(
+            pc, "request", side_effect=self.api_side_effect(calls, existing=existing)
+        ), mock.patch.object(
+            pc,
+            "queue_deployment",
+            return_value={"uuid": "deploy-existing", "force": True},
+        ), mock.patch.object(
+            pc,
+            "wait_for_deployment",
+            return_value={"uuid": "deploy-existing", "status": "success"},
+        ), mock.patch.object(
+            pc, "verify_development_health", return_value=[]
+        ):
+            result = pc.provision(args(dry_run=False))
+
+        self.assertEqual(result["status"], "exists")
+        self.assertTrue(result["source_configured"])
+        self.assertTrue(result["domain_reconciled"])
+
+    def test_main_fails_when_provision_returns_recreate_required(self):
+        out = io.StringIO()
+        with mock.patch.object(
+            pc, "provision", return_value={"status": "recreate_required"}
+        ), redirect_stdout(out):
+            self.assertEqual(pc.main([]), 2)
+        self.assertEqual(json.loads(out.getvalue()), {"status": "recreate_required"})
 
     def test_real_run_gets_project_details_before_environment_api_when_dev_is_missing(
         self,
@@ -599,7 +712,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             pc,
             "wait_for_deployment",
             return_value={"uuid": "deploy-1", "status": "success"},
-        ), mock.patch.object(pc, "verify_development_health", return_value=[]):
+        ), mock.patch.object(
+            pc, "verify_development_health", return_value=[]
+        ):
             result = pc.provision(args(dry_run=False))
 
         self.assertEqual(result["status"], "created")
@@ -781,7 +896,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 {"uuid": "deploy-real-1", "force": True},
             )
 
-    def test_extract_deployment_uuid_prefers_deployment_uuid_over_application_uuid(self):
+    def test_extract_deployment_uuid_prefers_deployment_uuid_over_application_uuid(
+        self,
+    ):
         self.assertEqual(
             pc.extract_deployment_uuid(
                 {
@@ -851,6 +968,11 @@ class ProvisionCoolifyWorkflowTests(unittest.TestCase):
         self.assertIn("DEVELOPMENT_DOMAIN: ${{ inputs.domain }}", text)
         self.assertIn('[[ "${DEVELOPMENT_DOMAIN}" != dev.* ]]', text)
         self.assertNotIn('"${{ inputs.domain }}" != dev.*', text)
+
+    def test_workflow_fails_on_recreate_required_status(self):
+        text = self.workflow_text()
+        self.assertIn('payload.get("status") == "recreate_required"', text)
+        self.assertIn("Coolify provisioning returned status=recreate_required", text)
 
     def test_workflow_does_not_require_ssh_configuration(self):
         text = self.workflow_text()

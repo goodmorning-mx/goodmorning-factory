@@ -84,6 +84,7 @@ jobs:
           set -euo pipefail
           echo "::add-mask::${COOLIFY_API_TOKEN}"
 
+          output_file="$(mktemp)"
           python scripts/provision_coolify_development.py \
             --dry-run "${{ inputs.dry_run }}" \
             --product "${{ inputs.product }}" \
@@ -91,4 +92,25 @@ jobs:
             --branch "${{ inputs.branch }}" \
             --compose "${{ inputs.compose }}" \
             --domain "${{ inputs.domain }}" \
-            --coolify-github-app-name "${{ inputs.coolify_github_app_name }}"
+            --coolify-github-app-name "${{ inputs.coolify_github_app_name }}" | tee "${output_file}"
+
+          if python - "${output_file}" <<'PY'
+          import json
+          import sys
+
+          with open(sys.argv[1], encoding="utf-8") as handle:
+              lines = [line.strip() for line in handle if line.strip()]
+
+          for line in lines:
+              try:
+                  payload = json.loads(line)
+              except json.JSONDecodeError:
+                  continue
+              if isinstance(payload, dict) and payload.get("status") == "recreate_required":
+                  sys.exit(0)
+          sys.exit(1)
+          PY
+          then
+            echo "Coolify provisioning returned status=recreate_required; failing workflow."
+            exit 1
+          fi
