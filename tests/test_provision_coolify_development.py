@@ -343,6 +343,92 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             ],
         )
 
+    def test_configure_application_environment_variables_handles_post_409_by_reloading_and_patching(
+        self,
+    ):
+        calls = []
+
+        def fake_request(method, path, **kwargs):
+            calls.append(
+                (method, path, kwargs.get("body"), kwargs.get("allowed_statuses"))
+            )
+            if path == "/applications/app-1/envs" and method == "GET":
+                if len([call for call in calls if call[:2] == ("GET", path)]) == 1:
+                    return pc.Response(200, [], {})
+                return pc.Response(
+                    200,
+                    [
+                        {
+                            "uuid": "vite-created-by-concurrent-run",
+                            "key": "VITE_API_URL",
+                            "value": "old",
+                        }
+                    ],
+                    {},
+                )
+            if path == "/applications/app-1/envs" and method == "POST":
+                if kwargs["body"]["key"] == "VITE_API_URL":
+                    return pc.Response(
+                        409,
+                        {
+                            "message": "Environment variable already exists. Use PATCH request to update it."
+                        },
+                        {},
+                    )
+                return pc.Response(201, kwargs.get("body"), {})
+            if (
+                path == "/applications/app-1/envs/vite-created-by-concurrent-run"
+                and method == "PATCH"
+            ):
+                return pc.Response(200, kwargs.get("body"), {})
+            raise AssertionError((method, path))
+
+        with mock.patch.object(pc, "request", side_effect=fake_request):
+            pc.configure_application_environment_variables(
+                "app-1", args(product="ledger")
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                ("GET", "/applications/app-1/envs", None, None),
+                (
+                    "POST",
+                    "/applications/app-1/envs",
+                    {
+                        "key": "VITE_API_URL",
+                        "value": "https://api.dev.ledger.goodmorning.mx",
+                    },
+                    (201, 409),
+                ),
+                ("GET", "/applications/app-1/envs", None, None),
+                (
+                    "PATCH",
+                    "/applications/app-1/envs/vite-created-by-concurrent-run",
+                    {
+                        "key": "VITE_API_URL",
+                        "value": "https://api.dev.ledger.goodmorning.mx",
+                    },
+                    None,
+                ),
+                (
+                    "POST",
+                    "/applications/app-1/envs",
+                    {
+                        "key": "CORS_ORIGINS",
+                        "value": "https://dev.ledger.goodmorning.mx",
+                    },
+                    (201, 409),
+                ),
+                (
+                    "POST",
+                    "/applications/app-1/envs",
+                    {"key": "APP_ENV", "value": "dev"},
+                    (201, 409),
+                ),
+            ],
+        )
+
     def test_configure_application_environment_variables_refuses_duplicate_without_uuid(
         self,
     ):
