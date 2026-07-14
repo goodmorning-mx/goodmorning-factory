@@ -274,13 +274,13 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 ),
                 (
                     "PATCH",
-                    "/applications/app-1/envs/env-var-1",
+                    "/applications/app-1/envs",
                     {"key": "APP_ENV", "value": "dev"},
                 ),
             ],
         )
 
-    def test_configure_application_environment_variables_patches_existing_name_with_real_uuid(
+    def test_configure_application_environment_variables_patches_existing_name_after_get(
         self,
     ):
         calls = []
@@ -321,7 +321,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 ("GET", "/applications/app-1/envs", None),
                 (
                     "PATCH",
-                    "/applications/app-1/envs/real-vite-uuid",
+                    "/applications/app-1/envs",
                     {
                         "key": "VITE_API_URL",
                         "value": "https://api.dev.ledger.goodmorning.mx",
@@ -329,7 +329,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 ),
                 (
                     "PATCH",
-                    "/applications/app-1/envs/real-cors-uuid",
+                    "/applications/app-1/envs",
                     {
                         "key": "CORS_ORIGINS",
                         "value": "https://dev.ledger.goodmorning.mx",
@@ -377,7 +377,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                     )
                 return pc.Response(201, kwargs.get("body"), {})
             if (
-                path == "/applications/app-1/envs/vite-created-by-concurrent-run"
+                path == "/applications/app-1/envs"
                 and method == "PATCH"
             ):
                 return pc.Response(200, kwargs.get("body"), {})
@@ -404,7 +404,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 ("GET", "/applications/app-1/envs", None, None),
                 (
                     "PATCH",
-                    "/applications/app-1/envs/vite-created-by-concurrent-run",
+                    "/applications/app-1/envs",
                     {
                         "key": "VITE_API_URL",
                         "value": "https://api.dev.ledger.goodmorning.mx",
@@ -429,7 +429,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             ],
         )
 
-    def test_configure_application_environment_variables_refuses_duplicate_without_uuid(
+    def test_configure_application_environment_variables_refuses_duplicate_without_identifier(
         self,
     ):
         def fake_request(method, path, **kwargs):
@@ -441,7 +441,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
         with mock.patch.object(pc, "request", side_effect=fake_request):
             with self.assertRaisesRegex(
-                pc.ProvisioningError, "refusing to create a duplicate"
+                pc.ProvisioningError, "refusing to update"
             ):
                 pc.configure_application_environment_variables(
                     "app-1", args(product="ledger")
