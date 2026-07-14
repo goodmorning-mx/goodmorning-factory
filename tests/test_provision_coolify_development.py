@@ -43,6 +43,8 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                     },
                     {},
                 )
+            if path == "/projects/project-1/environments":
+                return pc.Response(200, [{"name": "dev", "uuid": "env-dev"}], {})
             if path == "/projects/new-project":
                 return pc.Response(
                     200,
@@ -79,6 +81,15 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                     201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
                 )
             if path == "/applications/app-1" or path == "/applications/existing-app":
+                if method == "GET":
+                    return pc.Response(
+                        200,
+                        {
+                            "uuid": path.rsplit("/", 1)[-1],
+                            "docker_compose_raw": "services: {}",
+                        },
+                        {},
+                    )
                 self.assertEqual(method, "PATCH")
                 self.assertEqual(
                     kwargs["body"],
@@ -363,6 +374,10 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                     201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
                 )
             if path == "/applications/app-1":
+                if method == "GET":
+                    return pc.Response(
+                        200, {"uuid": "app-1", "docker_compose_raw": "services: {}"}, {}
+                    )
                 self.assertEqual(method, "PATCH")
                 return pc.Response(200, {"uuid": "app-1"}, {})
             raise AssertionError((method, path))
@@ -389,7 +404,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             calls.index(("POST", "/projects", {"name": pc.DEFAULT_PRODUCT})), 4
         )
         self.assertIn(("GET", "/projects/new-project", None), calls)
-        ensure.assert_not_called()
+        ensure.assert_called_once_with("new-project")
         self.assertNotIn(
             ("POST", "/projects/new-project/environment", {"name": "development"}),
             calls,
@@ -404,11 +419,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         }
         with mock.patch.object(
             pc, "request", side_effect=self.api_side_effect(calls, existing=existing)
-        ), mock.patch.object(
-            pc,
-            "ensure_dev_environment",
-            return_value={"uuid": "env-dev", "name": "dev"},
-        ) as ensure:
+        ):
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "exists")
         self.assertEqual(result["application"]["uuid"], "existing-app")
@@ -419,20 +430,12 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertNotIn(
             ("POST", "/applications/private-github-app"), [(m, p) for m, p, _ in calls]
         )
-        ensure.assert_not_called()
 
     def test_real_creation_posts_once_when_dry_run_false(self):
         calls = []
-        with mock.patch.object(
-            pc, "request", side_effect=self.api_side_effect(calls)
-        ), mock.patch.object(
-            pc,
-            "ensure_dev_environment",
-            return_value={"uuid": "env-dev", "name": "dev"},
-        ) as ensure:
+        with mock.patch.object(pc, "request", side_effect=self.api_side_effect(calls)):
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "created")
-        ensure.assert_not_called()
         posts = [
             call
             for call in calls
@@ -458,7 +461,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             "https://api.dev.factory-smoke-test.goodmorning.mx",
         )
 
-    def test_real_run_gets_project_details_before_ssh_when_dev_is_missing(self):
+    def test_real_run_gets_project_details_before_environment_api_when_dev_is_missing(
+        self,
+    ):
         calls = []
 
         def fake_request(method, path, **kwargs):
@@ -512,6 +517,10 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                     201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
                 )
             if path == "/applications/app-1":
+                if method == "GET":
+                    return pc.Response(
+                        200, {"uuid": "app-1", "docker_compose_raw": "services: {}"}, {}
+                    )
                 return pc.Response(200, {"uuid": "app-1"}, {})
             raise AssertionError((method, path))
 
@@ -542,7 +551,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             ],
         )
 
-    def test_dry_run_does_not_execute_ssh_helper(self):
+    def test_dry_run_does_not_create_environment(self):
         with mock.patch.object(
             pc, "request", side_effect=self.api_side_effect([])
         ), mock.patch.object(pc, "ensure_dev_environment") as ensure:
@@ -550,124 +559,95 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(result["status"], "dry_run")
         ensure.assert_not_called()
 
-    def test_ensure_dev_environment_uses_fixed_ssh_command_and_validates_json(self):
-        completed = mock.Mock(
-            returncode=0,
-            stdout=json.dumps(
-                {
-                    "project_uuid": "11111111-1111-4111-8111-111111111111",
-                    "environment_uuid": "abcdefghijklmnopqrstuvwx",
-                    "name": "dev",
-                    "created": False,
-                }
-            ),
-        )
-        with mock.patch.dict(
-            os.environ,
-            {
-                "COOLIFY_SSH_HOST": "coolify.example",
-                "COOLIFY_SSH_USER": "provisioner",
-                "COOLIFY_SSH_KEY_PATH": "/tmp/key",
-                "COOLIFY_SSH_KNOWN_HOSTS_PATH": "/tmp/known_hosts",
-            },
-        ), mock.patch.object(pc.subprocess, "run", return_value=completed) as run:
-            result = pc.ensure_dev_environment("11111111-1111-4111-8111-111111111111")
+    def test_ensure_dev_environment_creates_dev_with_api_when_missing(self):
+        calls = []
+
+        def fake_request(method, path, **kwargs):
+            calls.append(
+                (method, path, kwargs.get("body"), kwargs.get("allowed_statuses"))
+            )
+            if path == "/projects/project-1/environments" and method == "GET":
+                return pc.Response(200, [], {})
+            if path == "/projects/project-1/environments" and method == "POST":
+                return pc.Response(201, {"uuid": "env-dev"}, {})
+            raise AssertionError((method, path))
+
+        with mock.patch.object(pc, "request", side_effect=fake_request):
+            result = pc.ensure_dev_environment("project-1")
+
+        self.assertEqual(result, {"uuid": "env-dev", "name": "dev", "created": True})
         self.assertEqual(
-            result,
-            {
-                "uuid": "abcdefghijklmnopqrstuvwx",
-                "name": "dev",
-                "created": False,
-            },
-        )
-        run.assert_called_once_with(
+            calls,
             [
-                "ssh",
-                "-i",
-                "/tmp/key",
-                "-o",
-                "UserKnownHostsFile=/tmp/known_hosts",
-                "-o",
-                "StrictHostKeyChecking=yes",
-                "-o",
-                "BatchMode=yes",
-                "provisioner@coolify.example",
-                "ensure-dev-env",
-                "11111111-1111-4111-8111-111111111111",
+                ("GET", "/projects/project-1/environments", None, None),
+                (
+                    "POST",
+                    "/projects/project-1/environments",
+                    {"name": "dev"},
+                    (201, 409, 422),
+                ),
             ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=pc.TIMEOUT_SECONDS,
         )
 
-    def test_ensure_dev_env_accepts_successful_flat_helper_response_without_status(
-        self,
-    ):
-        project_uuid = "11111111-1111-4111-8111-111111111111"
-        environment_uuid = "abcdefghijklmnopqrstuvwx"
+    def test_ensure_dev_environment_handles_409_by_reloading_environments(self):
+        calls = []
 
-        result = pc.validate_ensure_dev_env_response(
-            {
-                "project_uuid": project_uuid,
-                "environment_uuid": environment_uuid,
-                "name": "dev",
-                "created": True,
-            },
-            project_uuid,
-        )
+        def fake_request(method, path, **kwargs):
+            calls.append((method, path, kwargs.get("body")))
+            if path == "/projects/project-1/environments" and method == "GET":
+                if len([c for c in calls if c[:2] == ("GET", path)]) == 1:
+                    return pc.Response(200, [], {})
+                return pc.Response(200, [{"uuid": "env-dev", "name": "dev"}], {})
+            if path == "/projects/project-1/environments" and method == "POST":
+                return pc.Response(409, {"message": "Environment already exists."}, {})
+            raise AssertionError((method, path))
+
+        with mock.patch.object(pc, "request", side_effect=fake_request):
+            result = pc.ensure_dev_environment("project-1")
+
+        self.assertEqual(result, {"uuid": "env-dev", "name": "dev", "created": False})
+
+    def test_ensure_dev_environment_preserves_422_details(self):
+        def fake_request(method, path, **kwargs):
+            if path == "/projects/project-1/environments" and method == "GET":
+                return pc.Response(200, [], {})
+            if path == "/projects/project-1/environments" and method == "POST":
+                return pc.Response(
+                    422,
+                    {
+                        "message": "Validation failed.",
+                        "errors": {"name": ["The name field is required."]},
+                    },
+                    {},
+                )
+            raise AssertionError((method, path))
+
+        with mock.patch.object(pc, "request", side_effect=fake_request):
+            with self.assertRaisesRegex(
+                pc.ProvisioningError, "The name field is required"
+            ):
+                pc.ensure_dev_environment("project-1")
+
+    def test_wait_for_docker_compose_raw_polls_until_loaded(self):
+        calls = []
+
+        def fake_request(method, path, **kwargs):
+            calls.append((method, path))
+            if len(calls) == 1:
+                return pc.Response(200, {"uuid": "app-1", "docker_compose_raw": ""}, {})
+            return pc.Response(
+                200, {"uuid": "app-1", "docker_compose_raw": "services: {}"}, {}
+            )
+
+        with mock.patch.object(
+            pc, "request", side_effect=fake_request
+        ), mock.patch.object(pc.time, "sleep") as sleep:
+            pc.wait_for_docker_compose_raw("app-1")
 
         self.assertEqual(
-            result, {"uuid": environment_uuid, "name": "dev", "created": True}
+            calls, [("GET", "/applications/app-1"), ("GET", "/applications/app-1")]
         )
-
-    def test_ensure_dev_env_rejects_hyphenated_environment_uuid(self):
-        with self.assertRaisesRegex(pc.ProvisioningError, "environment identifier"):
-            pc.validate_ensure_dev_env_response(
-                {
-                    "project_uuid": "11111111-1111-4111-8111-111111111111",
-                    "environment_uuid": "22222222-2222-4222-8222-222222222222",
-                    "name": "dev",
-                    "created": False,
-                },
-                "11111111-1111-4111-8111-111111111111",
-            )
-
-    def test_ensure_dev_env_rejects_mismatched_project_uuid(self):
-        with self.assertRaisesRegex(pc.ProvisioningError, "project identifier"):
-            pc.validate_ensure_dev_env_response(
-                {
-                    "project_uuid": "33333333-3333-4333-8333-333333333333",
-                    "environment_uuid": "abcdefghijklmnopqrstuvwx",
-                    "name": "dev",
-                    "created": False,
-                },
-                "11111111-1111-4111-8111-111111111111",
-            )
-
-    def test_ensure_dev_env_rejects_non_boolean_created_flag(self):
-        with self.assertRaisesRegex(pc.ProvisioningError, "boolean created"):
-            pc.validate_ensure_dev_env_response(
-                {
-                    "project_uuid": "11111111-1111-4111-8111-111111111111",
-                    "environment_uuid": "abcdefghijklmnopqrstuvwx",
-                    "name": "dev",
-                    "created": "false",
-                },
-                "11111111-1111-4111-8111-111111111111",
-            )
-
-    def test_ensure_dev_environment_rejects_non_dev_json(self):
-        with self.assertRaisesRegex(pc.ProvisioningError, "dev environment"):
-            pc.validate_ensure_dev_env_response(
-                {
-                    "project_uuid": "11111111-1111-4111-8111-111111111111",
-                    "environment_uuid": "abcdefghijklmnopqrstuvwx",
-                    "name": "production",
-                    "created": False,
-                },
-                "11111111-1111-4111-8111-111111111111",
-            )
+        sleep.assert_called_once_with(pc.COMPOSE_READY_POLL_SECONDS)
 
     def test_refuses_non_dev_branch_before_api_calls(self):
         with mock.patch.object(pc, "request") as request:
@@ -721,20 +701,11 @@ class ProvisionCoolifyWorkflowTests(unittest.TestCase):
         self.assertIn('[[ "${DEVELOPMENT_DOMAIN}" != dev.* ]]', text)
         self.assertNotIn('"${{ inputs.domain }}" != dev.*', text)
 
-    def test_workflow_maps_goodmorning_factory_ssh_configuration(self):
+    def test_workflow_does_not_require_ssh_configuration(self):
         text = self.workflow_text()
-        self.assertIn("COOLIFY_SSH_HOST: ${{ vars.COOLIFY_SSH_HOST }}", text)
-        self.assertIn("COOLIFY_SSH_USER: ${{ vars.COOLIFY_SSH_USER }}", text)
-        self.assertIn(
-            "COOLIFY_SSH_PRIVATE_KEY: ${{ secrets.GOODMORNING_FACTORY_COOLIFY_SSH_KEY }}",
-            text,
-        )
-        self.assertIn(
-            "COOLIFY_SSH_KNOWN_HOSTS: ${{ secrets.GOODMORNING_FACTORY_COOLIFY_KNOWN_HOSTS }}",
-            text,
-        )
-        self.assertNotIn("secrets.COOLIFY_SSH_PRIVATE_KEY", text)
-        self.assertNotIn("secrets.COOLIFY_SSH_KNOWN_HOSTS", text)
+        self.assertNotIn("COOLIFY_SSH", text)
+        self.assertNotIn("GOODMORNING_FACTORY_COOLIFY_SSH_KEY", text)
+        self.assertNotIn("GOODMORNING_FACTORY_COOLIFY_KNOWN_HOSTS", text)
 
 
 if __name__ == "__main__":
