@@ -101,7 +101,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         {
                             "name": "frontend",
                             "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-                            "port": 8080,
+                            "port": 80,
                         },
                         {
                             "name": "backend",
@@ -131,7 +131,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                             {
                                 "name": "frontend",
                                 "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-                                "port": 8080,
+                                "port": 80,
                             },
                             {
                                 "name": "backend",
@@ -164,7 +164,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 {
                     "name": "frontend",
                     "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-                    "port": 8080,
+                    "port": 80,
                 },
                 {
                     "name": "backend",
@@ -190,7 +190,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 {
                     "name": "frontend",
                     "domain": "https://dev.example.goodmorning.mx",
-                    "port": 8080,
+                    "port": 80,
                 },
                 {
                     "name": "backend",
@@ -211,7 +211,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 {
                     "name": "frontend",
                     "domain": "https://dev.example.goodmorning.mx",
-                    "port": 8080,
+                    "port": 80,
                 },
                 {
                     "name": "backend",

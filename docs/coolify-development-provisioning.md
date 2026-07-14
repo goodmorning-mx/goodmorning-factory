@@ -77,7 +77,7 @@ Successful dry-runs print JSON similar to:
     {
       "name": "frontend",
       "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-      "port": 8080
+      "port": 80
     },
     {
       "name": "backend",
@@ -99,7 +99,7 @@ Successful dry-runs print JSON similar to:
       {
         "name": "frontend",
         "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-        "port": 8080
+        "port": 80
       },
       {
         "name": "backend",

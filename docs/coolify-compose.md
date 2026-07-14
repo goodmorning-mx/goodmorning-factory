@@ -4,10 +4,11 @@
 
 ## Deployment default
 
+- `frontend` uses the default `nginx:1.27-alpine` image in this factory baseline; there is no repository `Dockerfile` or `nginx.conf` override, so the real nginx listen port is container port `80`.
 - `frontend` reaches the API through `http://backend:8000` on the internal `app` network.
 - `backend` reaches PostgreSQL through `postgres:5432` on the internal `data` network.
 - `postgres` is attached only to the internal `data` network.
-- `frontend` uses `expose: ["8080"]` and `backend` uses `expose: ["8000"]`; these entries document container reachability without publishing host ports.
+- `frontend` uses `expose: ["80"]` and `backend` uses `expose: ["8000"]`; these entries document container reachability without publishing host ports.
 - Host `ports` entries are intentionally forbidden in `compose.yaml`.
 
 ## Local development
@@ -20,7 +21,7 @@ docker compose -f compose.yaml -f compose.local.yaml up
 
 The local override publishes:
 
-- `frontend` on `localhost:8080`, mapped to container port `8080`
+- `frontend` on `localhost:8080`, mapped to container port `80`
 - `backend` on `localhost:8000`
 
 Do not use `compose.local.yaml` in Coolify. If a product needs different local ports, change only the local override and keep `compose.yaml` private-by-default.
