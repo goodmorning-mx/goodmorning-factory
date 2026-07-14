@@ -351,6 +351,15 @@ class ProvisionCoolifyWorkflowTests(unittest.TestCase):
         self.assertIn('[[ "${DEVELOPMENT_DOMAIN}" != dev.* ]]', text)
         self.assertNotIn('"${{ inputs.domain }}" != dev.*', text)
 
+    def test_workflow_maps_goodmorning_factory_ssh_configuration(self):
+        text = self.workflow_text()
+        self.assertIn("COOLIFY_SSH_HOST: ${{ vars.COOLIFY_SSH_HOST }}", text)
+        self.assertIn("COOLIFY_SSH_USER: ${{ vars.COOLIFY_SSH_USER }}", text)
+        self.assertIn("COOLIFY_SSH_PRIVATE_KEY: ${{ secrets.GOODMORNING_FACTORY_COOLIFY_SSH_KEY }}", text)
+        self.assertIn("COOLIFY_SSH_KNOWN_HOSTS: ${{ secrets.GOODMORNING_FACTORY_COOLIFY_KNOWN_HOSTS }}", text)
+        self.assertNotIn("secrets.COOLIFY_SSH_PRIVATE_KEY", text)
+        self.assertNotIn("secrets.COOLIFY_SSH_KNOWN_HOSTS", text)
+
 
 if __name__ == "__main__":
     unittest.main()
