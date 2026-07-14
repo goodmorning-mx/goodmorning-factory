@@ -32,9 +32,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             if path == "/projects":
                 return pc.Response(200, [{"uuid": "project-1", "name": "factory-smoke-test"}], {})
             if path == "/projects/project-1":
-                return pc.Response(200, {"uuid": "project-1", "name": "factory-smoke-test", "environments": [{"name": "production"}]}, {})
+                return pc.Response(200, {"uuid": "project-1", "name": "factory-smoke-test", "environments": [{"name": "dev", "uuid": "env-dev"}]}, {})
             if path == "/projects/new-project":
-                return pc.Response(200, {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "environments": [{"name": "production"}]}, {})
+                return pc.Response(200, {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "environments": [{"name": "dev", "uuid": "env-dev"}]}, {})
             if path == "/servers":
                 return pc.Response(200, [{"uuid": "server-1", "name": "development"}], {})
             if path == "/github-apps":
@@ -99,7 +99,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             if path == "/projects":
                 return pc.Response(200, {"data": [{"uuid": "project-1", "name": "factory-smoke-test"}]}, {})
             if path == "/projects/project-1":
-                return pc.Response(200, {"data": {"uuid": "project-1", "name": "factory-smoke-test", "environments": [{"name": "production"}]}}, {})
+                return pc.Response(200, {"data": {"uuid": "project-1", "name": "factory-smoke-test", "environments": [{"name": "dev", "uuid": "env-dev"}]}}, {})
             if path == "/servers":
                 return pc.Response(200, {"servers": [{"uuid": "server-1", "name": "development"}]}, {})
             if path == "/github-apps":
@@ -177,7 +177,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             if path == "/projects":
                 return pc.Response(200, [], {})
             if path == "/projects/new-project":
-                return pc.Response(200, {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "environments": [{"name": "production"}]}, {})
+                return pc.Response(200, {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "environments": [{"name": "dev", "uuid": "env-dev"}]}, {})
             if path == "/servers":
                 return pc.Response(200, [{"uuid": "server-1", "name": "development"}], {})
             if path == "/github-apps":
@@ -191,7 +191,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "dry_run")
         self.assertEqual(result["project"], {"uuid": None, "name": pc.DEFAULT_PRODUCT, "created": False})
-        self.assertEqual(result["environment"], {"name": "development", "coolify_name": "production", "created": False})
+        self.assertEqual(result["environment"], {"name": "development", "coolify_name": "dev", "created": False})
         self.assertEqual(result["would_create_project"], {"name": pc.DEFAULT_PRODUCT})
         self.assertNotIn("would_create_environment", result)
         self.assertNotIn(("POST", "/projects"), [(m, p) for m, p, _ in calls])
@@ -208,7 +208,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 if method == "POST":
                     return pc.Response(201, {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT}, {})
             if path == "/projects/new-project":
-                return pc.Response(200, {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "environments": [{"name": "production"}]}, {})
+                return pc.Response(200, {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "environments": [{"name": "dev", "uuid": "env-dev"}]}, {})
             if path == "/servers":
                 return pc.Response(200, [{"uuid": "server-1", "name": "development"}], {})
             if path == "/github-apps":
@@ -222,32 +222,35 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(200, {"uuid": "app-1"}, {})
             raise AssertionError((method, path))
 
-        with mock.patch.object(pc, "request", side_effect=fake_request):
+        with mock.patch.object(pc, "request", side_effect=fake_request), mock.patch.object(pc, "ensure_dev_environment", return_value={"uuid": "env-dev", "name": "dev"}) as ensure:
             result = pc.provision(args(dry_run=False))
 
         self.assertEqual(result["status"], "created")
         self.assertEqual(result["project"], {"uuid": "new-project", "name": pc.DEFAULT_PRODUCT, "created": True})
-        self.assertEqual(result["environment"], {"name": "development", "coolify_name": "production", "created": False})
+        self.assertEqual(result["environment"], {"name": "development", "coolify_name": "dev", "created": False})
         self.assertEqual(calls.index(("POST", "/projects", {"name": pc.DEFAULT_PRODUCT})), 4)
         self.assertIn(("GET", "/projects/new-project", None), calls)
+        ensure.assert_called_once_with("new-project")
         self.assertNotIn(("POST", "/projects/new-project/environment", {"name": "development"}), calls)
 
     def test_existing_application_is_idempotent_and_not_duplicated(self):
         calls = []
         existing = {"uuid": "existing-app", "name": "factory-smoke-test", "domains": pc.DEFAULT_DOMAIN}
-        with mock.patch.object(pc, "request", side_effect=self.api_side_effect(calls, existing=existing)):
+        with mock.patch.object(pc, "request", side_effect=self.api_side_effect(calls, existing=existing)), mock.patch.object(pc, "ensure_dev_environment", return_value={"uuid": "env-dev", "name": "dev"}) as ensure:
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "exists")
         self.assertEqual(result["application"]["uuid"], "existing-app")
         self.assertTrue(result["domain_reconciled"])
         self.assertIn(("PATCH", "/applications/existing-app"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(("POST", "/applications/private-github-app"), [(m, p) for m, p, _ in calls])
+        ensure.assert_called_once_with("project-1")
 
     def test_real_creation_posts_once_when_dry_run_false(self):
         calls = []
-        with mock.patch.object(pc, "request", side_effect=self.api_side_effect(calls)):
+        with mock.patch.object(pc, "request", side_effect=self.api_side_effect(calls)), mock.patch.object(pc, "ensure_dev_environment", return_value={"uuid": "env-dev", "name": "dev"}) as ensure:
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "created")
+        ensure.assert_called_once_with("project-1")
         posts = [call for call in calls if call[0] == "POST" and call[1] == "/applications/private-github-app"]
         self.assertEqual(len(posts), 1)
         self.assertEqual(posts[0][2]["git_branch"], "dev")
@@ -256,11 +259,56 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertNotIn("domains", posts[0][2])
         self.assertEqual(posts[0][2]["base_directory"], "/")
         self.assertEqual(posts[0][2]["docker_compose_location"], "/compose.yaml")
-        self.assertEqual(posts[0][2]["environment_name"], "production")
+        self.assertEqual(posts[0][2]["environment_name"], "dev")
         patches = [call for call in calls if call[0] == "PATCH" and call[1] == "/applications/app-1"]
         self.assertEqual(len(patches), 1)
         self.assertFalse(patches[0][2]["force_domain_override"])
         self.assertEqual(patches[0][2]["docker_compose_domains"][1]["domain"], "https://api.dev.factory-smoke-test.goodmorning.mx")
+
+
+    def test_dry_run_does_not_execute_ssh_helper(self):
+        with mock.patch.object(pc, "request", side_effect=self.api_side_effect([])), mock.patch.object(pc, "ensure_dev_environment") as ensure:
+            result = pc.provision(args(dry_run=True))
+        self.assertEqual(result["status"], "dry_run")
+        ensure.assert_not_called()
+
+    def test_ensure_dev_environment_uses_fixed_ssh_command_and_validates_json(self):
+        completed = mock.Mock(returncode=0, stdout=json.dumps({"status": "ok", "environment": {"uuid": "env-dev", "name": "dev"}}))
+        with mock.patch.dict(
+            os.environ,
+            {
+                "COOLIFY_SSH_HOST": "coolify.example",
+                "COOLIFY_SSH_USER": "provisioner",
+                "COOLIFY_SSH_KEY_PATH": "/tmp/key",
+                "COOLIFY_SSH_KNOWN_HOSTS_PATH": "/tmp/known_hosts",
+            },
+        ), mock.patch.object(pc.subprocess, "run", return_value=completed) as run:
+            result = pc.ensure_dev_environment("project-1")
+        self.assertEqual(result, {"uuid": "env-dev", "name": "dev"})
+        run.assert_called_once_with(
+            [
+                "ssh",
+                "-i",
+                "/tmp/key",
+                "-o",
+                "UserKnownHostsFile=/tmp/known_hosts",
+                "-o",
+                "StrictHostKeyChecking=yes",
+                "-o",
+                "BatchMode=yes",
+                "provisioner@coolify.example",
+                "ensure-dev-env",
+                "project-1",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=pc.TIMEOUT_SECONDS,
+        )
+
+    def test_ensure_dev_environment_rejects_non_dev_json(self):
+        with self.assertRaisesRegex(pc.ProvisioningError, "dev environment"):
+            pc.validate_ensure_dev_env_response({"status": "ok", "environment": {"uuid": "env-prod", "name": "production"}})
 
     def test_refuses_non_dev_branch_before_api_calls(self):
         with mock.patch.object(pc, "request") as request:

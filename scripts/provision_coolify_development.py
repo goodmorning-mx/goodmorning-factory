@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import subprocess
 import sys
 import urllib.error
 import urllib.request
@@ -19,9 +20,10 @@ DEFAULT_COMPOSE = "/compose.yaml"
 DEFAULT_DOMAIN = "dev.factory-smoke-test.goodmorning.mx"
 DEFAULT_ENVIRONMENT = "development"
 COOLIFY_DEFAULT_ENVIRONMENT = "production"
+COOLIFY_DEVELOPMENT_ENVIRONMENT = "dev"
 DEFAULT_COOLIFY_GITHUB_APP_NAME = "goodmorning-mx-coolify"
 TIMEOUT_SECONDS = 30
-SENSITIVE_ENV = ("COOLIFY_API_TOKEN",)
+SENSITIVE_ENV = ("COOLIFY_API_TOKEN", "COOLIFY_SSH_PRIVATE_KEY")
 
 
 class ProvisioningError(Exception):
@@ -166,12 +168,68 @@ def project_details(project: dict[str, Any], *, dry_run: bool) -> dict[str, Any]
 def coolify_environment_for_stage(project: dict[str, Any], stage: str) -> dict[str, Any]:
     if stage != DEFAULT_ENVIRONMENT:
         raise ProvisioningError("Only the GoodMorning development stage can be provisioned by this workflow.")
-    environment = project_environment(project, COOLIFY_DEFAULT_ENVIRONMENT)
+    environment = project_environment(project, COOLIFY_DEVELOPMENT_ENVIRONMENT)
     if environment is None:
-        raise ProvisioningError(
-            "Coolify project details did not include the default production environment required for the GoodMorning development stage."
-        )
+        raise ProvisioningError("Coolify project details did not include the dev environment required for the GoodMorning development stage.")
     return environment
+
+
+def ssh_config_value(name: str) -> str:
+    value = os.environ.get(name, "").strip()
+    if not value:
+        raise ProvisioningError(f"{name} environment variable is required when dry_run=false.")
+    return value
+
+
+def validate_ensure_dev_env_response(data: Any) -> dict[str, Any]:
+    if not isinstance(data, dict):
+        raise ProvisioningError("ensure-dev-env response must be a JSON object.")
+    status = str(data.get("status") or "").lower()
+    environment = data.get("environment")
+    if status not in {"ok", "created", "exists"}:
+        raise ProvisioningError("ensure-dev-env response did not report a successful status.")
+    if not isinstance(environment, dict):
+        raise ProvisioningError("ensure-dev-env response did not include an environment object.")
+    name = str(field(environment, "name", "slug") or "").lower()
+    if name != COOLIFY_DEVELOPMENT_ENVIRONMENT:
+        raise ProvisioningError("ensure-dev-env response did not confirm the dev environment.")
+    if not field(environment, "uuid", "id"):
+        raise ProvisioningError("ensure-dev-env response did not include a dev environment identifier.")
+    return environment
+
+
+def ensure_dev_environment(project_uuid: Any) -> dict[str, Any]:
+    if not project_uuid:
+        raise ProvisioningError("Coolify project identifier is required before running ensure-dev-env.")
+    host = ssh_config_value("COOLIFY_SSH_HOST")
+    user = ssh_config_value("COOLIFY_SSH_USER")
+    key_path = ssh_config_value("COOLIFY_SSH_KEY_PATH")
+    known_hosts_path = ssh_config_value("COOLIFY_SSH_KNOWN_HOSTS_PATH")
+    destination = f"{user}@{host}"
+    command = [
+        "ssh",
+        "-i",
+        key_path,
+        "-o",
+        f"UserKnownHostsFile={known_hosts_path}",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "BatchMode=yes",
+        destination,
+        "ensure-dev-env",
+        str(project_uuid),
+    ]
+    try:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ProvisioningError(f"ensure-dev-env SSH execution failed: {exc}", code=2)
+    if completed.returncode != 0:
+        raise ProvisioningError(f"ensure-dev-env SSH execution failed with exit code {completed.returncode}.", code=2)
+    try:
+        return validate_ensure_dev_env_response(json.loads(completed.stdout))
+    except json.JSONDecodeError as exc:
+        raise ProvisioningError(f"ensure-dev-env returned malformed JSON: {exc}", code=2)
 
 
 def discover_server(servers: list[dict[str, Any]]) -> dict[str, Any]:
@@ -250,7 +308,7 @@ def creation_payload(args: argparse.Namespace, project: dict[str, Any], server: 
     return {
         "project_uuid": field(project, "uuid", "id"),
         "server_uuid": field(server, "uuid", "id"),
-        "environment_name": COOLIFY_DEFAULT_ENVIRONMENT,
+        "environment_name": COOLIFY_DEVELOPMENT_ENVIRONMENT,
         "github_app_uuid": github_app_uuid(github_app),
         "git_repository": args.repository,
         "git_branch": args.branch,
@@ -290,10 +348,15 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
             project = create_project(args)
             project_created = True
     if field(project, "uuid", "id"):
+        if not args.dry_run:
+            ensure_dev_environment(field(project, "uuid", "id"))
         project = project_details(project, dry_run=args.dry_run)
-        coolify_environment = coolify_environment_for_stage(project, args.environment)
+        if args.dry_run:
+            coolify_environment = project_environment(project, COOLIFY_DEVELOPMENT_ENVIRONMENT) or {"name": COOLIFY_DEVELOPMENT_ENVIRONMENT}
+        else:
+            coolify_environment = coolify_environment_for_stage(project, args.environment)
     else:
-        coolify_environment = {"name": COOLIFY_DEFAULT_ENVIRONMENT}
+        coolify_environment = {"name": COOLIFY_DEVELOPMENT_ENVIRONMENT}
     server = discover_server(servers)
     github_app = discover_github_app(github_apps, args.coolify_github_app_name, args.repository)
     existing = existing_application(applications, args)
