@@ -280,6 +280,87 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             ],
         )
 
+    def test_configure_application_environment_variables_patches_existing_name_with_real_uuid(
+        self,
+    ):
+        calls = []
+
+        def fake_request(method, path, **kwargs):
+            calls.append((method, path, kwargs.get("body")))
+            if path == "/applications/app-1/envs" and method == "GET":
+                return pc.Response(
+                    200,
+                    {
+                        "data": [
+                            {
+                                "uuid": "real-vite-uuid",
+                                "name": "VITE_API_URL",
+                                "value": "old",
+                            },
+                            {
+                                "uuid": "real-cors-uuid",
+                                "name": "CORS_ORIGINS",
+                                "value": "old",
+                            },
+                        ]
+                    },
+                    {},
+                )
+            return pc.Response(
+                200 if method == "PATCH" else 201, kwargs.get("body"), {}
+            )
+
+        with mock.patch.object(pc, "request", side_effect=fake_request):
+            pc.configure_application_environment_variables(
+                "app-1", args(product="ledger")
+            )
+
+        self.assertEqual(
+            calls,
+            [
+                ("GET", "/applications/app-1/envs", None),
+                (
+                    "PATCH",
+                    "/applications/app-1/envs/real-vite-uuid",
+                    {
+                        "key": "VITE_API_URL",
+                        "value": "https://api.dev.ledger.goodmorning.mx",
+                    },
+                ),
+                (
+                    "PATCH",
+                    "/applications/app-1/envs/real-cors-uuid",
+                    {
+                        "key": "CORS_ORIGINS",
+                        "value": "https://dev.ledger.goodmorning.mx",
+                    },
+                ),
+                (
+                    "POST",
+                    "/applications/app-1/envs",
+                    {"key": "APP_ENV", "value": "dev"},
+                ),
+            ],
+        )
+
+    def test_configure_application_environment_variables_refuses_duplicate_without_uuid(
+        self,
+    ):
+        def fake_request(method, path, **kwargs):
+            if path == "/applications/app-1/envs" and method == "GET":
+                return pc.Response(200, [{"key": "APP_ENV", "value": "old"}], {})
+            if path == "/applications/app-1/envs" and method == "POST":
+                return pc.Response(201, kwargs.get("body"), {})
+            raise AssertionError((method, path))
+
+        with mock.patch.object(pc, "request", side_effect=fake_request):
+            with self.assertRaisesRegex(
+                pc.ProvisioningError, "refusing to create a duplicate"
+            ):
+                pc.configure_application_environment_variables(
+                    "app-1", args(product="ledger")
+                )
+
     def test_development_health_verifies_frontend_root_and_backend_health(self):
         with mock.patch.object(
             pc, "verify_url", side_effect=lambda url: {"url": url}
