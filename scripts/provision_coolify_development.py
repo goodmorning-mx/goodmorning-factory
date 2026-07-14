@@ -519,7 +519,7 @@ def discover_github_app(
     return match
 
 
-def docker_compose_domains(development_domain: str) -> list[dict[str, str | int]]:
+def docker_compose_domains(development_domain: str) -> list[dict[str, str]]:
     frontend_host = (
         development_domain.removeprefix("https://")
         .removeprefix("http://")
@@ -527,8 +527,8 @@ def docker_compose_domains(development_domain: str) -> list[dict[str, str | int]
         .rstrip("/")
     )
     return [
-        {"name": "frontend", "domain": f"https://{frontend_host}", "port": 8080},
-        {"name": "backend", "domain": f"https://api.{frontend_host}", "port": 8000},
+        {"name": "frontend", "domain": f"https://{frontend_host}"},
+        {"name": "backend", "domain": f"https://api.{frontend_host}"},
     ]
 
 

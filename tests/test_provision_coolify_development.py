@@ -83,12 +83,10 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         {
                             "name": "frontend",
                             "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-                            "port": 8080,
                         },
                         {
                             "name": "backend",
                             "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
-                            "port": 8000,
                         },
                     ],
                 )
@@ -113,12 +111,10 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                             {
                                 "name": "frontend",
                                 "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-                                "port": 8080,
                             },
                             {
                                 "name": "backend",
                                 "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
-                                "port": 8000,
                             },
                         ],
                         "force_domain_override": False,
@@ -146,12 +142,10 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 {
                     "name": "frontend",
                     "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-                    "port": 8080,
                 },
                 {
                     "name": "backend",
                     "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
-                    "port": 8000,
                 },
             ],
         )
@@ -172,15 +166,15 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 {
                     "name": "frontend",
                     "domain": "https://dev.example.goodmorning.mx",
-                    "port": 8080,
                 },
                 {
                     "name": "backend",
                     "domain": "https://api.dev.example.goodmorning.mx",
-                    "port": 8000,
                 },
             ],
         )
+        for compose_domain in pc.docker_compose_domains("https://dev.example.goodmorning.mx"):
+            self.assertEqual(set(compose_domain), {"name", "domain"})
 
     def test_github_apps_parser_accepts_current_nested_response_shape(self):
         calls = []
