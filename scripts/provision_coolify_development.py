@@ -443,12 +443,28 @@ def development_host_without_port(development_domain: str) -> str:
     return host.rsplit(":", 1)[0]
 
 
+def frontend_host(development_domain: str) -> str:
+    return development_host_without_port(development_domain)
+
+
+def backend_host(development_domain: str) -> str:
+    return f"api.{development_host_without_port(development_domain)}"
+
+
 def frontend_url(development_domain: str) -> str:
-    return f"https://{development_host_without_port(development_domain)}"
+    return f"https://{frontend_host(development_domain)}"
 
 
 def backend_url(development_domain: str) -> str:
-    return f"https://api.{development_host_without_port(development_domain)}"
+    return f"https://{backend_host(development_domain)}"
+
+
+def frontend_compose_domain(development_domain: str) -> str:
+    return f"https://{frontend_host(development_domain)}:80"
+
+
+def backend_compose_domain(development_domain: str) -> str:
+    return f"https://{backend_host(development_domain)}:8000"
 
 
 def verify_development_health(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -637,8 +653,8 @@ def discover_github_app(
 
 def docker_compose_domains(development_domain: str) -> list[dict[str, str]]:
     return [
-        {"name": "frontend", "domain": frontend_url(development_domain)},
-        {"name": "backend", "domain": backend_url(development_domain)},
+        {"name": "frontend", "domain": frontend_compose_domain(development_domain)},
+        {"name": "backend", "domain": backend_compose_domain(development_domain)},
     ]
 
 

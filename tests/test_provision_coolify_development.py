@@ -100,11 +100,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                     [
                         {
                             "name": "frontend",
-                            "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+                            "domain": "https://dev.factory-smoke-test.goodmorning.mx:80",
                         },
                         {
                             "name": "backend",
-                            "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                            "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
                         },
                     ],
                 )
@@ -128,11 +128,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         "docker_compose_domains": [
                             {
                                 "name": "frontend",
-                                "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+                                "domain": "https://dev.factory-smoke-test.goodmorning.mx:80",
                             },
                             {
                                 "name": "backend",
-                                "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                                "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
                             },
                         ],
                         "force_domain_override": False,
@@ -159,11 +159,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             [
                 {
                     "name": "frontend",
-                    "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+                    "domain": "https://dev.factory-smoke-test.goodmorning.mx:80",
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                    "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
                 },
             ],
         )
@@ -183,11 +183,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             [
                 {
                     "name": "frontend",
-                    "domain": "https://dev.example.goodmorning.mx",
+                    "domain": "https://dev.example.goodmorning.mx:80",
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.example.goodmorning.mx",
+                    "domain": "https://api.dev.example.goodmorning.mx:8000",
                 },
             ],
         )
@@ -202,11 +202,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             [
                 {
                     "name": "frontend",
-                    "domain": "https://dev.example.goodmorning.mx",
+                    "domain": "https://dev.example.goodmorning.mx:80",
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.example.goodmorning.mx",
+                    "domain": "https://api.dev.example.goodmorning.mx:8000",
                 },
             ],
         )
@@ -801,7 +801,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertNotIn("domains", posts[0][2])
         self.assertEqual(
             posts[0][2]["docker_compose_domains"][0]["domain"],
-            "https://dev.factory-smoke-test.goodmorning.mx",
+            "https://dev.factory-smoke-test.goodmorning.mx:80",
+        )
+        self.assertEqual(
+            posts[0][2]["docker_compose_domains"][1]["domain"],
+            "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
         )
         self.assertFalse(posts[0][2]["force_domain_override"])
         self.assertEqual(posts[0][2]["base_directory"], "/")
