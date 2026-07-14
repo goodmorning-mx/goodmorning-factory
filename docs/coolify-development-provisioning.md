@@ -31,14 +31,14 @@ Never commit or print Coolify tokens or SSH secrets. The workflow masks `COOLIFY
 The manual workflow `.github/workflows/provision-coolify-development.yml` calls `scripts/provision_coolify_development.py`. The script queries the current Coolify API under `/api/v1` to discover:
 
 1. Projects from `GET /projects`.
-2. Project details from `GET /projects/{project_uuid}` after creating or finding a project. When `dry_run=false`, the script first runs the restricted SSH helper to ensure the Coolify `dev` environment exists, then verifies that `dev` is present in project details.
+2. Project details from `GET /projects/{project_uuid}` after creating or finding a project. When `dry_run=false`, the script first queries project details to confirm whether the Coolify `dev` environment already exists. It runs the restricted SSH helper only when that GET response does not include `dev`, then queries project details again before creating or reconciling the application.
 3. Servers from `GET /servers`.
 4. GitHub Apps from `GET /github-apps`, selecting the exact source name from `coolify_github_app_name` (default `goodmorning-mx-coolify`).
 5. Existing applications from `GET /applications`.
 
 If the product project does not exist, `dry_run=true` returns `status: dry_run` and reports `would_create_project` without sending writes to Coolify. With `dry_run=false`, the script creates the missing project with `POST /projects`, queries the new project details with `GET /projects/{project_uuid}`, and then continues application provisioning. If the project already exists, including the already-created `factory-smoke-test` project, the script reuses it idempotently and queries its details before building the application payload.
 
-Coolify development applications are created in the Coolify `dev` environment. The workflow does **not** call `POST /projects/{project_uuid}/environment`; when `dry_run=false`, it runs exactly `ensure-dev-env <project_uuid>` over SSH after creating or finding the project. The SSH invocation is built as a fixed argument list, uses the configured key and pinned known-hosts file, validates the helper's JSON response without printing the complete SSH response, and does not accept arbitrary SSH commands.
+Coolify development applications are created in the Coolify `dev` environment. The workflow does **not** call `POST /projects/{project_uuid}/environment`; when `dry_run=false`, it first confirms via `GET /projects/{project_uuid}` whether `dev` already exists and runs exactly `ensure-dev-env <project_uuid>` over SSH only if `dev` is missing. The SSH invocation is built as a fixed argument list, uses the configured key and pinned known-hosts file, validates the helper's stdout JSON response without printing the complete SSH response, and does not accept arbitrary SSH commands.
 
 The GitHub App source lookup must find exactly one source with the requested name. It fails when the source is missing or duplicated, and it rejects `Public GitHub` for private GoodMorning repositories so private repositories use the installed GoodMorning Coolify GitHub App.
 
@@ -54,7 +54,7 @@ If an existing application already references the repository/branch or developme
 - The script never deletes Coolify resources.
 - The script only allows the `dev` branch and `dev.` domains.
 - With `dry_run=true`, the script never runs SSH.
-- With `dry_run=false`, the script runs only `ensure-dev-env <project_uuid>` over SSH and validates that SSH exits with code 0, `project_uuid` matches the requested project, `name` is `dev`, `environment_uuid` is a valid UUID, and `created` is boolean before creating or reconciling the application.
+- With `dry_run=false` and the project details GET does not already include `dev`, the script runs only `ensure-dev-env <project_uuid>` over SSH and validates only the helper stdout JSON contract: `project_uuid` matches the requested project, `name` is `dev`, `environment_uuid` matches `^[a-z0-9]{24}$`, and `created` is boolean. It does not require `environment.id`, `environment.uuid`, or `status` fields before creating or reconciling the application.
 - The application create payload uses `environment_name=dev`; it does not create the development application inside Coolify `production`.
 - The script never deploys immediately; the create payload sets `instant_deploy=false`.
 - The script configures Docker Compose domains without forcing overrides: `frontend` uses the HTTPS development domain and `backend` uses the same host prefixed with `api.`.

@@ -6,9 +6,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import subprocess
 import sys
-import uuid
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -26,6 +26,7 @@ COOLIFY_DEVELOPMENT_ENVIRONMENT = "dev"
 DEFAULT_COOLIFY_GITHUB_APP_NAME = "goodmorning-mx-coolify"
 TIMEOUT_SECONDS = 30
 SENSITIVE_ENV = ("COOLIFY_API_TOKEN", "COOLIFY_SSH_PRIVATE_KEY")
+ENVIRONMENT_UUID_RE = re.compile(r"^[a-z0-9]{24}$")
 
 
 class ProvisioningError(Exception):
@@ -214,14 +215,8 @@ def ssh_config_value(name: str) -> str:
     return value
 
 
-def is_valid_uuid(value: Any) -> bool:
-    if not isinstance(value, str) or not value.strip():
-        return False
-    try:
-        uuid.UUID(value)
-    except ValueError:
-        return False
-    return True
+def is_valid_environment_uuid(value: Any) -> bool:
+    return isinstance(value, str) and ENVIRONMENT_UUID_RE.fullmatch(value) is not None
 
 
 def validate_ensure_dev_env_response(data: Any, project_uuid: Any) -> dict[str, Any]:
@@ -239,7 +234,7 @@ def validate_ensure_dev_env_response(data: Any, project_uuid: Any) -> dict[str, 
             "ensure-dev-env response did not confirm the dev environment."
         )
     environment_uuid = data.get("environment_uuid")
-    if not is_valid_uuid(environment_uuid):
+    if not is_valid_environment_uuid(environment_uuid):
         raise ProvisioningError(
             "ensure-dev-env response did not include a valid dev environment identifier."
         )
@@ -292,7 +287,7 @@ def ensure_dev_environment(project_uuid: Any) -> dict[str, Any]:
         )
     try:
         return validate_ensure_dev_env_response(
-            json.loads(completed.stdout), project_uuid
+            json.loads(completed.stdout.strip()), project_uuid
         )
     except json.JSONDecodeError as exc:
         raise ProvisioningError(
@@ -476,17 +471,23 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
             project = create_project(args)
             project_created = True
     if field(project, "uuid", "id"):
-        if not args.dry_run:
-            ensure_dev_environment(field(project, "uuid", "id"))
+        project_uuid = field(project, "uuid", "id")
         project = project_details(project, dry_run=args.dry_run)
         if args.dry_run:
             coolify_environment = project_environment(
                 project, COOLIFY_DEVELOPMENT_ENVIRONMENT
             ) or {"name": COOLIFY_DEVELOPMENT_ENVIRONMENT}
         else:
-            coolify_environment = coolify_environment_for_stage(
-                project, args.environment
-            )
+            if not project_environment_exists(project, COOLIFY_DEVELOPMENT_ENVIRONMENT):
+                ensured_environment = ensure_dev_environment(project_uuid)
+                project = project_details(project, dry_run=args.dry_run)
+                coolify_environment = project_environment(
+                    project, COOLIFY_DEVELOPMENT_ENVIRONMENT
+                ) or ensured_environment
+            else:
+                coolify_environment = coolify_environment_for_stage(
+                    project, args.environment
+                )
     else:
         coolify_environment = {"name": COOLIFY_DEVELOPMENT_ENVIRONMENT}
     server = discover_server(servers)
