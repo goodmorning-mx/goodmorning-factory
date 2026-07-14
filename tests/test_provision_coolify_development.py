@@ -389,7 +389,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             calls.index(("POST", "/projects", {"name": pc.DEFAULT_PRODUCT})), 4
         )
         self.assertIn(("GET", "/projects/new-project", None), calls)
-        ensure.assert_called_once_with("new-project")
+        ensure.assert_not_called()
         self.assertNotIn(
             ("POST", "/projects/new-project/environment", {"name": "development"}),
             calls,
@@ -419,7 +419,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertNotIn(
             ("POST", "/applications/private-github-app"), [(m, p) for m, p, _ in calls]
         )
-        ensure.assert_called_once_with("project-1")
+        ensure.assert_not_called()
 
     def test_real_creation_posts_once_when_dry_run_false(self):
         calls = []
@@ -432,7 +432,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         ) as ensure:
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "created")
-        ensure.assert_called_once_with("project-1")
+        ensure.assert_not_called()
         posts = [
             call
             for call in calls
@@ -458,6 +458,90 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             "https://api.dev.factory-smoke-test.goodmorning.mx",
         )
 
+    def test_real_run_gets_project_details_before_ssh_when_dev_is_missing(self):
+        calls = []
+
+        def fake_request(method, path, **kwargs):
+            calls.append((method, path, kwargs.get("body")))
+            if path == "/projects":
+                return pc.Response(
+                    200, [{"uuid": "project-1", "name": "factory-smoke-test"}], {}
+                )
+            if path == "/projects/project-1":
+                if calls.count(("GET", "/projects/project-1", None)) == 1:
+                    return pc.Response(
+                        200,
+                        {
+                            "uuid": "project-1",
+                            "name": "factory-smoke-test",
+                            "environments": [],
+                        },
+                        {},
+                    )
+                return pc.Response(
+                    200,
+                    {
+                        "uuid": "project-1",
+                        "name": "factory-smoke-test",
+                        "environments": [{"name": "dev", "uuid": "env-dev"}],
+                    },
+                    {},
+                )
+            if path == "/servers":
+                return pc.Response(
+                    200, [{"uuid": "server-1", "name": "development"}], {}
+                )
+            if path == "/github-apps":
+                return pc.Response(
+                    200,
+                    {
+                        "github_apps": [
+                            {
+                                "uuid": "github-app-7",
+                                "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME,
+                                "html_url": "https://github.com",
+                            }
+                        ]
+                    },
+                    {},
+                )
+            if path == "/applications":
+                return pc.Response(200, [], {})
+            if path == "/applications/private-github-app":
+                return pc.Response(
+                    201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
+                )
+            if path == "/applications/app-1":
+                return pc.Response(200, {"uuid": "app-1"}, {})
+            raise AssertionError((method, path))
+
+        with mock.patch.object(
+            pc, "request", side_effect=fake_request
+        ), mock.patch.object(
+            pc,
+            "ensure_dev_environment",
+            return_value={
+                "uuid": "abcdefghijklmnopqrstuvwx",
+                "name": "dev",
+                "created": True,
+            },
+        ) as ensure:
+            result = pc.provision(args(dry_run=False))
+
+        self.assertEqual(result["status"], "created")
+        ensure.assert_called_once_with("project-1")
+        self.assertLess(
+            calls.index(("GET", "/projects/project-1", None)),
+            calls.index(("POST", "/applications/private-github-app", mock.ANY)),
+        )
+        self.assertEqual(
+            [call for call in calls if call[:2] == ("GET", "/projects/project-1")],
+            [
+                ("GET", "/projects/project-1", None),
+                ("GET", "/projects/project-1", None),
+            ],
+        )
+
     def test_dry_run_does_not_execute_ssh_helper(self):
         with mock.patch.object(
             pc, "request", side_effect=self.api_side_effect([])
@@ -472,7 +556,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             stdout=json.dumps(
                 {
                     "project_uuid": "11111111-1111-4111-8111-111111111111",
-                    "environment_uuid": "22222222-2222-4222-8222-222222222222",
+                    "environment_uuid": "abcdefghijklmnopqrstuvwx",
                     "name": "dev",
                     "created": False,
                 }
@@ -491,7 +575,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(
             result,
             {
-                "uuid": "22222222-2222-4222-8222-222222222222",
+                "uuid": "abcdefghijklmnopqrstuvwx",
                 "name": "dev",
                 "created": False,
             },
@@ -521,7 +605,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self,
     ):
         project_uuid = "11111111-1111-4111-8111-111111111111"
-        environment_uuid = "22222222-2222-4222-8222-222222222222"
+        environment_uuid = "abcdefghijklmnopqrstuvwx"
 
         result = pc.validate_ensure_dev_env_response(
             {
@@ -537,12 +621,24 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             result, {"uuid": environment_uuid, "name": "dev", "created": True}
         )
 
+    def test_ensure_dev_env_rejects_hyphenated_environment_uuid(self):
+        with self.assertRaisesRegex(pc.ProvisioningError, "environment identifier"):
+            pc.validate_ensure_dev_env_response(
+                {
+                    "project_uuid": "11111111-1111-4111-8111-111111111111",
+                    "environment_uuid": "22222222-2222-4222-8222-222222222222",
+                    "name": "dev",
+                    "created": False,
+                },
+                "11111111-1111-4111-8111-111111111111",
+            )
+
     def test_ensure_dev_env_rejects_mismatched_project_uuid(self):
         with self.assertRaisesRegex(pc.ProvisioningError, "project identifier"):
             pc.validate_ensure_dev_env_response(
                 {
                     "project_uuid": "33333333-3333-4333-8333-333333333333",
-                    "environment_uuid": "22222222-2222-4222-8222-222222222222",
+                    "environment_uuid": "abcdefghijklmnopqrstuvwx",
                     "name": "dev",
                     "created": False,
                 },
@@ -554,7 +650,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             pc.validate_ensure_dev_env_response(
                 {
                     "project_uuid": "11111111-1111-4111-8111-111111111111",
-                    "environment_uuid": "22222222-2222-4222-8222-222222222222",
+                    "environment_uuid": "abcdefghijklmnopqrstuvwx",
                     "name": "dev",
                     "created": "false",
                 },
@@ -566,7 +662,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             pc.validate_ensure_dev_env_response(
                 {
                     "project_uuid": "11111111-1111-4111-8111-111111111111",
-                    "environment_uuid": "22222222-2222-4222-8222-222222222222",
+                    "environment_uuid": "abcdefghijklmnopqrstuvwx",
                     "name": "production",
                     "created": False,
                 },
