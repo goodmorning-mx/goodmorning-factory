@@ -46,6 +46,15 @@ class CoolifyComposeTests(unittest.TestCase):
     def test_no_local_compose_override_is_part_of_coolify_pattern(self):
         self.assertFalse((ROOT / "compose.local.yaml").exists())
 
+    def test_factory_ci_validates_only_compose_yaml_healthchecks(self):
+        workflow = (ROOT / ".github" / "workflows" / "factory-ci.yml").read_text()
+
+        self.assertIn("Path('compose.yaml').read_text()", workflow)
+        self.assertNotIn("Path('compose.local.yaml').read_text()", workflow)
+        self.assertIn("http://127.0.0.1/", workflow)
+        self.assertIn("http://127.0.0.1:8000/", workflow)
+        self.assertIn("must not publish host ports", workflow)
+
 
 if __name__ == "__main__":
     unittest.main()

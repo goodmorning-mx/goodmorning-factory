@@ -53,12 +53,17 @@ jobs:
           from pathlib import Path
 
           compose = Path('compose.yaml').read_text()
-          local = Path('compose.local.yaml').read_text()
           if '\n    ports:' in compose or '\nports:' in compose:
-              raise SystemExit('compose.yaml must not publish host ports; use expose and compose.local.yaml instead.')
-          expected_exposes = {
-              'frontend': '      - "80"',
-              'backend': '      - "8000"',
+              raise SystemExit('compose.yaml must not publish host ports; Coolify owns public ingress.')
+          expected_services = {
+              'frontend': {
+                  'expose': '      - "80"',
+                  'health': 'http://127.0.0.1/',
+              },
+              'backend': {
+                  'expose': '      - "8000"',
+                  'health': 'http://127.0.0.1:8000/',
+              },
           }
           service_markers = [
               (line.strip()[:-1], index)
@@ -66,7 +71,7 @@ jobs:
               if line.startswith('  ') and not line.startswith('    ') and line.strip().endswith(':')
           ]
           lines = compose.splitlines()
-          for service, expose_line in expected_exposes.items():
+          for service, expected in expected_services.items():
               starts = [index for name, index in service_markers if name == service]
               if not starts:
                   raise SystemExit(f'missing {service} service in compose.yaml')
@@ -74,16 +79,13 @@ jobs:
               following = [index for _name, index in service_markers if index > start]
               end = min(following) if following else len(lines)
               service_block = '\n'.join(lines[start:end])
-              if expose_line not in service_block:
-                  raise SystemExit(f'{service} must use expose for its internal port: {expose_line.strip()}')
-          if local.count('ports:') != 2:
-              raise SystemExit('compose.local.yaml must publish only local frontend and backend ports.')
-          for mapping in ('      - "8080:80"', '      - "8000:8000"'):
-              if mapping not in local:
-                  raise SystemExit(f'missing local port mapping: {mapping.strip()}')
-          if '5432:5432' in local:
-              raise SystemExit('compose.local.yaml must not publish PostgreSQL for this frontend/backend override.')
-          print('Coolify compose defaults avoid host port publishing; local override publishes frontend/backend only.')
+              if expected['expose'] not in service_block:
+                  raise SystemExit(f'{service} must use expose for its internal port: {expected["expose"].strip()}')
+              if 'healthcheck:' not in service_block:
+                  raise SystemExit(f'{service} must define a container healthcheck in compose.yaml')
+              if expected['health'] not in service_block:
+                  raise SystemExit(f'{service} healthcheck must target {expected["health"]}')
+          print('compose.yaml avoids host port publishing and defines frontend/backend healthchecks.')
           PY
 
       - name: Verify no destructive GitHub repository operations are implemented
