@@ -82,11 +82,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                     [
                         {
                             "name": "frontend",
-                            "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+                            "domain": "https://dev.factory-smoke-test.goodmorning.mx:8080",
                         },
                         {
                             "name": "backend",
-                            "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                            "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
                         },
                     ],
                 )
@@ -110,11 +110,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         "docker_compose_domains": [
                             {
                                 "name": "frontend",
-                                "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+                                "domain": "https://dev.factory-smoke-test.goodmorning.mx:8080",
                             },
                             {
                                 "name": "backend",
-                                "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                                "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
                             },
                         ],
                         "force_domain_override": False,
@@ -141,11 +141,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             [
                 {
                     "name": "frontend",
-                    "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+                    "domain": "https://dev.factory-smoke-test.goodmorning.mx:8080",
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                    "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
                 },
             ],
         )
@@ -161,20 +161,60 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
     def test_docker_compose_domains_are_derived_from_development_domain(self):
         self.assertEqual(
-            pc.docker_compose_domains("https://dev.example.goodmorning.mx"),
+            pc.docker_compose_domains("https://dev.example.goodmorning.mx:8080"),
             [
                 {
                     "name": "frontend",
-                    "domain": "https://dev.example.goodmorning.mx",
+                    "domain": "https://dev.example.goodmorning.mx:8080",
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.example.goodmorning.mx",
+                    "domain": "https://api.dev.example.goodmorning.mx:8000",
                 },
             ],
         )
-        for compose_domain in pc.docker_compose_domains("https://dev.example.goodmorning.mx"):
+        for compose_domain in pc.docker_compose_domains(
+            "https://dev.example.goodmorning.mx:8080"
+        ):
             self.assertEqual(set(compose_domain), {"name", "domain"})
+
+    def test_docker_compose_domains_normalize_unported_development_domain(self):
+        self.assertEqual(
+            pc.docker_compose_domains("dev.example.goodmorning.mx"),
+            [
+                {
+                    "name": "frontend",
+                    "domain": "https://dev.example.goodmorning.mx:8080",
+                },
+                {
+                    "name": "backend",
+                    "domain": "https://api.dev.example.goodmorning.mx:8000",
+                },
+            ],
+        )
+
+    def test_development_health_verifies_frontend_root_and_backend_health(self):
+        with mock.patch.object(
+            pc, "verify_url", side_effect=lambda url: {"url": url}
+        ) as verify:
+            result = pc.verify_development_health(
+                args(domain="https://dev.example.goodmorning.mx:8080")
+            )
+
+        self.assertEqual(
+            result,
+            [
+                {"url": "https://dev.example.goodmorning.mx:8080/"},
+                {"url": "https://api.dev.example.goodmorning.mx:8000/health"},
+            ],
+        )
+        self.assertEqual(
+            [call.args[0] for call in verify.call_args_list],
+            [
+                "https://dev.example.goodmorning.mx:8080/",
+                "https://api.dev.example.goodmorning.mx:8000/health",
+            ],
+        )
 
     def test_github_apps_parser_accepts_current_nested_response_shape(self):
         calls = []
@@ -504,7 +544,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertNotIn("domains", posts[0][2])
         self.assertEqual(
             posts[0][2]["docker_compose_domains"][0]["domain"],
-            "https://dev.factory-smoke-test.goodmorning.mx",
+            "https://dev.factory-smoke-test.goodmorning.mx:8080",
         )
         self.assertFalse(posts[0][2]["force_domain_override"])
         self.assertEqual(posts[0][2]["base_directory"], "/")
