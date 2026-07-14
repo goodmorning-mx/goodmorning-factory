@@ -1,0 +1,14 @@
+# Local-development override only.
+# Keep host port publishing out of compose.yaml so Coolify deployments stay private by default.
+services:
+  frontend:
+    ports:
+      - "3000:3000"
+
+  backend:
+    ports:
+      - "8000:8000"
+
+  postgres:
+    ports:
+      - "5432:5432"
