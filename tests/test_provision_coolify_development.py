@@ -392,7 +392,15 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             pc,
             "ensure_dev_environment",
             return_value={"uuid": "env-dev", "name": "dev"},
-        ) as ensure:
+        ) as ensure, mock.patch.object(
+            pc, "queue_deployment", return_value={"uuid": "deploy-1", "force": True}
+        ) as queue, mock.patch.object(
+            pc,
+            "wait_for_deployment",
+            return_value={"uuid": "deploy-1", "status": "success"},
+        ) as wait, mock.patch.object(
+            pc, "verify_development_health", return_value=[]
+        ) as health:
             result = pc.provision(args(dry_run=False))
 
         self.assertEqual(result["status"], "created")
@@ -412,6 +420,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         )
         self.assertIn(("GET", "/projects/new-project", None), calls)
         ensure.assert_called_once_with("new-project")
+        queue.assert_called_once_with("app-1")
+        wait.assert_called_once_with("deploy-1")
+        health.assert_called_once()
         self.assertNotIn(
             ("POST", "/projects/new-project/environment", {"name": "development"}),
             calls,
@@ -427,7 +438,17 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         }
         with mock.patch.object(
             pc, "request", side_effect=self.api_side_effect(calls, existing=existing)
-        ):
+        ), mock.patch.object(
+            pc,
+            "queue_deployment",
+            return_value={"uuid": "deploy-existing", "force": True},
+        ) as queue, mock.patch.object(
+            pc,
+            "wait_for_deployment",
+            return_value={"uuid": "deploy-existing", "status": "success"},
+        ) as wait, mock.patch.object(
+            pc, "verify_development_health", return_value=[]
+        ) as health:
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "exists")
         self.assertEqual(result["application"]["uuid"], "existing-app")
@@ -441,9 +462,26 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
     def test_real_creation_posts_once_when_dry_run_false(self):
         calls = []
-        with mock.patch.object(pc, "request", side_effect=self.api_side_effect(calls)):
+        with mock.patch.object(
+            pc, "request", side_effect=self.api_side_effect(calls)
+        ), mock.patch.object(
+            pc, "queue_deployment", return_value={"uuid": "deploy-1", "force": True}
+        ) as queue, mock.patch.object(
+            pc,
+            "wait_for_deployment",
+            return_value={"uuid": "deploy-1", "status": "success"},
+        ) as wait, mock.patch.object(
+            pc, "verify_development_health", return_value=[]
+        ) as health:
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "created")
+        self.assertEqual(
+            result["deployment"],
+            {"uuid": "deploy-1", "force": True, "status": "success"},
+        )
+        queue.assert_called_once_with("app-1")
+        wait.assert_called_once_with("deploy-1")
+        health.assert_called_once()
         posts = [
             call
             for call in calls
@@ -555,7 +593,13 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 "name": "dev",
                 "created": True,
             },
-        ) as ensure:
+        ) as ensure, mock.patch.object(
+            pc, "queue_deployment", return_value={"uuid": "deploy-1", "force": True}
+        ), mock.patch.object(
+            pc,
+            "wait_for_deployment",
+            return_value={"uuid": "deploy-1", "status": "success"},
+        ), mock.patch.object(pc, "verify_development_health", return_value=[]):
             result = pc.provision(args(dry_run=False))
 
         self.assertEqual(result["status"], "created")
@@ -699,6 +743,54 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             code = pc.main(["--product", "secret-token"])
         self.assertNotEqual(code, 0)
         self.assertNotIn("secret-token", err.getvalue())
+
+    def test_queue_deployment_posts_force_true_and_extracts_uuid(self):
+        calls = []
+
+        def fake_request(method, path, **kwargs):
+            calls.append((method, path))
+            return pc.Response(200, {"deployment_uuid": "deploy-1"}, {})
+
+        with mock.patch.object(pc, "request", side_effect=fake_request):
+            self.assertEqual(
+                pc.queue_deployment("app-1"), {"uuid": "deploy-1", "force": True}
+            )
+
+        self.assertEqual(calls, [("POST", "/deploy?uuid=app-1&force=true")])
+
+    def test_wait_for_deployment_polls_until_success(self):
+        statuses = iter(["in_progress", "success"])
+
+        def fake_request(method, path, **kwargs):
+            self.assertEqual((method, path), ("GET", "/deployments/deploy-1"))
+            return pc.Response(200, {"status": next(statuses)}, {})
+
+        with mock.patch.object(
+            pc, "request", side_effect=fake_request
+        ), mock.patch.object(pc.time, "sleep") as sleep:
+            result = pc.wait_for_deployment("deploy-1")
+
+        self.assertEqual(result, {"uuid": "deploy-1", "status": "success"})
+        sleep.assert_called_once_with(pc.DEPLOYMENT_POLL_SECONDS)
+
+    def test_wait_for_deployment_raises_on_failure(self):
+        with mock.patch.object(
+            pc, "request", return_value=pc.Response(200, {"status": "failed"}, {})
+        ):
+            with self.assertRaisesRegex(pc.ProvisioningError, "failed"):
+                pc.wait_for_deployment("deploy-1")
+
+    def test_dry_run_does_not_queue_deployments_or_health_checks(self):
+        with mock.patch.object(
+            pc, "request", side_effect=self.api_side_effect([])
+        ), mock.patch.object(pc, "queue_deployment") as queue, mock.patch.object(
+            pc, "verify_development_health"
+        ) as health:
+            result = pc.provision(args(dry_run=True))
+
+        self.assertEqual(result["status"], "dry_run")
+        queue.assert_not_called()
+        health.assert_not_called()
 
 
 class ProvisionCoolifyWorkflowTests(unittest.TestCase):
