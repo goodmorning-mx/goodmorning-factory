@@ -56,13 +56,34 @@ jobs:
           local = Path('compose.local.yaml').read_text()
           if '\n    ports:' in compose or '\nports:' in compose:
               raise SystemExit('compose.yaml must not publish host ports; use expose and compose.local.yaml instead.')
-          for service in ('frontend', 'backend', 'postgres'):
-              marker = f'  {service}:\n'
-              if marker not in compose:
+          expected_exposes = {
+              'frontend': '      - "8080"',
+              'backend': '      - "8000"',
+          }
+          service_markers = [
+              (line.strip()[:-1], index)
+              for index, line in enumerate(compose.splitlines())
+              if line.startswith('  ') and not line.startswith('    ') and line.strip().endswith(':')
+          ]
+          lines = compose.splitlines()
+          for service, expose_line in expected_exposes.items():
+              starts = [index for name, index in service_markers if name == service]
+              if not starts:
                   raise SystemExit(f'missing {service} service in compose.yaml')
-          if local.count('ports:') != 3:
-              raise SystemExit('compose.local.yaml must retain local host ports for frontend, backend, and postgres.')
-          print('Coolify compose defaults avoid host port publishing; local override retains developer ports.')
+              start = starts[0]
+              following = [index for _name, index in service_markers if index > start]
+              end = min(following) if following else len(lines)
+              service_block = '\n'.join(lines[start:end])
+              if expose_line not in service_block:
+                  raise SystemExit(f'{service} must use expose for its internal port: {expose_line.strip()}')
+          if local.count('ports:') != 2:
+              raise SystemExit('compose.local.yaml must publish only local frontend and backend ports.')
+          for mapping in ('      - "8080:8080"', '      - "8000:8000"'):
+              if mapping not in local:
+                  raise SystemExit(f'missing local port mapping: {mapping.strip()}')
+          if '5432:5432' in local:
+              raise SystemExit('compose.local.yaml must not publish PostgreSQL for this frontend/backend override.')
+          print('Coolify compose defaults avoid host port publishing; local override publishes frontend/backend only.')
           PY
 
       - name: Verify no destructive GitHub repository operations are implemented
