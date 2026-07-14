@@ -47,10 +47,6 @@ jobs:
       COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
       COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
       DEVELOPMENT_DOMAIN: ${{ inputs.domain }}
-      COOLIFY_SSH_HOST: ${{ vars.COOLIFY_SSH_HOST }}
-      COOLIFY_SSH_USER: ${{ vars.COOLIFY_SSH_USER }}
-      COOLIFY_SSH_PRIVATE_KEY: ${{ secrets.GOODMORNING_FACTORY_COOLIFY_SSH_KEY }}
-      COOLIFY_SSH_KNOWN_HOSTS: ${{ secrets.GOODMORNING_FACTORY_COOLIFY_KNOWN_HOSTS }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -71,19 +67,6 @@ jobs:
           fi
 
           echo "::add-mask::${COOLIFY_API_TOKEN}"
-          if [ -n "${COOLIFY_SSH_PRIVATE_KEY:-}" ]; then
-            echo "::add-mask::${COOLIFY_SSH_PRIVATE_KEY}"
-          fi
-          if [ -n "${COOLIFY_SSH_KNOWN_HOSTS:-}" ]; then
-            echo "::add-mask::${COOLIFY_SSH_KNOWN_HOSTS}"
-          fi
-
-          if [ "${{ inputs.dry_run }}" = "false" ]; then
-            if [ -z "${COOLIFY_SSH_HOST:-}" ] || [ -z "${COOLIFY_SSH_USER:-}" ] || [ -z "${COOLIFY_SSH_PRIVATE_KEY:-}" ] || [ -z "${COOLIFY_SSH_KNOWN_HOSTS:-}" ]; then
-              echo "COOLIFY_SSH_HOST, COOLIFY_SSH_USER, COOLIFY_SSH_PRIVATE_KEY, and COOLIFY_SSH_KNOWN_HOSTS are required when dry_run=false."
-              exit 1
-            fi
-          fi
 
           if [ "${{ inputs.branch }}" != "dev" ]; then
             echo "This workflow only provisions development from the dev branch."
@@ -100,22 +83,6 @@ jobs:
         run: |
           set -euo pipefail
           echo "::add-mask::${COOLIFY_API_TOKEN}"
-          if [ -n "${COOLIFY_SSH_PRIVATE_KEY:-}" ]; then
-            echo "::add-mask::${COOLIFY_SSH_PRIVATE_KEY}"
-          fi
-          if [ -n "${COOLIFY_SSH_KNOWN_HOSTS:-}" ]; then
-            echo "::add-mask::${COOLIFY_SSH_KNOWN_HOSTS}"
-          fi
-
-          if [ "${{ inputs.dry_run }}" = "false" ]; then
-            install -m 700 -d "${RUNNER_TEMP}/coolify-ssh"
-            printf '%s\n' "${COOLIFY_SSH_PRIVATE_KEY}" > "${RUNNER_TEMP}/coolify-ssh/key"
-            printf '%s\n' "${COOLIFY_SSH_KNOWN_HOSTS}" > "${RUNNER_TEMP}/coolify-ssh/known_hosts"
-            chmod 600 "${RUNNER_TEMP}/coolify-ssh/key"
-            chmod 644 "${RUNNER_TEMP}/coolify-ssh/known_hosts"
-            export COOLIFY_SSH_KEY_PATH="${RUNNER_TEMP}/coolify-ssh/key"
-            export COOLIFY_SSH_KNOWN_HOSTS_PATH="${RUNNER_TEMP}/coolify-ssh/known_hosts"
-          fi
 
           python scripts/provision_coolify_development.py \
             --dry-run "${{ inputs.dry_run }}" \

@@ -7,8 +7,8 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -25,7 +25,9 @@ COOLIFY_DEFAULT_ENVIRONMENT = "production"
 COOLIFY_DEVELOPMENT_ENVIRONMENT = "dev"
 DEFAULT_COOLIFY_GITHUB_APP_NAME = "goodmorning-mx-coolify"
 TIMEOUT_SECONDS = 30
-SENSITIVE_ENV = ("COOLIFY_API_TOKEN", "COOLIFY_SSH_PRIVATE_KEY")
+COMPOSE_READY_TIMEOUT_SECONDS = 120
+COMPOSE_READY_POLL_SECONDS = 5
+SENSITIVE_ENV = ("COOLIFY_API_TOKEN",)
 ENVIRONMENT_UUID_RE = re.compile(r"^[a-z0-9]{24}$")
 
 
@@ -70,7 +72,13 @@ def api_url(path: str) -> str:
     return f"{base_url()}/api/v1{path}"
 
 
-def request(method: str, path: str, *, body: dict[str, Any] | None = None) -> Response:
+def request(
+    method: str,
+    path: str,
+    *,
+    body: dict[str, Any] | None = None,
+    allowed_statuses: tuple[int, ...] = (),
+) -> Response:
     data = None if body is None else json.dumps(body).encode("utf-8")
     req = urllib.request.Request(
         api_url(path),
@@ -94,7 +102,17 @@ def request(method: str, path: str, *, body: dict[str, Any] | None = None) -> Re
             parsed = json.loads(raw) if raw else {}
         except json.JSONDecodeError:
             parsed = {"message": raw}
-        message = parsed.get("message") if isinstance(parsed, dict) else raw
+        if exc.code in allowed_statuses:
+            return Response(exc.code, parsed, dict(exc.headers))
+        if isinstance(parsed, dict):
+            detail = {
+                key: parsed[key]
+                for key in ("message", "errors", "conflicts", "warning")
+                if key in parsed
+            }
+            message = json.dumps(detail or parsed, sort_keys=True)
+        else:
+            message = raw
         raise ProvisioningError(
             f"Coolify API {exc.code} for {method} {path}: {message}", code=2
         )
@@ -206,93 +224,117 @@ def coolify_environment_for_stage(
     return environment
 
 
-def ssh_config_value(name: str) -> str:
-    value = os.environ.get(name, "").strip()
-    if not value:
-        raise ProvisioningError(
-            f"{name} environment variable is required when dry_run=false."
-        )
-    return value
+def environment_summary(
+    environment: dict[str, Any], *, created: bool = False
+) -> dict[str, Any]:
+    return {
+        "uuid": field(environment, "uuid", "id"),
+        "name": field(environment, "name", "slug"),
+        "created": created,
+    }
 
 
-def is_valid_environment_uuid(value: Any) -> bool:
-    return isinstance(value, str) and ENVIRONMENT_UUID_RE.fullmatch(value) is not None
+def project_environments(project_uuid: Any) -> list[dict[str, Any]]:
+    if not project_uuid:
+        raise ProvisioningError(
+            "Coolify project identifier is required before querying environments."
+        )
+    return items(request("GET", f"/projects/{project_uuid}/environments").data)
 
 
-def validate_ensure_dev_env_response(data: Any, project_uuid: Any) -> dict[str, Any]:
-    if not isinstance(data, dict):
-        raise ProvisioningError("ensure-dev-env response must be a JSON object.")
-    expected_project_uuid = str(project_uuid)
-    response_project_uuid = str(data.get("project_uuid") or "")
-    if response_project_uuid != expected_project_uuid:
-        raise ProvisioningError(
-            "ensure-dev-env response did not match the requested project identifier."
-        )
-    name = str(data.get("name") or "").lower()
-    if name != COOLIFY_DEVELOPMENT_ENVIRONMENT:
-        raise ProvisioningError(
-            "ensure-dev-env response did not confirm the dev environment."
-        )
-    environment_uuid = data.get("environment_uuid")
-    if not is_valid_environment_uuid(environment_uuid):
-        raise ProvisioningError(
-            "ensure-dev-env response did not include a valid dev environment identifier."
-        )
-    created = data.get("created")
-    if not isinstance(created, bool):
-        raise ProvisioningError(
-            "ensure-dev-env response did not include a boolean created flag."
-        )
-    return {"uuid": environment_uuid, "name": name, "created": created}
+def create_project_environment(project_uuid: Any, name: str) -> Response:
+    return request(
+        "POST",
+        f"/projects/{project_uuid}/environments",
+        body={"name": name},
+        allowed_statuses=(201, 409, 422),
+    )
 
 
 def ensure_dev_environment(project_uuid: Any) -> dict[str, Any]:
-    if not project_uuid:
-        raise ProvisioningError(
-            "Coolify project identifier is required before running ensure-dev-env."
+    environments = project_environments(project_uuid)
+    existing = project_environment(
+        {"environments": environments}, COOLIFY_DEVELOPMENT_ENVIRONMENT
+    )
+    if existing is not None:
+        return environment_summary(existing, created=False)
+
+    response = create_project_environment(project_uuid, COOLIFY_DEVELOPMENT_ENVIRONMENT)
+    if response.status == 201:
+        data = (
+            response.data.get("data")
+            if isinstance(response.data, dict)
+            and isinstance(response.data.get("data"), dict)
+            else response.data
         )
-    host = ssh_config_value("COOLIFY_SSH_HOST")
-    user = ssh_config_value("COOLIFY_SSH_USER")
-    key_path = ssh_config_value("COOLIFY_SSH_KEY_PATH")
-    known_hosts_path = ssh_config_value("COOLIFY_SSH_KNOWN_HOSTS_PATH")
-    destination = f"{user}@{host}"
-    command = [
-        "ssh",
-        "-i",
-        key_path,
-        "-o",
-        f"UserKnownHostsFile={known_hosts_path}",
-        "-o",
-        "StrictHostKeyChecking=yes",
-        "-o",
-        "BatchMode=yes",
-        destination,
-        "ensure-dev-env",
-        str(project_uuid),
-    ]
-    try:
-        completed = subprocess.run(
-            command,
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=TIMEOUT_SECONDS,
+        if not isinstance(data, dict):
+            raise ProvisioningError("Malformed Coolify environment creation response.")
+        environment = {
+            "uuid": field(data, "uuid", "id"),
+            "name": COOLIFY_DEVELOPMENT_ENVIRONMENT,
+        }
+        if not environment["uuid"]:
+            raise ProvisioningError(
+                "Coolify environment creation response did not include an environment identifier."
+            )
+        return environment_summary(environment, created=True)
+
+    if response.status == 409:
+        environments = project_environments(project_uuid)
+        existing = project_environment(
+            {"environments": environments}, COOLIFY_DEVELOPMENT_ENVIRONMENT
         )
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise ProvisioningError(f"ensure-dev-env SSH execution failed: {exc}", code=2)
-    if completed.returncode != 0:
+        if existing is not None:
+            return environment_summary(existing, created=False)
         raise ProvisioningError(
-            f"ensure-dev-env SSH execution failed with exit code {completed.returncode}.",
+            "Coolify reported the dev environment already exists, but it was not returned by the environments endpoint.",
             code=2,
         )
-    try:
-        return validate_ensure_dev_env_response(
-            json.loads(completed.stdout.strip()), project_uuid
+
+    if response.status == 422:
+        detail = (
+            response.data
+            if isinstance(response.data, dict)
+            else {"message": response.data}
         )
-    except json.JSONDecodeError as exc:
         raise ProvisioningError(
-            f"ensure-dev-env returned malformed JSON: {exc}", code=2
+            "Coolify API 422 for POST "
+            f"/projects/{project_uuid}/environments: "
+            f"{json.dumps(detail, sort_keys=True)}",
+            code=2,
         )
+
+    raise ProvisioningError(
+        f"Unexpected Coolify API {response.status} for POST /projects/{project_uuid}/environments.",
+        code=2,
+    )
+
+
+def docker_compose_raw_loaded(application: Any) -> bool:
+    data = (
+        application.get("data")
+        if isinstance(application, dict) and isinstance(application.get("data"), dict)
+        else application
+    )
+    return isinstance(data, dict) and bool(data.get("docker_compose_raw"))
+
+
+def wait_for_docker_compose_raw(application_uuid: Any) -> None:
+    if not application_uuid:
+        raise ProvisioningError(
+            "Coolify application identifier is required before waiting for Docker Compose parsing."
+        )
+    deadline = time.monotonic() + COMPOSE_READY_TIMEOUT_SECONDS
+    while True:
+        response = request("GET", f"/applications/{application_uuid}")
+        if docker_compose_raw_loaded(response.data):
+            return
+        if time.monotonic() >= deadline:
+            raise ProvisioningError(
+                "Timed out waiting for Coolify to load docker_compose_raw before applying Docker Compose domains.",
+                code=2,
+            )
+        time.sleep(COMPOSE_READY_POLL_SECONDS)
 
 
 def discover_server(servers: list[dict[str, Any]]) -> dict[str, Any]:
@@ -478,16 +520,12 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
                 project, COOLIFY_DEVELOPMENT_ENVIRONMENT
             ) or {"name": COOLIFY_DEVELOPMENT_ENVIRONMENT}
         else:
-            if not project_environment_exists(project, COOLIFY_DEVELOPMENT_ENVIRONMENT):
-                ensured_environment = ensure_dev_environment(project_uuid)
-                project = project_details(project, dry_run=args.dry_run)
-                coolify_environment = project_environment(
-                    project, COOLIFY_DEVELOPMENT_ENVIRONMENT
-                ) or ensured_environment
-            else:
-                coolify_environment = coolify_environment_for_stage(
-                    project, args.environment
-                )
+            ensured_environment = ensure_dev_environment(project_uuid)
+            project = project_details(project, dry_run=args.dry_run)
+            coolify_environment = (
+                project_environment(project, COOLIFY_DEVELOPMENT_ENVIRONMENT)
+                or ensured_environment
+            )
     else:
         coolify_environment = {"name": COOLIFY_DEVELOPMENT_ENVIRONMENT}
     server = discover_server(servers)
@@ -532,6 +570,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         if args.dry_run:
             result["would_patch"] = domain_patch_payload(args)
         else:
+            wait_for_docker_compose_raw(result["application"]["uuid"])
             reconcile_application_domains(result["application"]["uuid"], args)
             result["domain_reconciled"] = True
         return result
@@ -543,6 +582,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(created, dict):
         raise ProvisioningError("Malformed Coolify application creation response.")
     result["application"] = application_summary(created)
+    wait_for_docker_compose_raw(result["application"]["uuid"])
     reconcile_application_domains(result["application"]["uuid"], args)
     result["domain_reconciled"] = True
     return result
