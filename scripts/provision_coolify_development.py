@@ -314,19 +314,37 @@ def ensure_dev_environment(project_uuid: Any) -> dict[str, Any]:
 
 
 def extract_deployment_uuid(data: Any) -> Any:
+    if isinstance(data, list):
+        for item in data:
+            try:
+                return extract_deployment_uuid(item)
+            except ProvisioningError:
+                continue
+
     if isinstance(data, dict):
         for key in (
             "deployment_uuid",
             "deploymentUuid",
-            "uuid",
-            "id",
+            "deployment_id",
+            "deploymentId",
         ):
             value = data.get(key)
             if value:
                 return value
-        nested = data.get("data")
-        if isinstance(nested, dict):
-            return extract_deployment_uuid(nested)
+
+        for key in ("deployments", "deployment", "data"):
+            nested = data.get(key)
+            if isinstance(nested, (dict, list)):
+                try:
+                    return extract_deployment_uuid(nested)
+                except ProvisioningError:
+                    continue
+
+        for key in ("uuid", "id"):
+            value = data.get(key)
+            if value:
+                return value
+
     raise ProvisioningError(
         "Coolify deployment response did not include a deployment UUID.", code=2
     )
