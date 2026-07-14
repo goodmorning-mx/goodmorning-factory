@@ -444,16 +444,60 @@ def development_host_without_port(development_domain: str) -> str:
 
 
 def frontend_url(development_domain: str) -> str:
-    return f"https://{development_host_without_port(development_domain)}:8080"
+    return f"https://{development_host_without_port(development_domain)}"
 
 
 def backend_url(development_domain: str) -> str:
-    return f"https://api.{development_host_without_port(development_domain)}:8000"
+    return f"https://api.{development_host_without_port(development_domain)}"
 
 
 def verify_development_health(args: argparse.Namespace) -> list[dict[str, Any]]:
     urls = [f"{frontend_url(args.domain)}/", f"{backend_url(args.domain)}/health"]
     return [verify_url(url) for url in urls]
+
+
+def desired_environment_variables(args: argparse.Namespace) -> dict[str, str]:
+    product = args.product.strip()
+    return {
+        "VITE_API_URL": f"https://api.dev.{product}.goodmorning.mx",
+        "CORS_ORIGINS": f"https://dev.{product}.goodmorning.mx",
+        "APP_ENV": "dev",
+    }
+
+
+def environment_variable_summary(variables: dict[str, str]) -> list[dict[str, str]]:
+    return [{"key": key, "value": value} for key, value in variables.items()]
+
+
+def application_environment_variables(application_uuid: Any) -> list[dict[str, Any]]:
+    if not application_uuid:
+        raise ProvisioningError(
+            "Coolify application identifier is required before configuring environment variables."
+        )
+    return items(request("GET", f"/applications/{application_uuid}/envs").data)
+
+
+def configure_application_environment_variables(
+    application_uuid: Any, args: argparse.Namespace
+) -> list[dict[str, str]]:
+    desired = desired_environment_variables(args)
+    existing_by_key = {
+        str(field(item, "key") or ""): item
+        for item in application_environment_variables(application_uuid)
+    }
+    for key, value in desired.items():
+        existing = existing_by_key.get(key)
+        body = {"key": key, "value": value}
+        existing_uuid = field(existing or {}, "uuid", "id")
+        if existing_uuid:
+            request(
+                "PATCH",
+                f"/applications/{application_uuid}/envs/{existing_uuid}",
+                body=body,
+            )
+        else:
+            request("POST", f"/applications/{application_uuid}/envs", body=body)
+    return environment_variable_summary(desired)
 
 
 def docker_compose_raw_loaded(application: Any) -> bool:
@@ -723,6 +767,9 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         "compose": args.compose,
         "domain": args.domain,
         "docker_compose_domains": docker_compose_domains(args.domain),
+        "environment_variables": environment_variable_summary(
+            desired_environment_variables(args)
+        ),
         "project": {
             "uuid": field(project, "uuid", "id"),
             "name": field(project, "name", "slug"),
@@ -756,6 +803,11 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
             else:
                 reconcile_application_domains(result["application"]["uuid"], args)
                 result["domain_reconciled"] = True
+                result["environment_variables_configured"] = (
+                    configure_application_environment_variables(
+                        result["application"]["uuid"], args
+                    )
+                )
                 deployment = queue_deployment(result["application"]["uuid"])
                 deployment.update(wait_for_deployment(deployment["uuid"]))
                 result["deployment"] = deployment
@@ -777,6 +829,9 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         raise ProvisioningError("Malformed Coolify application creation response.")
     result["application"] = application_summary(created)
     result["domain_reconciled"] = True
+    result["environment_variables_configured"] = (
+        configure_application_environment_variables(result["application"]["uuid"], args)
+    )
     deployment = queue_deployment(result["application"]["uuid"])
     deployment.update(wait_for_deployment(deployment["uuid"]))
     result["deployment"] = deployment

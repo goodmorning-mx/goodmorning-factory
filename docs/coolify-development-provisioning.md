@@ -38,9 +38,9 @@ Coolify development applications are created in the Coolify `dev` environment. T
 
 The GitHub App source lookup must find exactly one source with the requested name. It fails when the source is missing or duplicated, and it rejects `Public GitHub` for private GoodMorning repositories so private repositories use the installed GoodMorning Coolify GitHub App.
 
-If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. Existing applications with loaded `docker_compose_raw` are still reconciled for Docker Compose domains when `dry_run=false`. Missing, redacted, or empty `docker_compose_raw` is not treated as proof that Compose is unconfigured, because Coolify API tokens can lack `read:sensitive`; when the existing application still exposes the expected repository, branch, and Docker Compose path, the script continues with domain reconciliation and deployment. `status: recreate_required` is reserved for existing applications that lack both loaded Compose data and verifiable repository/branch/compose path configuration, and the CLI/workflow fail on that status. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a single create request to `POST /applications/private-github-app` with Docker Compose build-pack settings, the selected source's `github_app_uuid`, `docker_compose_domains`, and `instant_deploy=false`; it does not send a follow-up domain `PATCH` for newly-created applications. The frontend domain is derived from `development_domain` as `https://dev...:8080`; the backend domain is derived as `https://api.dev...:8000`.
+If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. Existing applications with loaded `docker_compose_raw` are still reconciled for Docker Compose domains and Coolify application environment variables when `dry_run=false`. Missing, redacted, or empty `docker_compose_raw` is not treated as proof that Compose is unconfigured, because Coolify API tokens can lack `read:sensitive`; when the existing application still exposes the expected repository, branch, and Docker Compose path, the script continues with domain reconciliation and deployment. `status: recreate_required` is reserved for existing applications that lack both loaded Compose data and verifiable repository/branch/compose path configuration, and the CLI/workflow fail on that status. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a single create request to `POST /applications/private-github-app` with Docker Compose build-pack settings, the selected source's `github_app_uuid`, `docker_compose_domains`, and `instant_deploy=false`; it does not send a follow-up domain `PATCH` for newly-created applications. Before queuing deployment, it configures `VITE_API_URL=https://api.dev.<product>.goodmorning.mx`, `CORS_ORIGINS=https://dev.<product>.goodmorning.mx`, and `APP_ENV=dev` as Coolify application environment variables. The frontend domain is derived from `development_domain` as `https://dev...`; the backend domain is derived as `https://api.dev...`.
 
-After a successful `dry_run=false` provisioning or idempotent reuse of an existing application, the script triggers the development deployment with `POST /api/v1/deploy?uuid={application_uuid}&force=true`. It reads the deployment UUID from the Coolify response, polls `GET /api/v1/deployments/{deployment_uuid}` until a successful terminal status, a failed terminal status, or timeout, and then verifies both development smoke endpoints: `https://dev.factory-smoke-test.goodmorning.mx:8080/` and `https://api.dev.factory-smoke-test.goodmorning.mx:8000/health`. These deployment and smoke-check calls are never executed for `dry_run=true`.
+After a successful `dry_run=false` provisioning or idempotent reuse of an existing application, the script configures the required Coolify application environment variables, then triggers the development deployment with `POST /api/v1/deploy?uuid={application_uuid}&force=true`. It reads the deployment UUID from the Coolify response, polls `GET /api/v1/deployments/{deployment_uuid}` until a successful terminal status, a failed terminal status, or timeout, and then verifies both development smoke endpoints: `https://dev.factory-smoke-test.goodmorning.mx/` and `https://api.dev.factory-smoke-test.goodmorning.mx/health`. These deployment and smoke-check calls are never executed for `dry_run=true`.
 
 ## Safety rules
 
@@ -51,13 +51,15 @@ After a successful `dry_run=false` provisioning or idempotent reuse of an existi
 - The workflow refuses domains that do not start with `dev.`.
 - The script never deletes Coolify resources.
 - The script only allows the `dev` branch and `dev.` domains.
-- With `dry_run=true`, the script does not create projects, environments, applications, domain patches, deployments, or smoke checks.
+- With `dry_run=true`, the script does not create projects, environments, applications, domain patches, Coolify environment variable writes, deployments, or smoke checks.
 - With `dry_run=false`, the script uses the official Coolify environment API only: `GET /projects/{project_uuid}/environments`, then `POST /projects/{project_uuid}/environments` with `{"name":"dev"}` if needed. It handles `201`, `409`, and `422` explicitly and does not require SSH configuration.
 - New application creation sends `docker_compose_domains` directly in the `POST /applications/private-github-app` payload and does not issue a follow-up domain patch.
 - Coolify `422` API errors are reported with sanitized structured details, including `message`, `errors`, `conflicts`, and `warning` when present.
 - The application create payload uses `environment_name=dev`; it does not create the development application inside Coolify `production`.
 - The application create payload sets `instant_deploy=false`; the explicit deployment step only runs later in the same workflow when `dry_run=false` and provisioning or idempotent reuse succeeds.
-- The script configures Docker Compose domains without forcing overrides or host port publishing: `frontend` uses the HTTPS development domain on port `8080` and `backend` uses the same host prefixed with `api.` on port `8000`. Each Docker Compose domain item contains only `name` and `domain`, matching Coolify's accepted payload shape.
+
+- Before any `dry_run=false` rebuild/deploy queue operation, the script upserts Coolify application environment variables with safe dev values: `VITE_API_URL=https://api.dev.<product>.goodmorning.mx`, `CORS_ORIGINS=https://dev.<product>.goodmorning.mx`, and `APP_ENV=dev`.
+- The script configures Docker Compose domains without forcing overrides or host port publishing: `frontend` uses the HTTPS development domain and `backend` uses the same host prefixed with `api.`. Public Coolify domains and smoke checks omit explicit ports. Each Docker Compose domain item contains only `name` and `domain`, matching Coolify's accepted payload shape.
 - The script never prints `COOLIFY_API_TOKEN`.
 - Production provisioning and production deployments are out of scope and require the release PR flow plus Abel's explicit approval.
 
@@ -74,11 +76,11 @@ Successful dry-runs print JSON similar to:
   "docker_compose_domains": [
     {
       "name": "frontend",
-      "domain": "https://dev.factory-smoke-test.goodmorning.mx:8080"
+      "domain": "https://dev.factory-smoke-test.goodmorning.mx"
     },
     {
       "name": "backend",
-      "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000"
+      "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"
     }
   ],
   "coolify_github_app_name": "goodmorning-mx-coolify",
@@ -94,11 +96,11 @@ Successful dry-runs print JSON similar to:
     "docker_compose_domains": [
       {
         "name": "frontend",
-        "domain": "https://dev.factory-smoke-test.goodmorning.mx:8080"
+        "domain": "https://dev.factory-smoke-test.goodmorning.mx"
       },
       {
         "name": "backend",
-        "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000"
+        "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"
       }
     ],
     "force_domain_override": false
