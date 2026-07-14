@@ -433,11 +433,26 @@ def verify_url(url: str) -> dict[str, Any]:
         raise ProvisioningError(f"Health check {url} failed: {exc}", code=2)
 
 
-def verify_development_health(args: argparse.Namespace) -> list[dict[str, Any]]:
+def development_host_without_port(development_domain: str) -> str:
     host = (
-        args.domain.removeprefix("https://").removeprefix("http://").strip().rstrip("/")
+        development_domain.removeprefix("https://")
+        .removeprefix("http://")
+        .strip()
+        .rstrip("/")
     )
-    urls = [f"https://{host}", f"https://api.{host}/health"]
+    return host.rsplit(":", 1)[0]
+
+
+def frontend_url(development_domain: str) -> str:
+    return f"https://{development_host_without_port(development_domain)}:8080"
+
+
+def backend_url(development_domain: str) -> str:
+    return f"https://api.{development_host_without_port(development_domain)}:8000"
+
+
+def verify_development_health(args: argparse.Namespace) -> list[dict[str, Any]]:
+    urls = [f"{frontend_url(args.domain)}/", f"{backend_url(args.domain)}/health"]
     return [verify_url(url) for url in urls]
 
 
@@ -520,15 +535,9 @@ def discover_github_app(
 
 
 def docker_compose_domains(development_domain: str) -> list[dict[str, str]]:
-    frontend_host = (
-        development_domain.removeprefix("https://")
-        .removeprefix("http://")
-        .strip()
-        .rstrip("/")
-    )
     return [
-        {"name": "frontend", "domain": f"https://{frontend_host}"},
-        {"name": "backend", "domain": f"https://api.{frontend_host}"},
+        {"name": "frontend", "domain": frontend_url(development_domain)},
+        {"name": "backend", "domain": backend_url(development_domain)},
     ]
 
 
