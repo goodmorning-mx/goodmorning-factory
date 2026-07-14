@@ -4,33 +4,29 @@
 
 ## Deployment default
 
-- `frontend` uses the default `nginx:1.27-alpine` image in this factory baseline; there is no repository `Dockerfile` or `nginx.conf` override, so the real nginx listen port is container port `80`.
-- `frontend` reaches the API through `http://backend:8000` on the internal `app` network.
-- `backend` reaches PostgreSQL through `postgres:5432` on the internal `data` network.
-- `postgres` is attached only to the internal `data` network.
-- `frontend` uses `expose: ["80"]` and `backend` uses `expose: ["8000"]`; these entries document container reachability without publishing host ports.
+- `frontend` listens on container port `80` and exposes only that port to the Compose network.
+- `backend` listens on container port `8000` and exposes only that port to the Compose network.
+- `postgres` stays on the private `data` network and is not exposed publicly.
 - Host `ports` entries are intentionally forbidden in `compose.yaml`.
+- `frontend` and `backend` define container health checks so Coolify can evaluate service readiness without host port publishing.
 
-## Local development
+## Coolify application pattern
 
-Use `compose.local.yaml` with the base file when a developer needs browser or API access from the workstation:
+Factory smoke-test development provisioning should create a Docker Compose application from GitHub, not from local services or rsync:
 
-```bash
-docker compose -f compose.yaml -f compose.local.yaml up
-```
-
-The local override publishes:
-
-- `frontend` on `localhost:8080`, mapped to container port `80`
-- `backend` on `localhost:8000`
-
-Do not use `compose.local.yaml` in Coolify. If a product needs different local ports, change only the local override and keep `compose.yaml` private-by-default.
+- Source: GoodMorning Coolify GitHub App.
+- Repository: `goodmorning-mx/factory-smoke-test`.
+- Branch: `dev`.
+- Compose path: `/compose.yaml`.
+- Coolify environment name: `dev`.
+- Frontend domain: `https://dev.factory-smoke-test.goodmorning.mx` routed to service `frontend`, port `80`.
+- Backend domain: `https://api.dev.factory-smoke-test.goodmorning.mx` routed to service `backend`, port `8000`.
+- Initial application payload: `instant_deploy=false`.
 
 ## Review checklist
 
-Before merging Compose changes, verify that:
-
 1. `compose.yaml` has no `ports` key for `frontend` or `backend`.
 2. Public HTTP routing is configured in Coolify domains, not host port mappings.
-3. PostgreSQL remains reachable only from backend containers and is not published by the local frontend/backend override.
-4. `.env.example` uses safe placeholders only; no real database passwords are committed.
+3. PostgreSQL remains reachable only from backend containers.
+4. Frontend and backend health checks are present before provisioning.
+5. Initial provisioning creates or reconciles resources only; deployment is queued later after manual review.

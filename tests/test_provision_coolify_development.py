@@ -111,7 +111,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                     ],
                 )
                 return pc.Response(
-                    201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
+                    201, {"uuid": "app-1", "name": "factory-smoke-test-dev"}, {}
                 )
             if path == "/applications/app-1" or path == "/applications/existing-app":
                 if method == "GET":
@@ -639,7 +639,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         )
         self.assertEqual(
             result["environment"],
-            {"name": "development", "coolify_name": "dev", "created": False},
+            {"name": "dev", "coolify_name": "dev", "created": False},
         )
         self.assertEqual(result["would_create_project"], {"name": pc.DEFAULT_PRODUCT})
         self.assertNotIn("would_create_environment", result)
@@ -694,7 +694,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(200, [], {})
             if path == "/applications/private-github-app":
                 return pc.Response(
-                    201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
+                    201, {"uuid": "app-1", "name": "factory-smoke-test-dev"}, {}
                 )
             if path == "/applications/app-1/envs":
                 return pc.Response(
@@ -733,18 +733,18 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         )
         self.assertEqual(
             result["environment"],
-            {"name": "development", "coolify_name": "dev", "created": False},
+            {"name": "dev", "coolify_name": "dev", "created": False},
         )
         self.assertEqual(
             calls.index(("POST", "/projects", {"name": pc.DEFAULT_PRODUCT})), 4
         )
         self.assertIn(("GET", "/projects/new-project", None), calls)
         ensure.assert_called_once_with("new-project")
-        queue.assert_called_once_with("app-1")
-        wait.assert_called_once_with("deploy-1")
-        health.assert_called_once()
+        queue.assert_not_called()
+        wait.assert_not_called()
+        health.assert_not_called()
         self.assertNotIn(
-            ("POST", "/projects/new-project/environment", {"name": "development"}),
+            ("POST", "/projects/new-project/environment", {"name": "dev"}),
             calls,
         )
 
@@ -784,24 +784,21 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         calls = []
         with mock.patch.object(
             pc, "request", side_effect=self.api_side_effect(calls)
-        ), mock.patch.object(
-            pc, "queue_deployment", return_value={"uuid": "deploy-1", "force": True}
-        ) as queue, mock.patch.object(
-            pc,
-            "wait_for_deployment",
-            return_value={"uuid": "deploy-1", "status": "success"},
-        ) as wait, mock.patch.object(
-            pc, "verify_development_health", return_value=[]
-        ) as health:
+        ), mock.patch.object(pc, "queue_deployment") as queue, mock.patch.object(
+            pc, "wait_for_deployment"
+        ) as wait, mock.patch.object(pc, "verify_development_health") as health:
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "created")
         self.assertEqual(
             result["deployment"],
-            {"uuid": "deploy-1", "force": True, "status": "success"},
+            {
+                "queued": False,
+                "reason": "instant_deploy=false; deploy manually after review",
+            },
         )
-        queue.assert_called_once_with("app-1")
-        wait.assert_called_once_with("deploy-1")
-        health.assert_called_once()
+        queue.assert_not_called()
+        wait.assert_not_called()
+        health.assert_not_called()
         posts = [
             call
             for call in calls
@@ -865,17 +862,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         }
         with mock.patch.object(
             pc, "request", side_effect=self.api_side_effect(calls, existing=existing)
-        ), mock.patch.object(
-            pc,
-            "queue_deployment",
-            return_value={"uuid": "deploy-existing", "force": True},
-        ) as queue, mock.patch.object(
-            pc,
-            "wait_for_deployment",
-            return_value={"uuid": "deploy-existing", "status": "success"},
-        ), mock.patch.object(
-            pc, "verify_development_health", return_value=[]
-        ):
+        ), mock.patch.object(pc, "queue_deployment") as queue, mock.patch.object(
+            pc, "wait_for_deployment"
+        ) as wait, mock.patch.object(pc, "verify_development_health") as health:
             result = pc.provision(args(dry_run=False))
 
         self.assertEqual(result["status"], "exists")
@@ -884,7 +873,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertIn(
             ("PATCH", "/applications/existing-app"), [(m, p) for m, p, _ in calls]
         )
-        queue.assert_called_once_with("existing-app")
+        queue.assert_not_called()
+        wait.assert_not_called()
+        health.assert_not_called()
 
     def test_existing_application_with_redacted_compose_raw_deploys_when_source_is_configured(
         self,
@@ -1010,7 +1001,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(200, [], {})
             if path == "/applications/private-github-app":
                 return pc.Response(
-                    201, {"uuid": "app-1", "name": "factory-smoke-test-development"}, {}
+                    201, {"uuid": "app-1", "name": "factory-smoke-test-dev"}, {}
                 )
             if path == "/applications/app-1/envs":
                 return pc.Response(

@@ -33,13 +33,27 @@ class CoolifyComposeTests(unittest.TestCase):
         self.assertIn('      - "80"', frontend)
         self.assertNotIn('      - "8080"', frontend)
 
-    def test_local_override_maps_host_8080_to_frontend_container_80(self):
-        local = (ROOT / "compose.local.yaml").read_text()
+    def test_frontend_and_backend_define_container_healthchecks(self):
+        compose = (ROOT / "compose.yaml").read_text()
 
-        self.assertEqual(local.count("ports:"), 2)
-        self.assertIn('      - "8080:80"', local)
-        self.assertIn('      - "8000:8000"', local)
-        self.assertNotIn("5432:5432", local)
+        frontend = self.service_block(compose, "frontend")
+        backend = self.service_block(compose, "backend")
+        self.assertIn("healthcheck:", frontend)
+        self.assertIn("http://127.0.0.1/", frontend)
+        self.assertIn("healthcheck:", backend)
+        self.assertIn("http://127.0.0.1:8000/", backend)
+
+    def test_no_local_compose_override_is_part_of_coolify_pattern(self):
+        self.assertFalse((ROOT / "compose.local.yaml").exists())
+
+    def test_factory_ci_validates_only_compose_yaml_healthchecks(self):
+        workflow = (ROOT / ".github" / "workflows" / "factory-ci.yml").read_text()
+
+        self.assertIn("Path('compose.yaml').read_text()", workflow)
+        self.assertNotIn("Path('compose.local.yaml').read_text()", workflow)
+        self.assertIn("http://127.0.0.1/", workflow)
+        self.assertIn("http://127.0.0.1:8000/", workflow)
+        self.assertIn("must not publish host ports", workflow)
 
 
 if __name__ == "__main__":
