@@ -4,6 +4,7 @@
 
 ## Deployment default
 
+- `frontend` uses the default `nginx:1.27-alpine` image in this factory baseline; there is no repository `Dockerfile` or `nginx.conf` override, so the real nginx listen port is container port `80`.
 - `frontend` reaches the API through `http://backend:8000` on the internal `app` network.
 - `backend` reaches PostgreSQL through `postgres:5432` on the internal `data` network.
 - `postgres` is attached only to the internal `data` network.

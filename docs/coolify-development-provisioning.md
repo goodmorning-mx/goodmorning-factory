@@ -59,7 +59,7 @@ After a successful `dry_run=false` provisioning or idempotent reuse of an existi
 - The application create payload sets `instant_deploy=false`; the explicit deployment step only runs later in the same workflow when `dry_run=false` and provisioning or idempotent reuse succeeds.
 
 - Before any `dry_run=false` rebuild/deploy queue operation, the script upserts Coolify application environment variables with safe dev values: `VITE_API_URL=https://api.dev.<product>.goodmorning.mx`, `CORS_ORIGINS=https://dev.<product>.goodmorning.mx`, and `APP_ENV=dev`. Existing variables are discovered with `GET /applications/{application_uuid}/envs` before each update path; the script updates only variables that Coolify currently returns and uses the Coolify v4.1.2 collection update endpoint `PATCH /applications/{application_uuid}/envs`, not the item delete-only route `PATCH /applications/{application_uuid}/envs/{env_uuid}`.
-- The script configures Docker Compose domains without forcing overrides or host port publishing: `frontend` uses the HTTPS development domain and `backend` uses the same host prefixed with `api.`. Public Coolify domains and smoke checks omit explicit ports. Each Docker Compose domain item contains only `name` and `domain`, matching Coolify's accepted payload shape.
+- The script configures Docker Compose domains without forcing overrides or host port publishing: `frontend` uses the HTTPS development domain and `backend` uses the same host prefixed with `api.`. Public Coolify domains and smoke checks omit explicit ports. Each Docker Compose domain item contains `name`, `domain`, and `port` so Coolify routes public HTTPS traffic to the service port exposed inside the Docker Compose network.
 - The script never prints `COOLIFY_API_TOKEN`.
 - Production provisioning and production deployments are out of scope and require the release PR flow plus Abel's explicit approval.
 
@@ -76,11 +76,13 @@ Successful dry-runs print JSON similar to:
   "docker_compose_domains": [
     {
       "name": "frontend",
-      "domain": "https://dev.factory-smoke-test.goodmorning.mx"
+      "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+      "port": 80
     },
     {
       "name": "backend",
-      "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"
+      "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+      "port": 8000
     }
   ],
   "coolify_github_app_name": "goodmorning-mx-coolify",
@@ -96,11 +98,13 @@ Successful dry-runs print JSON similar to:
     "docker_compose_domains": [
       {
         "name": "frontend",
-        "domain": "https://dev.factory-smoke-test.goodmorning.mx"
+        "domain": "https://dev.factory-smoke-test.goodmorning.mx",
+        "port": 80
       },
       {
         "name": "backend",
-        "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"
+        "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+        "port": 8000
       }
     ],
     "force_domain_override": false

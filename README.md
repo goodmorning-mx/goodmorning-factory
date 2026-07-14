@@ -3,7 +3,7 @@ Operating system and software factory standards for GoodMorning.
 
 ## Coolify-safe Compose baseline
 
-This repository includes a Coolify-safe `compose.yaml` baseline for frontend, backend, and PostgreSQL services. The deployment file does not publish frontend or backend host ports; it keeps the current service images and application wiring while documenting container-only access with `expose` on frontend container port `80` and backend port `8000`. Services communicate through Docker DNS and internal networks.
+This repository includes a Coolify-safe `compose.yaml` baseline for frontend, backend, and PostgreSQL services. The frontend baseline uses the default `nginx:1.27-alpine` image without a repository Dockerfile or nginx.conf override, so the real nginx listen port is container port `80`. The deployment file does not publish frontend or backend host ports; it keeps the current service images and application wiring while documenting container-only access with `expose` on frontend container port `80` and backend port `8000`. Services communicate through Docker DNS and internal networks.
 
 Use `compose.local.yaml` only for local development when workstation port access is required:
 

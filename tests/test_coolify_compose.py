@@ -21,13 +21,15 @@ class CoolifyComposeTests(unittest.TestCase):
         end = min(following) if following else len(lines)
         return "\n".join(lines[start:end])
 
-    def test_coolify_compose_uses_nginx_listen_port_without_host_publish(self):
+    def test_coolify_compose_uses_real_nginx_port_without_host_publish(self):
         compose = (ROOT / "compose.yaml").read_text()
 
         self.assertNotIn("\n    ports:", compose)
         self.assertNotIn("\nports:", compose)
         self.assertIn('image: ${FRONTEND_IMAGE:-nginx:1.27-alpine}', compose)
         frontend = self.service_block(compose, "frontend")
+        self.assertNotIn('    command:', frontend)
+        self.assertNotIn('listen 8080;', frontend)
         self.assertIn('      - "80"', frontend)
         self.assertNotIn('      - "8080"', frontend)
 
