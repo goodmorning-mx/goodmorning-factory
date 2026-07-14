@@ -9,6 +9,12 @@ services:
       BACKEND_URL: http://backend:8000
     expose:
       - "80"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1/ >/dev/null"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - app
 
@@ -21,6 +27,16 @@ services:
       DATABASE_URL: postgresql://goodmorning:${POSTGRES_PASSWORD:-change-me-for-local-only}@postgres:5432/goodmorning
     expose:
       - "8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          python -c 'import urllib.request;
+          urllib.request.urlopen("http://127.0.0.1:8000/", timeout=3).read()'
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
     networks:
       - app
       - data

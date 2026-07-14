@@ -20,7 +20,7 @@ DEFAULT_REPOSITORY = "goodmorning-mx/factory-smoke-test"
 DEFAULT_BRANCH = "dev"
 DEFAULT_COMPOSE = "/compose.yaml"
 DEFAULT_DOMAIN = "dev.factory-smoke-test.goodmorning.mx"
-DEFAULT_ENVIRONMENT = "development"
+DEFAULT_ENVIRONMENT = "dev"
 COOLIFY_DEFAULT_ENVIRONMENT = "production"
 COOLIFY_DEVELOPMENT_ENVIRONMENT = "dev"
 DEFAULT_COOLIFY_GITHUB_APP_NAME = "goodmorning-mx-coolify"
@@ -865,10 +865,10 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
                         result["application"]["uuid"], args
                     )
                 )
-                deployment = queue_deployment(result["application"]["uuid"])
-                deployment.update(wait_for_deployment(deployment["uuid"]))
-                result["deployment"] = deployment
-                result["health_checks"] = verify_development_health(args)
+                result["deployment"] = {
+                    "queued": False,
+                    "reason": "instant_deploy=false; deploy manually after review",
+                }
         else:
             result["status"] = "recreate_required"
             result["recreate_required"] = True
@@ -889,10 +889,10 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
     result["environment_variables_configured"] = (
         configure_application_environment_variables(result["application"]["uuid"], args)
     )
-    deployment = queue_deployment(result["application"]["uuid"])
-    deployment.update(wait_for_deployment(deployment["uuid"]))
-    result["deployment"] = deployment
-    result["health_checks"] = verify_development_health(args)
+    result["deployment"] = {
+        "queued": False,
+        "reason": "instant_deploy=false; deploy manually after review",
+    }
     return result
 
 
