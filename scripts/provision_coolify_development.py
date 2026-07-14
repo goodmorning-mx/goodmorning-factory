@@ -486,7 +486,7 @@ def environment_variable_key(item: dict[str, Any]) -> str | None:
     return normalized or None
 
 
-def environment_variable_uuid(item: dict[str, Any]) -> Any:
+def application_environment_variable_identifier(item: dict[str, Any]) -> Any:
     return field(item, "uuid", "id")
 
 
@@ -501,15 +501,15 @@ def application_environment_variables(application_uuid: Any) -> list[dict[str, A
 def patch_application_environment_variable(
     application_uuid: Any, key: str, value: str, existing: dict[str, Any]
 ) -> None:
-    existing_uuid = environment_variable_uuid(existing)
-    if not existing_uuid:
+    existing_identifier = application_environment_variable_identifier(existing)
+    if not existing_identifier:
         raise ProvisioningError(
-            f"Existing Coolify environment variable {key!r} did not include a uuid; refusing to create a duplicate.",
+            f"Existing Coolify environment variable {key!r} did not include an identifier from the envs endpoint; refusing to update without first confirming the existing variable.",
             code=2,
         )
     request(
         "PATCH",
-        f"/applications/{application_uuid}/envs/{existing_uuid}",
+        f"/applications/{application_uuid}/envs",
         body={"key": key, "value": value},
     )
 
