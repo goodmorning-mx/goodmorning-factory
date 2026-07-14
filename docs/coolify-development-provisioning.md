@@ -38,7 +38,7 @@ The manual workflow `.github/workflows/provision-coolify-development.yml` calls 
 
 If the product project does not exist, `dry_run=true` returns `status: dry_run` and reports `would_create_project` without sending writes to Coolify. With `dry_run=false`, the script creates the missing project with `POST /projects`, queries the new project details with `GET /projects/{project_uuid}`, and then continues application provisioning. If the project already exists, including the already-created `factory-smoke-test` project, the script reuses it idempotently and queries its details before building the application payload.
 
-Coolify development applications are created in the Coolify `dev` environment. The workflow does **not** call `POST /projects/{project_uuid}/environment`; when `dry_run=false`, it runs exactly `ensure-dev-env <project_uuid>` over SSH after creating or finding the project. The SSH invocation is built as a fixed argument list, uses the configured key and pinned known-hosts file, validates the helper's JSON response, and does not accept arbitrary SSH commands.
+Coolify development applications are created in the Coolify `dev` environment. The workflow does **not** call `POST /projects/{project_uuid}/environment`; when `dry_run=false`, it runs exactly `ensure-dev-env <project_uuid>` over SSH after creating or finding the project. The SSH invocation is built as a fixed argument list, uses the configured key and pinned known-hosts file, validates the helper's JSON response without printing the complete SSH response, and does not accept arbitrary SSH commands.
 
 The GitHub App source lookup must find exactly one source with the requested name. It fails when the source is missing or duplicated, and it rejects `Public GitHub` for private GoodMorning repositories so private repositories use the installed GoodMorning Coolify GitHub App.
 
@@ -54,7 +54,7 @@ If an existing application already references the repository/branch or developme
 - The script never deletes Coolify resources.
 - The script only allows the `dev` branch and `dev.` domains.
 - With `dry_run=true`, the script never runs SSH.
-- With `dry_run=false`, the script runs only `ensure-dev-env <project_uuid>` over SSH and validates the returned JSON before creating or reconciling the application.
+- With `dry_run=false`, the script runs only `ensure-dev-env <project_uuid>` over SSH and validates that SSH exits with code 0, `project_uuid` matches the requested project, `name` is `dev`, `environment_uuid` is a valid UUID, and `created` is boolean before creating or reconciling the application.
 - The application create payload uses `environment_name=dev`; it does not create the development application inside Coolify `production`.
 - The script never deploys immediately; the create payload sets `instant_deploy=false`.
 - The script configures Docker Compose domains without forcing overrides: `frontend` uses the HTTPS development domain and `backend` uses the same host prefixed with `api.`.

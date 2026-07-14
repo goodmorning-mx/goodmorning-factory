@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Provision a Coolify development environment for a GoodMorning product."""
+
 from __future__ import annotations
 
 import argparse
@@ -7,6 +8,7 @@ import json
 import os
 import subprocess
 import sys
+import uuid
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -92,18 +94,33 @@ def request(method: str, path: str, *, body: dict[str, Any] | None = None) -> Re
         except json.JSONDecodeError:
             parsed = {"message": raw}
         message = parsed.get("message") if isinstance(parsed, dict) else raw
-        raise ProvisioningError(f"Coolify API {exc.code} for {method} {path}: {message}", code=2)
+        raise ProvisioningError(
+            f"Coolify API {exc.code} for {method} {path}: {message}", code=2
+        )
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise ProvisioningError(f"Network timeout or connection failure for {method} {path}: {exc}", code=2)
+        raise ProvisioningError(
+            f"Network timeout or connection failure for {method} {path}: {exc}", code=2
+        )
     except json.JSONDecodeError as exc:
-        raise ProvisioningError(f"Malformed JSON response for {method} {path}: {exc}", code=2)
+        raise ProvisioningError(
+            f"Malformed JSON response for {method} {path}: {exc}", code=2
+        )
 
 
 def items(data: Any) -> list[dict[str, Any]]:
     if isinstance(data, list):
         return [item for item in data if isinstance(item, dict)]
     if isinstance(data, dict):
-        for key in ("data", "items", "projects", "servers", "sources", "applications", "github_apps", "githubApps"):
+        for key in (
+            "data",
+            "items",
+            "projects",
+            "servers",
+            "sources",
+            "applications",
+            "github_apps",
+            "githubApps",
+        ):
             value = data.get(key)
             if isinstance(value, list):
                 return [item for item in value if isinstance(item, dict)]
@@ -117,7 +134,9 @@ def field(item: dict[str, Any], *names: str) -> Any:
     return None
 
 
-def discover_project(projects: list[dict[str, Any]], product: str) -> dict[str, Any] | None:
+def discover_project(
+    projects: list[dict[str, Any]], product: str
+) -> dict[str, Any] | None:
     for project in projects:
         name = str(field(project, "name", "slug", "uuid") or "").lower()
         if name == product.lower() or product.lower() in name:
@@ -125,7 +144,9 @@ def discover_project(projects: list[dict[str, Any]], product: str) -> dict[str, 
     return None
 
 
-def project_environment(project: dict[str, Any], environment: str) -> dict[str, Any] | None:
+def project_environment(
+    project: dict[str, Any], environment: str
+) -> dict[str, Any] | None:
     raw_environments = field(project, "environments", "environment")
     if isinstance(raw_environments, list):
         environments = [item for item in raw_environments if isinstance(item, dict)]
@@ -146,7 +167,9 @@ def create_project(args: argparse.Namespace) -> dict[str, Any]:
         raise ProvisioningError("Malformed Coolify project creation response.")
     project = created.get("data") if isinstance(created.get("data"), dict) else created
     if not isinstance(project, dict) or not field(project, "uuid", "id"):
-        raise ProvisioningError("Coolify project creation response did not include a project identifier.")
+        raise ProvisioningError(
+            "Coolify project creation response did not include a project identifier."
+        )
     return project
 
 
@@ -155,7 +178,9 @@ def project_details(project: dict[str, Any], *, dry_run: bool) -> dict[str, Any]
     if not project_uuid:
         if dry_run:
             return project
-        raise ProvisioningError("Coolify project is missing an identifier required to query project details.")
+        raise ProvisioningError(
+            "Coolify project is missing an identifier required to query project details."
+        )
     detailed = request("GET", f"/projects/{project_uuid}").data
     if not isinstance(detailed, dict):
         raise ProvisioningError("Malformed Coolify project details response.")
@@ -165,42 +190,72 @@ def project_details(project: dict[str, Any], *, dry_run: bool) -> dict[str, Any]
     return data
 
 
-def coolify_environment_for_stage(project: dict[str, Any], stage: str) -> dict[str, Any]:
+def coolify_environment_for_stage(
+    project: dict[str, Any], stage: str
+) -> dict[str, Any]:
     if stage != DEFAULT_ENVIRONMENT:
-        raise ProvisioningError("Only the GoodMorning development stage can be provisioned by this workflow.")
+        raise ProvisioningError(
+            "Only the GoodMorning development stage can be provisioned by this workflow."
+        )
     environment = project_environment(project, COOLIFY_DEVELOPMENT_ENVIRONMENT)
     if environment is None:
-        raise ProvisioningError("Coolify project details did not include the dev environment required for the GoodMorning development stage.")
+        raise ProvisioningError(
+            "Coolify project details did not include the dev environment required for the GoodMorning development stage."
+        )
     return environment
 
 
 def ssh_config_value(name: str) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
-        raise ProvisioningError(f"{name} environment variable is required when dry_run=false.")
+        raise ProvisioningError(
+            f"{name} environment variable is required when dry_run=false."
+        )
     return value
 
 
-def validate_ensure_dev_env_response(data: Any) -> dict[str, Any]:
+def is_valid_uuid(value: Any) -> bool:
+    if not isinstance(value, str) or not value.strip():
+        return False
+    try:
+        uuid.UUID(value)
+    except ValueError:
+        return False
+    return True
+
+
+def validate_ensure_dev_env_response(data: Any, project_uuid: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ProvisioningError("ensure-dev-env response must be a JSON object.")
-    status = str(data.get("status") or "").lower()
-    environment = data.get("environment")
-    if status not in {"ok", "created", "exists"}:
-        raise ProvisioningError("ensure-dev-env response did not report a successful status.")
-    if not isinstance(environment, dict):
-        raise ProvisioningError("ensure-dev-env response did not include an environment object.")
-    name = str(field(environment, "name", "slug") or "").lower()
+    expected_project_uuid = str(project_uuid)
+    response_project_uuid = str(data.get("project_uuid") or "")
+    if response_project_uuid != expected_project_uuid:
+        raise ProvisioningError(
+            "ensure-dev-env response did not match the requested project identifier."
+        )
+    name = str(data.get("name") or "").lower()
     if name != COOLIFY_DEVELOPMENT_ENVIRONMENT:
-        raise ProvisioningError("ensure-dev-env response did not confirm the dev environment.")
-    if not field(environment, "uuid", "id"):
-        raise ProvisioningError("ensure-dev-env response did not include a dev environment identifier.")
-    return environment
+        raise ProvisioningError(
+            "ensure-dev-env response did not confirm the dev environment."
+        )
+    environment_uuid = data.get("environment_uuid")
+    if not is_valid_uuid(environment_uuid):
+        raise ProvisioningError(
+            "ensure-dev-env response did not include a valid dev environment identifier."
+        )
+    created = data.get("created")
+    if not isinstance(created, bool):
+        raise ProvisioningError(
+            "ensure-dev-env response did not include a boolean created flag."
+        )
+    return {"uuid": environment_uuid, "name": name, "created": created}
 
 
 def ensure_dev_environment(project_uuid: Any) -> dict[str, Any]:
     if not project_uuid:
-        raise ProvisioningError("Coolify project identifier is required before running ensure-dev-env.")
+        raise ProvisioningError(
+            "Coolify project identifier is required before running ensure-dev-env."
+        )
     host = ssh_config_value("COOLIFY_SSH_HOST")
     user = ssh_config_value("COOLIFY_SSH_USER")
     key_path = ssh_config_value("COOLIFY_SSH_KEY_PATH")
@@ -221,25 +276,49 @@ def ensure_dev_environment(project_uuid: Any) -> dict[str, Any]:
         str(project_uuid),
     ]
     try:
-        completed = subprocess.run(command, check=False, capture_output=True, text=True, timeout=TIMEOUT_SECONDS)
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=TIMEOUT_SECONDS,
+        )
     except (OSError, subprocess.SubprocessError) as exc:
         raise ProvisioningError(f"ensure-dev-env SSH execution failed: {exc}", code=2)
     if completed.returncode != 0:
-        raise ProvisioningError(f"ensure-dev-env SSH execution failed with exit code {completed.returncode}.", code=2)
+        raise ProvisioningError(
+            f"ensure-dev-env SSH execution failed with exit code {completed.returncode}.",
+            code=2,
+        )
     try:
-        return validate_ensure_dev_env_response(json.loads(completed.stdout))
+        return validate_ensure_dev_env_response(
+            json.loads(completed.stdout), project_uuid
+        )
     except json.JSONDecodeError as exc:
-        raise ProvisioningError(f"ensure-dev-env returned malformed JSON: {exc}", code=2)
+        raise ProvisioningError(
+            f"ensure-dev-env returned malformed JSON: {exc}", code=2
+        )
 
 
 def discover_server(servers: list[dict[str, Any]]) -> dict[str, Any]:
-    candidates = [s for s in servers if not field(s, "is_build_server") and str(field(s, "name", "description", "uuid") or "").lower() != "production"]
+    candidates = [
+        s
+        for s in servers
+        if not field(s, "is_build_server")
+        and str(field(s, "name", "description", "uuid") or "").lower() != "production"
+    ]
     if len(candidates) == 1:
         return candidates[0]
     for server in candidates:
-        if str(field(server, "name", "description") or "").lower() in {"development", "dev", "staging"}:
+        if str(field(server, "name", "description") or "").lower() in {
+            "development",
+            "dev",
+            "staging",
+        }:
             return server
-    raise ProvisioningError("Unable to identify one non-production Coolify server unambiguously.")
+    raise ProvisioningError(
+        "Unable to identify one non-production Coolify server unambiguously."
+    )
 
 
 def is_private_repository(repository: str) -> bool:
@@ -252,20 +331,33 @@ def is_public_github_source(source: dict[str, Any]) -> bool:
     return name == "public github" or source_type == "public github"
 
 
-def discover_github_app(sources: list[dict[str, Any]], app_name: str, repository: str) -> dict[str, Any]:
+def discover_github_app(
+    sources: list[dict[str, Any]], app_name: str, repository: str
+) -> dict[str, Any]:
     matches = [s for s in sources if str(field(s, "name") or "") == app_name]
     if not matches:
-        raise ProvisioningError(f"Coolify GitHub App source named {app_name!r} was not found.")
+        raise ProvisioningError(
+            f"Coolify GitHub App source named {app_name!r} was not found."
+        )
     if len(matches) > 1:
-        raise ProvisioningError(f"Coolify GitHub App source named {app_name!r} is duplicated; exact source selection is ambiguous.")
+        raise ProvisioningError(
+            f"Coolify GitHub App source named {app_name!r} is duplicated; exact source selection is ambiguous."
+        )
     match = matches[0]
     if is_private_repository(repository) and is_public_github_source(match):
-        raise ProvisioningError("Public GitHub cannot be used for private GoodMorning repositories; select the GoodMorning Coolify GitHub App source.")
+        raise ProvisioningError(
+            "Public GitHub cannot be used for private GoodMorning repositories; select the GoodMorning Coolify GitHub App source."
+        )
     return match
 
 
 def docker_compose_domains(development_domain: str) -> list[dict[str, str]]:
-    frontend_host = development_domain.removeprefix("https://").removeprefix("http://").strip().rstrip("/")
+    frontend_host = (
+        development_domain.removeprefix("https://")
+        .removeprefix("http://")
+        .strip()
+        .rstrip("/")
+    )
     return [
         {"name": "frontend", "domain": f"https://{frontend_host}"},
         {"name": "backend", "domain": f"https://api.{frontend_host}"},
@@ -273,26 +365,49 @@ def docker_compose_domains(development_domain: str) -> list[dict[str, str]]:
 
 
 def domain_patch_payload(args: argparse.Namespace) -> dict[str, Any]:
-    return {"docker_compose_domains": docker_compose_domains(args.domain), "force_domain_override": False}
+    return {
+        "docker_compose_domains": docker_compose_domains(args.domain),
+        "force_domain_override": False,
+    }
 
 
 def application_summary(application: dict[str, Any]) -> dict[str, Any]:
-    data = application.get("data") if isinstance(application.get("data"), dict) else application
+    data = (
+        application.get("data")
+        if isinstance(application.get("data"), dict)
+        else application
+    )
     return {"uuid": field(data, "uuid", "id"), "name": field(data, "name")}
 
 
-def reconcile_application_domains(application_uuid: Any, args: argparse.Namespace) -> dict[str, Any]:
+def reconcile_application_domains(
+    application_uuid: Any, args: argparse.Namespace
+) -> dict[str, Any]:
     if not application_uuid:
-        raise ProvisioningError("Coolify application response did not include an identifier required to configure Docker Compose domains.")
-    return request("PATCH", f"/applications/{application_uuid}", body=domain_patch_payload(args)).data
+        raise ProvisioningError(
+            "Coolify application response did not include an identifier required to configure Docker Compose domains."
+        )
+    return request(
+        "PATCH", f"/applications/{application_uuid}", body=domain_patch_payload(args)
+    ).data
 
 
-def existing_application(applications: list[dict[str, Any]], args: argparse.Namespace) -> dict[str, Any] | None:
+def existing_application(
+    applications: list[dict[str, Any]], args: argparse.Namespace
+) -> dict[str, Any] | None:
     repo_url = f"https://github.com/{args.repository}"
     for app in applications:
-        values = {str(v).lower() for v in app.values() if isinstance(v, (str, int, float, bool))}
+        values = {
+            str(v).lower()
+            for v in app.values()
+            if isinstance(v, (str, int, float, bool))
+        }
         text = " ".join(values)
-        if args.domain.lower() in text or (args.repository.lower() in text and args.branch.lower() in text) or repo_url.lower() in text:
+        if (
+            args.domain.lower() in text
+            or (args.repository.lower() in text and args.branch.lower() in text)
+            or repo_url.lower() in text
+        ):
             return app
     return None
 
@@ -300,11 +415,18 @@ def existing_application(applications: list[dict[str, Any]], args: argparse.Name
 def github_app_uuid(github_app: dict[str, Any]) -> Any:
     uuid = field(github_app, "uuid")
     if not uuid:
-        raise ProvisioningError("Selected Coolify GitHub App source did not include a uuid; refusing to use its numeric id for private repository creation.")
+        raise ProvisioningError(
+            "Selected Coolify GitHub App source did not include a uuid; refusing to use its numeric id for private repository creation."
+        )
     return uuid
 
 
-def creation_payload(args: argparse.Namespace, project: dict[str, Any], server: dict[str, Any], github_app: dict[str, Any]) -> dict[str, Any]:
+def creation_payload(
+    args: argparse.Namespace,
+    project: dict[str, Any],
+    server: dict[str, Any],
+    github_app: dict[str, Any],
+) -> dict[str, Any]:
     return {
         "project_uuid": field(project, "uuid", "id"),
         "server_uuid": field(server, "uuid", "id"),
@@ -322,13 +444,19 @@ def creation_payload(args: argparse.Namespace, project: dict[str, Any], server: 
 
 def validate_inputs(args: argparse.Namespace) -> None:
     if args.branch != DEFAULT_BRANCH:
-        raise ProvisioningError("Only the dev branch can be provisioned by this development workflow.")
+        raise ProvisioningError(
+            "Only the dev branch can be provisioned by this development workflow."
+        )
     parsed = urlparse(args.domain if "://" in args.domain else f"//{args.domain}")
     host = parsed.netloc or parsed.path
     if not host.startswith("dev."):
-        raise ProvisioningError("Development domain must start with dev.; production domains are not allowed.")
+        raise ProvisioningError(
+            "Development domain must start with dev.; production domains are not allowed."
+        )
     if "/" in host or not host.strip() or parsed.path not in ("", host):
-        raise ProvisioningError("Development domain must be a host name without a path.")
+        raise ProvisioningError(
+            "Development domain must be a host name without a path."
+        )
 
 
 def provision(args: argparse.Namespace) -> dict[str, Any]:
@@ -352,13 +480,19 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
             ensure_dev_environment(field(project, "uuid", "id"))
         project = project_details(project, dry_run=args.dry_run)
         if args.dry_run:
-            coolify_environment = project_environment(project, COOLIFY_DEVELOPMENT_ENVIRONMENT) or {"name": COOLIFY_DEVELOPMENT_ENVIRONMENT}
+            coolify_environment = project_environment(
+                project, COOLIFY_DEVELOPMENT_ENVIRONMENT
+            ) or {"name": COOLIFY_DEVELOPMENT_ENVIRONMENT}
         else:
-            coolify_environment = coolify_environment_for_stage(project, args.environment)
+            coolify_environment = coolify_environment_for_stage(
+                project, args.environment
+            )
     else:
         coolify_environment = {"name": COOLIFY_DEVELOPMENT_ENVIRONMENT}
     server = discover_server(servers)
-    github_app = discover_github_app(github_apps, args.coolify_github_app_name, args.repository)
+    github_app = discover_github_app(
+        github_apps, args.coolify_github_app_name, args.repository
+    )
     existing = existing_application(applications, args)
     payload = creation_payload(args, project, server, github_app)
     result = {
@@ -370,10 +504,24 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         "compose": args.compose,
         "domain": args.domain,
         "docker_compose_domains": docker_compose_domains(args.domain),
-        "project": {"uuid": field(project, "uuid", "id"), "name": field(project, "name", "slug"), "created": project_created},
-        "environment": {"name": args.environment, "coolify_name": field(coolify_environment, "name", "slug", "uuid"), "created": False},
-        "server": {"uuid": field(server, "uuid", "id"), "name": field(server, "name", "description")},
-        "github_app": {"uuid": github_app_uuid(github_app), "name": field(github_app, "name")},
+        "project": {
+            "uuid": field(project, "uuid", "id"),
+            "name": field(project, "name", "slug"),
+            "created": project_created,
+        },
+        "environment": {
+            "name": args.environment,
+            "coolify_name": field(coolify_environment, "name", "slug", "uuid"),
+            "created": False,
+        },
+        "server": {
+            "uuid": field(server, "uuid", "id"),
+            "name": field(server, "name", "description"),
+        },
+        "github_app": {
+            "uuid": github_app_uuid(github_app),
+            "name": field(github_app, "name"),
+        },
         "coolify_github_app_name": args.coolify_github_app_name,
     }
     if planned_project is not None:
@@ -400,7 +548,9 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
 
 
 def parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description="Provision a Coolify development environment for a GoodMorning product.")
+    p = argparse.ArgumentParser(
+        description="Provision a Coolify development environment for a GoodMorning product."
+    )
     p.add_argument("--product", default=DEFAULT_PRODUCT)
     p.add_argument("--repository", default=DEFAULT_REPOSITORY)
     p.add_argument("--branch", default=DEFAULT_BRANCH)
@@ -419,7 +569,10 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(provision(args), sort_keys=True))
         return 0
     except ProvisioningError as exc:
-        print(json.dumps({"status": exc.status, "error": exc.message}, sort_keys=True), file=sys.stderr)
+        print(
+            json.dumps({"status": exc.status, "error": exc.message}, sort_keys=True),
+            file=sys.stderr,
+        )
         return exc.code
 
 
