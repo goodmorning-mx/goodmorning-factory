@@ -31,6 +31,7 @@ DEPLOYMENT_TIMEOUT_SECONDS = 600
 DEPLOYMENT_POLL_SECONDS = 10
 HEALTH_TIMEOUT_SECONDS = 30
 SENSITIVE_ENV = ("COOLIFY_API_TOKEN",)
+REAL_DEPLOY_ENV = "COOLIFY_ALLOW_REAL_DEPLOYMENT"
 ENVIRONMENT_UUID_RE = re.compile(r"^[a-z0-9]{24}$")
 
 
@@ -460,16 +461,24 @@ def backend_url(development_domain: str) -> str:
 
 
 def frontend_compose_domain(development_domain: str) -> str:
-    return f"https://{frontend_host(development_domain)}:80"
+    return frontend_url(development_domain)
 
 
 def backend_compose_domain(development_domain: str) -> str:
-    return f"https://{backend_host(development_domain)}:8000"
+    return backend_url(development_domain)
 
 
 def verify_development_health(args: argparse.Namespace) -> list[dict[str, Any]]:
     urls = [f"{frontend_url(args.domain)}/", f"{backend_url(args.domain)}/health"]
     return [verify_url(url) for url in urls]
+
+
+def real_deployment_authorized() -> bool:
+    return os.environ.get(REAL_DEPLOY_ENV, "").strip().lower() in {"1", "true", "yes"}
+
+
+def should_deploy(args: argparse.Namespace) -> bool:
+    return bool(getattr(args, "deploy", False)) and not args.dry_run
 
 
 def desired_environment_variables(args: argparse.Namespace) -> dict[str, str]:
@@ -874,6 +883,8 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
             if args.dry_run:
                 result["would_patch"] = domain_patch_payload(args)
             else:
+                wait_for_docker_compose_raw(result["application"]["uuid"])
+                result["docker_compose_raw_loaded"] = True
                 reconcile_application_domains(result["application"]["uuid"], args)
                 result["domain_reconciled"] = True
                 result["environment_variables_configured"] = (
@@ -881,10 +892,11 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
                         result["application"]["uuid"], args
                     )
                 )
-                result["deployment"] = {
-                    "queued": False,
-                    "reason": "instant_deploy=false; deploy manually after review",
-                }
+                result["deployment"] = deployment_result(
+                    result["application"]["uuid"], args
+                )
+                if result["deployment"].get("queued"):
+                    result["health_checks"] = verify_development_health(args)
         else:
             result["status"] = "recreate_required"
             result["recreate_required"] = True
@@ -901,15 +913,33 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(created, dict):
         raise ProvisioningError("Malformed Coolify application creation response.")
     result["application"] = application_summary(created)
+    wait_for_docker_compose_raw(result["application"]["uuid"])
+    result["docker_compose_raw_loaded"] = True
     result["domain_reconciled"] = True
     result["environment_variables_configured"] = (
         configure_application_environment_variables(result["application"]["uuid"], args)
     )
-    result["deployment"] = {
-        "queued": False,
-        "reason": "instant_deploy=false; deploy manually after review",
-    }
+    result["deployment"] = deployment_result(result["application"]["uuid"], args)
+    if result["deployment"].get("queued"):
+        result["health_checks"] = verify_development_health(args)
     return result
+
+
+def deployment_result(
+    application_uuid: Any, args: argparse.Namespace
+) -> dict[str, Any]:
+    if not should_deploy(args):
+        return {
+            "queued": False,
+            "reason": "instant_deploy=false; explicit deployment was not requested",
+        }
+    if not real_deployment_authorized():
+        raise ProvisioningError(
+            f"Real Coolify deployment requires {REAL_DEPLOY_ENV}=true.", code=2
+        )
+    queued = queue_deployment(application_uuid)
+    completed = wait_for_deployment(queued["uuid"])
+    return {"queued": True, "request": queued, "completed": completed}
 
 
 def parser() -> argparse.ArgumentParser:
@@ -924,12 +954,14 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--environment", default=DEFAULT_ENVIRONMENT)
     p.add_argument("--coolify-github-app-name", default=DEFAULT_COOLIFY_GITHUB_APP_NAME)
     p.add_argument("--dry-run", default="true", choices=("true", "false"))
+    p.add_argument("--deploy", default="false", choices=("true", "false"))
     return p
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     args.dry_run = args.dry_run == "true"
+    args.deploy = args.deploy == "true"
     try:
         result = provision(args)
         print(json.dumps(result, sort_keys=True))

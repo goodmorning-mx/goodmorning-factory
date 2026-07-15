@@ -19,6 +19,7 @@ def args(**kw):
         domain=pc.DEFAULT_DOMAIN,
         environment=pc.DEFAULT_ENVIRONMENT,
         dry_run=True,
+        deploy=False,
         coolify_github_app_name=pc.DEFAULT_COOLIFY_GITHUB_APP_NAME,
     )
     base.update(kw)
@@ -100,11 +101,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                     [
                         {
                             "name": "frontend",
-                            "domain": "https://dev.factory-smoke-test.goodmorning.mx:80",
+                            "domain": "https://dev.factory-smoke-test.goodmorning.mx",
                         },
                         {
                             "name": "backend",
-                            "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
+                            "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
                         },
                     ],
                 )
@@ -128,11 +129,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         "docker_compose_domains": [
                             {
                                 "name": "frontend",
-                                "domain": "https://dev.factory-smoke-test.goodmorning.mx:80",
+                                "domain": "https://dev.factory-smoke-test.goodmorning.mx",
                             },
                             {
                                 "name": "backend",
-                                "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
+                                "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
                             },
                         ],
                         "force_domain_override": False,
@@ -159,11 +160,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             [
                 {
                     "name": "frontend",
-                    "domain": "https://dev.factory-smoke-test.goodmorning.mx:80",
+                    "domain": "https://dev.factory-smoke-test.goodmorning.mx",
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
+                    "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
                 },
             ],
         )
@@ -183,11 +184,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             [
                 {
                     "name": "frontend",
-                    "domain": "https://dev.example.goodmorning.mx:80",
+                    "domain": "https://dev.example.goodmorning.mx",
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.example.goodmorning.mx:8000",
+                    "domain": "https://api.dev.example.goodmorning.mx",
                 },
             ],
         )
@@ -202,11 +203,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             [
                 {
                     "name": "frontend",
-                    "domain": "https://dev.example.goodmorning.mx:80",
+                    "domain": "https://dev.example.goodmorning.mx",
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.example.goodmorning.mx:8000",
+                    "domain": "https://api.dev.example.goodmorning.mx",
                 },
             ],
         )
@@ -376,10 +377,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         {},
                     )
                 return pc.Response(201, kwargs.get("body"), {})
-            if (
-                path == "/applications/app-1/envs"
-                and method == "PATCH"
-            ):
+            if path == "/applications/app-1/envs" and method == "PATCH":
                 return pc.Response(200, kwargs.get("body"), {})
             raise AssertionError((method, path))
 
@@ -440,9 +438,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             raise AssertionError((method, path))
 
         with mock.patch.object(pc, "request", side_effect=fake_request):
-            with self.assertRaisesRegex(
-                pc.ProvisioningError, "refusing to update"
-            ):
+            with self.assertRaisesRegex(pc.ProvisioningError, "refusing to update"):
                 pc.configure_application_environment_variables(
                     "app-1", args(product="ledger")
                 )
@@ -686,6 +682,12 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(
                     201, {"uuid": "app-1", "name": "factory-smoke-test-dev"}, {}
                 )
+            if path == "/applications/app-1":
+                return pc.Response(
+                    200,
+                    {"uuid": "app-1", "docker_compose_raw": "services: {}"},
+                    {},
+                )
             if path == "/applications/app-1/envs":
                 return pc.Response(
                     200 if method == "GET" else 201,
@@ -713,7 +715,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "created")
         self.assertTrue(result["domain_reconciled"])
-        self.assertNotIn(("GET", "/applications/app-1", None), calls)
+        self.assertIn(("GET", "/applications/app-1", None), calls)
         self.assertNotIn(
             ("PATCH", "/applications/app-1"), [(m, p) for m, p, _ in calls]
         )
@@ -776,14 +778,16 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             pc, "request", side_effect=self.api_side_effect(calls)
         ), mock.patch.object(pc, "queue_deployment") as queue, mock.patch.object(
             pc, "wait_for_deployment"
-        ) as wait, mock.patch.object(pc, "verify_development_health") as health:
+        ) as wait, mock.patch.object(
+            pc, "verify_development_health"
+        ) as health:
             result = pc.provision(args(dry_run=False))
         self.assertEqual(result["status"], "created")
         self.assertEqual(
             result["deployment"],
             {
                 "queued": False,
-                "reason": "instant_deploy=false; deploy manually after review",
+                "reason": "instant_deploy=false; explicit deployment was not requested",
             },
         )
         queue.assert_not_called()
@@ -801,17 +805,17 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertNotIn("domains", posts[0][2])
         self.assertEqual(
             posts[0][2]["docker_compose_domains"][0]["domain"],
-            "https://dev.factory-smoke-test.goodmorning.mx:80",
+            "https://dev.factory-smoke-test.goodmorning.mx",
         )
         self.assertEqual(
             posts[0][2]["docker_compose_domains"][1]["domain"],
-            "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
+            "https://api.dev.factory-smoke-test.goodmorning.mx",
         )
         self.assertFalse(posts[0][2]["force_domain_override"])
         self.assertEqual(posts[0][2]["base_directory"], "/")
         self.assertEqual(posts[0][2]["docker_compose_location"], "/compose.yaml")
         self.assertEqual(posts[0][2]["environment_name"], "dev")
-        self.assertNotIn(("GET", "/applications/app-1"), [(m, p) for m, p, _ in calls])
+        self.assertIn(("GET", "/applications/app-1"), [(m, p) for m, p, _ in calls])
         self.assertNotIn(
             ("PATCH", "/applications/app-1"), [(m, p) for m, p, _ in calls]
         )
@@ -858,7 +862,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             pc, "request", side_effect=self.api_side_effect(calls, existing=existing)
         ), mock.patch.object(pc, "queue_deployment") as queue, mock.patch.object(
             pc, "wait_for_deployment"
-        ) as wait, mock.patch.object(pc, "verify_development_health") as health:
+        ) as wait, mock.patch.object(
+            pc, "verify_development_health"
+        ) as health:
             result = pc.provision(args(dry_run=False))
 
         self.assertEqual(result["status"], "exists")
@@ -996,6 +1002,12 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             if path == "/applications/private-github-app":
                 return pc.Response(
                     201, {"uuid": "app-1", "name": "factory-smoke-test-dev"}, {}
+                )
+            if path == "/applications/app-1":
+                return pc.Response(
+                    200,
+                    {"uuid": "app-1", "docker_compose_raw": "services: {}"},
+                    {},
                 )
             if path == "/applications/app-1/envs":
                 return pc.Response(
@@ -1255,6 +1267,33 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(result["status"], "dry_run")
         queue.assert_not_called()
         health.assert_not_called()
+
+    def test_deployment_result_requires_explicit_environment_authorization(self):
+        with mock.patch.dict(os.environ, {}, clear=True), mock.patch.object(
+            pc, "queue_deployment"
+        ) as queue:
+            with self.assertRaisesRegex(pc.ProvisioningError, pc.REAL_DEPLOY_ENV):
+                pc.deployment_result("app-1", args(dry_run=False, deploy=True))
+        queue.assert_not_called()
+
+    def test_deployment_result_queues_waits_and_returns_completed_status_when_authorized(
+        self,
+    ):
+        with mock.patch.dict(
+            os.environ, {pc.REAL_DEPLOY_ENV: "true"}, clear=True
+        ), mock.patch.object(
+            pc, "queue_deployment", return_value={"uuid": "deploy-1", "force": True}
+        ) as queue, mock.patch.object(
+            pc,
+            "wait_for_deployment",
+            return_value={"uuid": "deploy-1", "status": "success"},
+        ) as wait:
+            result = pc.deployment_result("app-1", args(dry_run=False, deploy=True))
+
+        self.assertTrue(result["queued"])
+        self.assertEqual(result["completed"], {"uuid": "deploy-1", "status": "success"})
+        queue.assert_called_once_with("app-1")
+        wait.assert_called_once_with("deploy-1")
 
 
 class ProvisionCoolifyWorkflowTests(unittest.TestCase):

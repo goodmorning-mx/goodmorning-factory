@@ -19,8 +19,8 @@ Factory smoke-test development provisioning should create a Docker Compose appli
 - Branch: `dev`.
 - Compose path: `/compose.yaml`.
 - Coolify environment name: `dev`.
-- Frontend domain: `https://dev.factory-smoke-test.goodmorning.mx:80` routed to service `frontend`, port `80`.
-- Backend domain: `https://api.dev.factory-smoke-test.goodmorning.mx:8000` routed to service `backend`, port `8000`.
+- Frontend domain: `https://dev.factory-smoke-test.goodmorning.mx` routed by Coolify to service `frontend`, internal port `80`.
+- Backend domain: `https://api.dev.factory-smoke-test.goodmorning.mx` routed by Coolify to service `backend`, internal port `8000`.
 - Initial application payload: `instant_deploy=false`.
 
 ## Review checklist
@@ -29,4 +29,4 @@ Factory smoke-test development provisioning should create a Docker Compose appli
 2. Public HTTP routing is configured in Coolify domains, not host port mappings.
 3. PostgreSQL remains reachable only from backend containers.
 4. Frontend and backend health checks are present before provisioning.
-5. Initial provisioning creates or reconciles resources only; deployment is queued later after manual review.
+5. Initial provisioning keeps `instant_deploy=false`; deployment is queued only by the explicit API deployment step after configuration and authorization.

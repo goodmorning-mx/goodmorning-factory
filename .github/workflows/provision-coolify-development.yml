@@ -35,6 +35,14 @@ on:
         description: 'Exact Coolify GitHub App source name.'
         required: true
         default: goodmorning-mx-coolify
+      deploy:
+        description: 'Request an explicit Coolify deployment after configuration.'
+        type: choice
+        required: true
+        default: 'false'
+        options:
+          - 'false'
+          - 'true'
 
 permissions:
   contents: read
@@ -47,6 +55,7 @@ jobs:
       COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
       COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
       DEVELOPMENT_DOMAIN: ${{ inputs.domain }}
+      COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -78,6 +87,11 @@ jobs:
             exit 1
           fi
 
+          if [ "${{ inputs.deploy }}" = "true" ] && [ "${COOLIFY_ALLOW_REAL_DEPLOYMENT:-}" != "true" ]; then
+            echo "Set repository variable COOLIFY_ALLOW_REAL_DEPLOYMENT=true before requesting a real Coolify deployment."
+            exit 1
+          fi
+
       - name: Discover and optionally provision Coolify resource
         shell: bash
         run: |
@@ -92,7 +106,8 @@ jobs:
             --branch "${{ inputs.branch }}" \
             --compose "${{ inputs.compose }}" \
             --domain "${{ inputs.domain }}" \
-            --coolify-github-app-name "${{ inputs.coolify_github_app_name }}" | tee "${output_file}"
+            --coolify-github-app-name "${{ inputs.coolify_github_app_name }}" \
+            --deploy "${{ inputs.deploy }}" | tee "${output_file}"
 
           if python - "${output_file}" <<'PY'
           import json

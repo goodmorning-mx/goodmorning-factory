@@ -1,6 +1,6 @@
 # Coolify development environment provisioning
 
-This document describes the manual GitHub Actions workflow for preparing a product **development** environment in Coolify. It intentionally defaults to `dry_run=true`; the first safe run only discovers Coolify resources and prints the resource that would be created.
+This document describes the manual GitHub Actions workflow for preparing a product **development** environment in Coolify. It intentionally defaults to `dry_run=true` and `deploy=false`; the first safe run only discovers Coolify resources and prints the resource that would be created.
 
 ## First supported product
 
@@ -18,7 +18,8 @@ This document describes the manual GitHub Actions workflow for preparing a produ
 Configure these repository-level values before running the workflow:
 
 - `vars.COOLIFY_BASE_URL`: Coolify instance base URL.
-- `secrets.COOLIFY_API_TOKEN`: Coolify API token with the least permissions needed to read projects, project environments, servers, GitHub Apps, and applications; write permission is only needed when running with `dry_run=false`.
+- `secrets.COOLIFY_API_TOKEN`: Coolify API token with the least permissions needed to read projects, project environments, servers, GitHub Apps, applications, deployments, and public health status; write permission is only needed when running with `dry_run=false`.
+- `vars.COOLIFY_ALLOW_REAL_DEPLOYMENT`: must be set to the literal value `true` before `deploy=true` can request a real Coolify deployment.
 
 Never commit or print Coolify tokens. The workflow masks `COOLIFY_API_TOKEN`; the provisioner redacts configured sensitive values from errors.
 
@@ -38,14 +39,14 @@ Coolify development applications are created in the Coolify `dev` environment. T
 
 The GitHub App source lookup must find exactly one source with the requested name. It fails when the source is missing or duplicated, and it rejects `Public GitHub` for private GoodMorning repositories so private repositories use the installed GoodMorning Coolify GitHub App.
 
-If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. Existing applications with loaded `docker_compose_raw` are still reconciled for Docker Compose domains and Coolify application environment variables when `dry_run=false`. Missing, redacted, or empty `docker_compose_raw` is not treated as proof that Compose is unconfigured, because Coolify API tokens can lack `read:sensitive`; when the existing application still exposes the expected repository, branch, and Docker Compose path, the script continues with domain reconciliation without deploying. `status: recreate_required` is reserved for existing applications that lack both loaded Compose data and verifiable repository/branch/compose path configuration, and the CLI/workflow fail on that status. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a single create request to `POST /applications/private-github-app` with Docker Compose build-pack settings, the selected source's `github_app_uuid`, `docker_compose_domains`, and `instant_deploy=false`; it does not send a follow-up domain `PATCH` for newly-created applications. It configures `VITE_API_URL=https://api.dev.<product>.goodmorning.mx`, `CORS_ORIGINS=https://dev.<product>.goodmorning.mx`, and `APP_ENV=dev` as Coolify application environment variables. For Coolify v4.1.2, the provisioner first reads the current variables with `GET /applications/{application_uuid}/envs`; existing keys are updated through `PATCH /applications/{application_uuid}/envs` with the key/value payload returned from the current list, while missing keys are created with `POST /applications/{application_uuid}/envs`. It intentionally does not call `PATCH /applications/{application_uuid}/envs/{env_uuid}`, because the v4.1.2 OpenAPI only documents `DELETE` on that item route. The frontend domain is derived from `development_domain` as `https://dev...:80`; the backend domain is derived as `https://api.dev...:8000`, so Coolify routes each public hostname to the correct container port.
+If an existing application already references the repository/branch or development domain, the run returns `status: exists` and does not create a duplicate. Existing applications with loaded `docker_compose_raw` are still reconciled for Docker Compose domains and Coolify application environment variables when `dry_run=false`. Missing, redacted, or empty `docker_compose_raw` is not treated as proof that Compose is unconfigured, because Coolify API tokens can lack `read:sensitive`; when the existing application still exposes the expected repository, branch, and Docker Compose path, the script continues with domain reconciliation and only deploys if the explicit deployment gate is enabled. `status: recreate_required` is reserved for existing applications that lack both loaded Compose data and verifiable repository/branch/compose path configuration, and the CLI/workflow fail on that status. If no matching application exists and `dry_run=true`, it returns `status: dry_run` plus the sanitized `would_create` payload. If `dry_run=false`, it sends a single create request to `POST /applications/private-github-app` with Docker Compose build-pack settings, the selected source's `github_app_uuid`, `docker_compose_domains`, and `instant_deploy=false`; it does not send a follow-up domain `PATCH` for newly-created applications. It configures `VITE_API_URL=https://api.dev.<product>.goodmorning.mx`, `CORS_ORIGINS=https://dev.<product>.goodmorning.mx`, and `APP_ENV=dev` as Coolify application environment variables. For Coolify v4.1.2, the provisioner first reads the current variables with `GET /applications/{application_uuid}/envs`; existing keys are updated through `PATCH /applications/{application_uuid}/envs` with the key/value payload returned from the current list, while missing keys are created with `POST /applications/{application_uuid}/envs`. It intentionally does not call `PATCH /applications/{application_uuid}/envs/{env_uuid}`, because the v4.1.2 OpenAPI only documents `DELETE` on that item route. The frontend domain is derived from `development_domain` as `https://dev.<product>.goodmorning.mx`; the backend domain is derived as `https://api.dev.<product>.goodmorning.mx`. Public Coolify domains never include ports; service ports stay internal to `/compose.yaml`.
 
-After a successful `dry_run=false` provisioning or idempotent reuse of an existing application, the script configures or reconciles the required Coolify application settings and reports `deployment.queued=false`. It intentionally does not call `POST /api/v1/deploy` or run post-deployment smoke checks during this initial alignment step. Deployment and endpoint smoke checks must be triggered later after manual review.
+After a successful `dry_run=false` provisioning or idempotent reuse of an existing application, the script waits for Coolify to load `docker_compose_raw`, configures or reconciles domains and variables, then only requests `POST /api/v1/deploy` when both `--deploy true` is passed and `COOLIFY_ALLOW_REAL_DEPLOYMENT=true` is present. When deployment is requested and authorized, it waits for completion and verifies the frontend `/` and backend `/health` URLs using public HTTPS URLs without ports.
 
 ## Safety rules
 
 - The workflow is manual only.
-- `dry_run` defaults to `true`.
+- `dry_run` defaults to `true`; `deploy` defaults to `false`.
 - `coolify_github_app_name` defaults to `goodmorning-mx-coolify` and must match a Coolify GitHub App source exactly; the script uses the source `uuid` as `github_app_uuid` and refuses to fall back to any numeric `id`.
 - The workflow refuses branches other than `dev`.
 - The workflow refuses domains that do not start with `dev.`.
@@ -56,10 +57,11 @@ After a successful `dry_run=false` provisioning or idempotent reuse of an existi
 - New application creation sends `docker_compose_domains` directly in the `POST /applications/private-github-app` payload and does not issue a follow-up domain patch.
 - Coolify `422` API errors are reported with sanitized structured details, including `message`, `errors`, `conflicts`, and `warning` when present.
 - The application create payload uses `environment_name=dev`; it does not create the development application inside Coolify `production`.
-- The application create payload sets `instant_deploy=false`; this workflow does not queue a deployment during initial provisioning.
+- The application create payload sets `instant_deploy=false`; deployment is a separate explicit API call after configuration.
+- Real deployment requires both workflow input `deploy=true` and repository variable `COOLIFY_ALLOW_REAL_DEPLOYMENT=true`.
 
 - During any `dry_run=false` provisioning or reconciliation operation, the script upserts Coolify application environment variables with safe dev values: `VITE_API_URL=https://api.dev.<product>.goodmorning.mx`, `CORS_ORIGINS=https://dev.<product>.goodmorning.mx`, and `APP_ENV=dev`. Existing variables are discovered with `GET /applications/{application_uuid}/envs` before each update path; the script updates only variables that Coolify currently returns and uses the Coolify v4.1.2 collection update endpoint `PATCH /applications/{application_uuid}/envs`, not the item delete-only route `PATCH /applications/{application_uuid}/envs/{env_uuid}`.
-- The script configures Docker Compose domains without forcing overrides or host port publishing: `frontend` uses the HTTPS development domain with explicit container port `:80` and `backend` uses the same host prefixed with `api.` plus explicit container port `:8000`. Public Coolify domains include explicit container ports to prevent proxy port misdetection and Bad Gateway responses. Each Docker Compose domain item contains only `name` and `domain`; no additional keys are sent in the Coolify payload.
+- The script configures Docker Compose domains without forcing overrides or host port publishing: `frontend` uses the HTTPS development domain without a port and `backend` uses the same host prefixed with `api.` without a port. Public Coolify domains must stay clean; internal container ports are declared in Compose. Each Docker Compose domain item contains only `name` and `domain`; no additional keys are sent in the Coolify payload.
 - The script never prints `COOLIFY_API_TOKEN`.
 - Production provisioning and production deployments are out of scope and require the release PR flow plus Abel's explicit approval.
 
@@ -76,11 +78,11 @@ Successful dry-runs print JSON similar to:
   "docker_compose_domains": [
     {
       "name": "frontend",
-      "domain": "https://dev.factory-smoke-test.goodmorning.mx:80"
+      "domain": "https://dev.factory-smoke-test.goodmorning.mx"
     },
     {
       "name": "backend",
-      "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000"
+      "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"
     }
   ],
   "coolify_github_app_name": "goodmorning-mx-coolify",
@@ -96,11 +98,11 @@ Successful dry-runs print JSON similar to:
     "docker_compose_domains": [
       {
         "name": "frontend",
-        "domain": "https://dev.factory-smoke-test.goodmorning.mx:80"
+        "domain": "https://dev.factory-smoke-test.goodmorning.mx"
       },
       {
         "name": "backend",
-        "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000"
+        "domain": "https://api.dev.factory-smoke-test.goodmorning.mx"
       }
     ],
     "force_domain_override": false
@@ -124,7 +126,7 @@ The JSON also includes the discovered project, server, and GitHub App identifier
 
 ## Running the real creation later
 
-Do not run the real creation until the dry-run output has been reviewed and the Coolify API token has the least required read/write permissions. When approved for development provisioning, manually rerun the workflow with `dry_run=false`. This ensures the Coolify `dev` environment exists through the official API and creates or reuses the Coolify development application in `dev`, but it does not queue deployment yet. A later reviewed deployment step should deploy and verify the frontend and API health endpoints. It does not deploy production and does not delete anything.
+Do not run the real creation until the dry-run output has been reviewed and the Coolify API token has the least required read/write permissions. When approved for development provisioning, manually rerun the workflow with `dry_run=false`. This ensures the Coolify `dev` environment exists through the official API and creates or reuses the Coolify development application in `dev`. To deploy in the same controlled run, set `deploy=true` only after setting `COOLIFY_ALLOW_REAL_DEPLOYMENT=true`; the script will then request deployment explicitly, wait for it, and verify the frontend and API health endpoints. It does not deploy production and does not delete anything.
 
 ## Rollback
 
