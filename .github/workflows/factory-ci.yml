@@ -231,7 +231,7 @@ jobs:
                   raise SystemExit(f'forbidden database lifecycle path was allowed: {bad}')
           import re
           doc = __import__('pathlib').Path('docs/coolify-development-provisioning.md').read_text()
-          normalized = re.sub(r'[`*_]+', '', doc).lower()
+          normalized = re.sub(r'[`*]+', '', doc).lower()
           normalized = re.sub(r'\s+', ' ', normalized)
           checks = {
               'Stage 4 heading': 'stage 4: postgresql readiness only' in normalized,
