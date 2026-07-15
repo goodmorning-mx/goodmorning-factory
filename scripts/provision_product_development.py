@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Plan a GoodMorning Coolify development environment using separate resources.
+"""Plan or safely apply GoodMorning Coolify development primitives.
 
-This provisioner is intentionally read-only. It validates inputs, discovers existing
-Coolify records, builds the desired resource plan, and prints a dry-run JSON plan.
-It must not create, patch, delete, start, or deploy any Coolify resource.
+Dry-run is GET-only and produces the complete three-resource plan. Apply can
+create only the Coolify Project, exact ``dev`` Environment, and private native
+PostgreSQL record after explicit gates. Applications, deployments, and lifecycle
+actions remain forbidden in this stage.
 """
 
 from __future__ import annotations
@@ -12,6 +13,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import sys
 import urllib.error
 import urllib.parse
@@ -24,23 +26,51 @@ ALLOWED_ENVIRONMENT = "dev"
 POSTGRES_VERSION = "16"
 TIMEOUT_SECONDS = 30
 SENSITIVE_ENV = ("COOLIFY_API_TOKEN",)
-SECRET_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL|DATABASE_URL)", re.I)
+SECRET_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL|DATABASE_URL|AUTHORIZATION|INTERNAL_DB_URL)", re.I)
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 READ_ONLY_METHODS = {"GET"}
+POST_PROJECT_CREATE = "/projects"
+POST_POSTGRES_CREATE = "/databases/postgresql"
+ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create"}
+FORBIDDEN_ENDPOINT_RE = re.compile(r"/(deploy|deployments|start|restart|stop)(?:/|$)", re.I)
+NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error"}
 
 
 class ProvisioningError(Exception):
     """Structured, redacted provisioning failure."""
 
-    def __init__(self, message: str, *, error_type: str = "validation", code: int = 1):
-        super().__init__(message)
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_type: str = "validation",
+        code: int = 1,
+        http_status: int | None = None,
+        method: str | None = None,
+        path: str | None = None,
+        write_performed: bool = False,
+        write_outcome_unknown: bool = False,
+    ):
+        super().__init__(redact(message))
         self.message = redact(message)
         self.error_type = error_type
         self.code = code
+        self.http_status = http_status
+        self.method = method
+        self.path = path
+        self.write_performed = write_performed
+        self.write_outcome_unknown = write_outcome_unknown
 
     def to_dict(self) -> dict[str, Any]:
-        return {"status": "error", "error": {"type": self.error_type, "message": self.message}}
+        error = {"type": self.error_type, "message": self.message, "write_performed": self.write_performed, "write_outcome_unknown": self.write_outcome_unknown}
+        if self.http_status is not None:
+            error["http_status"] = self.http_status
+        if self.method:
+            error["method"] = self.method
+        if self.path:
+            error["path"] = self.path
+        return {"status": "error", "error": error}
 
 
 @dataclass(frozen=True)
@@ -48,6 +78,66 @@ class Response:
     status: int
     data: Any
     headers: dict[str, str]
+
+
+@dataclass(frozen=True)
+class ExecutionMode:
+    name: str
+    product: str
+    confirm_product: str | None
+    allow_resource_writes: bool
+
+    @property
+    def is_apply(self) -> bool:
+        return self.name == "apply"
+
+    def gates(self) -> dict[str, Any]:
+        return {
+            "apply_requested": self.is_apply,
+            "resource_write_env": self.allow_resource_writes,
+            "confirm_product_matches": self.confirm_product == self.product if self.confirm_product is not None else False,
+            "allowed_post_kinds": sorted(ALLOWED_POST_KINDS),
+            "forbidden_methods": ["PATCH", "PUT", "DELETE"],
+            "deployments_forbidden": True,
+            "application_creation_forbidden": True,
+        }
+
+    def assert_write_gates(self) -> None:
+        if not self.is_apply:
+            raise ProvisioningError("Refusing non-read-only Coolify method POST. Dry-run mode rejects all POST requests.", error_type="safety")
+        if not self.allow_resource_writes:
+            raise ProvisioningError("Apply requires COOLIFY_ALLOW_RESOURCE_WRITES=true before any POST.", error_type="safety")
+        if self.confirm_product != self.product:
+            raise ProvisioningError("Apply requires --confirm-product to match --product exactly before any POST.", error_type="safety")
+
+
+@dataclass
+class ActionRecord:
+    resource: str
+    action: str
+    status: str
+    request_attempted: bool = False
+    write_performed: bool = False
+    write_outcome_unknown: bool = False
+    verified: bool = False
+    recovered_after_conflict: bool = False
+    details: dict[str, Any] | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        result = {
+            "resource": self.resource,
+            "action": self.action,
+            "status": self.status,
+            "request_attempted": self.request_attempted,
+            "write_performed": self.write_performed,
+            "write_outcome_unknown": self.write_outcome_unknown,
+            "verified": self.verified,
+        }
+        if self.recovered_after_conflict:
+            result["recovered_after_conflict"] = True
+        if self.details:
+            result["details"] = redact(self.details)
+        return result
 
 
 def sanitize_string(text: str) -> str:
@@ -58,8 +148,8 @@ def sanitize_string(text: str) -> str:
     text = re.sub(r"Bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", text, flags=re.I)
     text = re.sub(r"(https?://)([^:/\s]+):([^@/\s]+)@", r"\1[REDACTED]@", text)
     text = re.sub(r"postgres(?:ql)?://[^\s'\"]+", "postgresql://[REDACTED]", text, flags=re.I)
-    text = re.sub(r"DATABASE_URL\s*=\s*[^\s,&}]+", "DATABASE_URL=[REDACTED]", text, flags=re.I)
-    text = re.sub(r"(password|token|secret)([=:]\s*)([^\s,&}]+)", r"\1\2[REDACTED]", text, flags=re.I)
+    text = re.sub(r"DATABASE_URL\s*[=:]\s*[^\s,&}]+", "DATABASE_URL=[REDACTED]", text, flags=re.I)
+    text = re.sub(r"(internal_db_url|postgres_password|password|token|secret|authorization)([=:]\s*)([^\s,&}]+)", r"\1\2[REDACTED]", text, flags=re.I)
     return text
 
 
@@ -91,41 +181,84 @@ def safe_http_body(raw: str, *, limit: int = 1000) -> str:
 
 
 class CoolifyClient:
-    """Small reusable HTTP client restricted to read-only Coolify API calls."""
+    """Small reusable HTTP client with stage-aware write safety."""
 
-    def __init__(self, base_url: str, api_token: str, *, timeout: int = TIMEOUT_SECONDS):
+    def __init__(self, base_url: str, api_token: str, *, timeout: int = TIMEOUT_SECONDS, mode: ExecutionMode | None = None):
         self.base_url = validate_base_url(base_url).rstrip("/")
         if not api_token:
             raise ProvisioningError("COOLIFY_API_TOKEN is required.")
         self.api_token = api_token
         self.timeout = timeout
+        self.mode = mode or ExecutionMode("dry_run", "", None, False)
 
     @classmethod
-    def from_env(cls) -> "CoolifyClient":
-        return cls(os.environ.get("COOLIFY_BASE_URL", ""), os.environ.get("COOLIFY_API_TOKEN", ""))
+    def from_env(cls, mode: ExecutionMode | None = None) -> "CoolifyClient":
+        return cls(os.environ.get("COOLIFY_BASE_URL", ""), os.environ.get("COOLIFY_API_TOKEN", ""), mode=mode)
 
-    def request(self, method: str, path: str) -> Response:
+    def _check_request(self, method: str, path: str, *, post_kind: str | None = None) -> None:
         method = method.upper()
-        if method not in READ_ONLY_METHODS:
-            raise ProvisioningError(
-                f"Refusing non-read-only Coolify method {method}.",
-                error_type="safety",
-            )
         if not path.startswith("/"):
             raise ProvisioningError("Coolify API path must start with '/'.")
+        if FORBIDDEN_ENDPOINT_RE.search(path):
+            raise ProvisioningError(f"Lifecycle/deployment endpoint is forbidden in this stage: {path}", error_type="safety", method=method, path=path)
+        if method in {"PATCH", "PUT", "DELETE"}:
+            raise ProvisioningError(f"Refusing non-read-only Coolify method {method}. Method {method} is always forbidden in this stage.", error_type="safety", method=method, path=path)
+        if method == "POST":
+            self.mode.assert_write_gates()
+            if path.startswith("/applications"):
+                raise ProvisioningError("Application creation is forbidden in this stage.", error_type="safety", method=method, path=path)
+            if post_kind not in ALLOWED_POST_KINDS:
+                raise ProvisioningError("POST requires a stage-3 allowlisted operation kind.", error_type="safety", method=method, path=path)
+            if post_kind == "project_create" and path != POST_PROJECT_CREATE:
+                raise ProvisioningError("Project creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
+            if post_kind == "environment_create" and not re.fullmatch(r"/projects/[^/]+/environments", path):
+                raise ProvisioningError("Environment creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
+            if post_kind == "postgresql_create" and path != POST_POSTGRES_CREATE:
+                raise ProvisioningError("PostgreSQL creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
+        elif method not in READ_ONLY_METHODS:
+            raise ProvisioningError(f"Refusing non-read-only Coolify method {method}.", error_type="safety", method=method, path=path)
+
+    def request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        allowed_statuses: set[int] | None = None,
+        post_kind: str | None = None,
+    ) -> Response:
+        method = method.upper()
+        self._check_request(method, path, post_kind=post_kind)
+        headers = {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {self.api_token}",
+            "User-Agent": "goodmorning-factory-product-development-provisioner",
+        }
+        body = None
+        if json_body is not None:
+            headers["Content-Type"] = "application/json"
+            body = json.dumps(json_body).encode("utf-8")
         request = urllib.request.Request(
             f"{self.base_url}/api/v1{path}",
             method=method,
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {self.api_token}",
-                "User-Agent": "goodmorning-factory-product-development-planner",
-            },
+            headers=headers,
+            data=body,
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 raw = response.read().decode("utf-8")
                 data = json.loads(raw) if raw else None
+                if allowed_statuses is not None and response.status not in allowed_statuses:
+                    raise ProvisioningError(
+                        f"Unexpected Coolify status {response.status} for {method} {path}.",
+                        error_type="coolify_api",
+                        code=2,
+                        http_status=response.status,
+                        method=method,
+                        path=path,
+                        write_performed=method == "POST",
+                        write_outcome_unknown=False,
+                    )
                 return Response(response.status, data, dict(response.headers))
         except urllib.error.HTTPError as exc:
             body = safe_http_body(exc.read().decode("utf-8", errors="replace"))
@@ -133,22 +266,45 @@ class CoolifyClient:
                 f"Coolify API {exc.code} for {method} {path}: {body}",
                 error_type="coolify_api",
                 code=2,
+                http_status=exc.code,
+                method=method,
+                path=path,
+                write_performed=False,
+                write_outcome_unknown=(method == "POST" and exc.code >= 500),
             ) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise ProvisioningError(
                 f"Coolify connection failure for {method} {path}: {exc}",
                 error_type="network",
                 code=2,
+                method=method,
+                path=path,
+                write_performed=False,
+                write_outcome_unknown=(method == "POST"),
             ) from exc
         except json.JSONDecodeError as exc:
             raise ProvisioningError(
                 f"Malformed JSON response for {method} {path}: {exc}",
                 error_type="coolify_api",
                 code=2,
+                method=method,
+                path=path,
+                write_performed=False,
+                write_outcome_unknown=(method == "POST"),
             ) from exc
 
     def get(self, path: str) -> Any:
         return self.request("GET", path).data
+
+    def create_project(self, payload: dict[str, Any]) -> Response:
+        return self.request("POST", POST_PROJECT_CREATE, json_body=payload, allowed_statuses={200, 201, 202}, post_kind="project_create")
+
+    def create_environment(self, project_uuid: str, payload: dict[str, Any]) -> Response:
+        path = f"/projects/{urllib.parse.quote(str(project_uuid), safe='')}/environments"
+        return self.request("POST", path, json_body=payload, allowed_statuses={200, 201, 202}, post_kind="environment_create")
+
+    def create_postgresql(self, payload: dict[str, Any]) -> Response:
+        return self.request("POST", POST_POSTGRES_CREATE, json_body=payload, allowed_statuses={200, 201, 202}, post_kind="postgresql_create")
 
 
 def validate_base_url(value: str) -> str:
@@ -180,8 +336,12 @@ def validate_args(args: argparse.Namespace) -> None:
         raise ProvisioningError("server is required.")
     if not args.github_app.strip():
         raise ProvisioningError("exact GitHub App name is required.")
-    if not args.dry_run:
-        raise ProvisioningError("Only --dry-run is supported; writes are disabled.", error_type="safety")
+    dry_run = bool(getattr(args, "dry_run", False))
+    apply = bool(getattr(args, "apply", False))
+    if dry_run == apply:
+        if apply:
+            raise ProvisioningError("Choose exactly one of --dry-run or --apply.", error_type="safety")
+        raise ProvisioningError("Only --dry-run is supported unless --apply is explicitly selected.", error_type="safety")
 
 
 def item_list(data: Any) -> list[dict[str, Any]]:
@@ -429,27 +589,6 @@ def bool_value(value: Any) -> bool | None:
     return None
 
 
-def postgres_differences(item: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    differences = []
-    unverified = []
-    engine = nested_field(item, "type", "kind", "database_type")
-    if engine in (None, ""):
-        unverified.append({"field": "type", "expected": "postgresql"})
-    elif str(engine).lower() not in {"postgres", "postgresql"}:
-        differences.append({"field": "type", "expected": "postgresql", "actual": engine})
-    version = nested_field(item, "version", "postgres_version", "image_tag")
-    if version in (None, ""):
-        unverified.append({"field": "version", "expected": POSTGRES_VERSION})
-    elif not str(version).startswith(POSTGRES_VERSION):
-        differences.append({"field": "version", "expected": POSTGRES_VERSION, "actual": version})
-    is_public = nested_field(item, "is_public", "public")
-    public_value = bool_value(is_public)
-    if public_value is None:
-        unverified.append({"field": "is_public", "expected": False})
-    elif public_value is not False:
-        differences.append({"field": "is_public", "expected": False, "actual": is_public})
-    return differences, unverified
-
 
 def application_differences(item: dict[str, Any], expected: dict[str, Any], context: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     field_paths = {
@@ -691,7 +830,7 @@ def build_plan(args: argparse.Namespace, discovery: dict[str, Any]) -> dict[str,
                     "postgres_version": POSTGRES_VERSION,
                     "is_public": False,
                     "instant_deploy": False,
-                    "pending_contract_decisions": ["Confirm exact Coolify database creation field names before enabling writes."],
+                    "write_contract": "Stage 3 apply may create this native private PostgreSQL record with instant_deploy=false after all write gates pass.",
                 },
                 "secret_requirements": ["POSTGRES_PASSWORD or Coolify generated database password"],
             },
@@ -713,14 +852,459 @@ def build_plan(args: argparse.Namespace, discovery: dict[str, Any]) -> dict[str,
     }
 
 
+def mode_from_args(args: argparse.Namespace) -> ExecutionMode:
+    return ExecutionMode(
+        "apply" if getattr(args, "apply", False) else "dry_run",
+        args.product,
+        getattr(args, "confirm_product", None),
+        os.environ.get("COOLIFY_ALLOW_RESOURCE_WRITES") == "true",
+    )
+
+
+POSTGRES_ENGINE_VALUES = {"postgres", "postgresql", "standalone-postgresql"}
+
+
+def normalize_postgres_engine(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    text = str(value).strip().lower().replace("_", "-")
+    return text if text in POSTGRES_ENGINE_VALUES else None
+
+def is_postgres_engine(value: Any) -> bool | None:
+    normalized = normalize_postgres_engine(value)
+    if normalized is None and value in (None, ""):
+        return None
+    return normalized is not None
+
+
+def postgres_major_version(value: Any) -> str | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, int):
+        return str(value)
+    text = str(value).strip().lower()
+    if text.isdigit():
+        return text
+    match = re.search(r"(?:^|[:/])postgres(?:ql)?:(\d+)(?:-alpine)?$", text)
+    if match:
+        return match.group(1)
+    match = re.fullmatch(r"postgres(?:ql)?:(\d+)(?:-alpine)?", text)
+    if match:
+        return match.group(1)
+    return None
+
+
+def postgres_version_field(item: dict[str, Any]) -> Any:
+    return nested_field(item, "postgres_version", "version", "image", "image_tag")
+
+
+def postgres_differences(item: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    differences = []
+    unverified = []
+    engine = nested_field(item, "type", "kind", "database_type", "resource_type")
+    engine_ok = is_postgres_engine(engine)
+    if engine_ok is None:
+        unverified.append({"field": "type", "expected": "postgresql"})
+    elif not engine_ok:
+        differences.append({"field": "type", "expected": "postgresql", "actual": engine})
+    raw_version = postgres_version_field(item)
+    major = postgres_major_version(raw_version)
+    if major is None:
+        if raw_version in (None, ""):
+            unverified.append({"field": "version", "expected": POSTGRES_VERSION})
+        else:
+            differences.append({"field": "version", "expected": POSTGRES_VERSION, "actual": raw_version})
+    elif major != POSTGRES_VERSION:
+        differences.append({"field": "version", "expected": POSTGRES_VERSION, "actual": raw_version})
+    is_public = nested_field(item, "is_public", "public")
+    public_value = bool_value(is_public)
+    if public_value is None:
+        unverified.append({"field": "is_public", "expected": False})
+    elif public_value is not False:
+        differences.append({"field": "is_public", "expected": False, "actual": is_public})
+    public_port = nested_field(item, "public_port", "ports_mappings")
+    if public_port not in (None, "", [], False):
+        differences.append({"field": "public_port", "expected": None, "actual": "configured"})
+    return differences, unverified
+
+
+def deterministic_sql_names(product: str) -> dict[str, str]:
+    safe = re.sub(r"[^a-z0-9_]", "_", product.replace("-", "_"))
+    return {"postgres_user": f"{safe}_dev_user", "postgres_db": f"{safe}_dev"}
+
+
+def generate_postgres_password() -> str:
+    return secrets.token_urlsafe(36)
+
+
+def project_create_payload(name: str) -> dict[str, Any]:
+    return {"name": name}
+
+
+def environment_create_payload() -> dict[str, Any]:
+    return {"name": "dev"}
+
+
+def postgresql_create_payload(args: argparse.Namespace, project_uuid: str, server_uuid: str, password: str) -> dict[str, Any]:
+    names = deterministic_sql_names(args.product)
+    return {
+        "server_uuid": server_uuid,
+        "project_uuid": project_uuid,
+        "environment_name": "dev",
+        "name": f"{args.product}-postgres-dev",
+        "description": "GoodMorning development PostgreSQL 16 resource managed by factory provisioning stage 3.",
+        "image": "postgres:16-alpine",
+        "postgres_user": names["postgres_user"],
+        "postgres_password": password,
+        "postgres_db": names["postgres_db"],
+        "is_public": False,
+        "instant_deploy": False,
+    }
+
+
+def exact_matches(items: list[dict[str, Any]], expected: str) -> list[dict[str, Any]]:
+    return [item for item in items if str(item.get("name") or "") == expected]
+
+
+def verified_project_from_list(client: CoolifyClient, name: str) -> dict[str, Any] | None:
+    matches = exact_matches(item_list(client.get("/projects")), name)
+    if len(matches) != 1:
+        return None
+    identifier = field(matches[0], "uuid", "id")
+    if not identifier:
+        return None
+    return {"status": "exists", "name": name, "uuid": identifier}
+
+
+def project_from_create_response(data: Any, expected_name: str) -> dict[str, Any] | None:
+    item = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+    if not isinstance(item, dict):
+        return None
+    if field(item, "name") != expected_name:
+        return None
+    identifier = field(item, "uuid", "id")
+    if not identifier:
+        return None
+    return {"status": "created", "name": expected_name, "uuid": identifier}
+
+
+def project_environments(client: CoolifyClient, project_uuid: str) -> list[dict[str, Any]]:
+    detailed_project = client.get(f"/projects/{project_uuid}")
+    project_details = detailed_project.get("data") if isinstance(detailed_project, dict) and isinstance(detailed_project.get("data"), dict) else detailed_project
+    environments = item_list(project_details.get("environments") if isinstance(project_details, dict) else [])
+    if not environments:
+        environments = item_list(client.get(f"/projects/{project_uuid}/environments"))
+    return environments
+
+
+def verified_environment_from_list(client: CoolifyClient, project_uuid: str) -> dict[str, Any] | None:
+    matches = exact_matches(project_environments(client, project_uuid), "dev")
+    if len(matches) != 1:
+        return None
+    identifier = field(matches[0], "uuid", "id")
+    if not identifier:
+        return None
+    return {"status": "exists", "name": "dev", "uuid": identifier, "project_uuid": project_uuid}
+
+
+def environment_from_create_response(data: Any, project_uuid: str) -> dict[str, Any] | None:
+    item = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+    if not isinstance(item, dict):
+        return None
+    if field(item, "name") != "dev":
+        return None
+    identifier = field(item, "uuid", "id")
+    if not identifier:
+        return None
+    return {"status": "created", "name": "dev", "uuid": identifier, "project_uuid": project_uuid}
+
+
+def ensure_project(client: CoolifyClient, args: argparse.Namespace, mode: ExecutionMode, actions: list[dict[str, Any]]) -> dict[str, Any]:
+    matches = exact_matches(item_list(client.get("/projects")), args.coolify_project)
+    if len(matches) > 1:
+        raise ProvisioningError(f"Found multiple Coolify project records named exactly '{args.coolify_project}'.", error_type="discovery")
+    if len(matches) == 1:
+        identifier = field(matches[0], "uuid", "id")
+        if not identifier:
+            raise ProvisioningError("Selected Coolify project is missing an identifier.", error_type="discovery")
+        actions.append(ActionRecord("project", "reuse", "exists", verified=True).to_dict())
+        return {"status": "exists", "name": args.coolify_project, "uuid": identifier}
+    if not mode.is_apply:
+        actions.append(ActionRecord("project", "plan_create", "would_create").to_dict())
+        return {"status": "would_create", "name": args.coolify_project, "uuid": "${project.uuid}"}
+    actions.append(ActionRecord("project", "attempt_create", "attempted", request_attempted=False).to_dict())
+    try:
+        response = client.create_project(project_create_payload(args.coolify_project))
+    except ProvisioningError as exc:
+        if exc.write_outcome_unknown:
+            actions.append(ActionRecord("project", "create", "outcome_unknown", request_attempted=True, write_outcome_unknown=True).to_dict())
+            raise
+        if exc.http_status in {409, 422}:
+            verified = verified_project_from_list(client, args.coolify_project)
+            if verified:
+                verified["status"] = "exists"
+                verified["recovered_after_conflict"] = True
+                actions.append(ActionRecord("project", "recover_after_conflict", "exists", request_attempted=True, verified=True, recovered_after_conflict=True).to_dict())
+                return verified
+        raise
+    verified = project_from_create_response(response.data, args.coolify_project)
+    if not verified or response.status == 202:
+        discovered = verified_project_from_list(client, args.coolify_project)
+        if discovered:
+            verified = {**discovered, "status": "created"}
+    if not verified:
+        actions.append(ActionRecord("project", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
+        raise ProvisioningError("Project create write completed but exact project verification failed.", error_type="verification", code=2, method="POST", path=POST_PROJECT_CREATE, write_performed=True)
+    actions.append(ActionRecord("project", "create", "created", request_attempted=True, write_performed=True, verified=True).to_dict())
+    return verified
+
+
+def ensure_environment(client: CoolifyClient, project: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]]) -> dict[str, Any]:
+    project_uuid = project["uuid"]
+    if str(project_uuid).startswith("${"):
+        actions.append(ActionRecord("environment", "plan_create", "would_create").to_dict())
+        return {"status": "would_create", "name": "dev", "uuid": "${environment.uuid}", "project_uuid": project_uuid}
+    verified = verified_environment_from_list(client, str(project_uuid))
+    if verified:
+        actions.append(ActionRecord("environment", "reuse", "exists", verified=True).to_dict())
+        return verified
+    if not mode.is_apply:
+        actions.append(ActionRecord("environment", "plan_create", "would_create").to_dict())
+        return {"status": "would_create", "name": "dev", "uuid": "${environment.uuid}", "project_uuid": project_uuid}
+    actions.append(ActionRecord("environment", "attempt_create", "attempted", request_attempted=False).to_dict())
+    try:
+        response = client.create_environment(str(project_uuid), environment_create_payload())
+    except ProvisioningError as exc:
+        if exc.write_outcome_unknown:
+            actions.append(ActionRecord("environment", "create", "outcome_unknown", request_attempted=True, write_outcome_unknown=True).to_dict())
+            raise
+        if exc.http_status in {409, 422}:
+            verified = verified_environment_from_list(client, str(project_uuid))
+            if verified:
+                verified["status"] = "exists"
+                verified["recovered_after_conflict"] = True
+                actions.append(ActionRecord("environment", "recover_after_conflict", "exists", request_attempted=True, verified=True, recovered_after_conflict=True).to_dict())
+                return verified
+        raise
+    verified = environment_from_create_response(response.data, str(project_uuid))
+    if not verified or response.status == 202:
+        discovered = verified_environment_from_list(client, str(project_uuid))
+        if discovered:
+            verified = {**discovered, "status": "created"}
+    if not verified:
+        actions.append(ActionRecord("environment", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
+        raise ProvisioningError("Environment create write completed but exact dev verification failed.", error_type="verification", code=2, method="POST", path=f"/projects/{project_uuid}/environments", write_performed=True)
+    actions.append(ActionRecord("environment", "create", "created", request_attempted=True, write_performed=True, verified=True).to_dict())
+    return verified
+
+
+def postgres_classification_from_detail(item: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    name = context["name"]
+    scope_status, scope_details = resource_scope(item, context)
+    if scope_status != "in_scope":
+        return {"status": scope_status, "name": name, "uuid": field(item, "uuid", "id"), "scope_details": scope_details}
+    differences, unverified = postgres_differences(item)
+    base = {
+        "name": name,
+        "uuid": field(item, "uuid", "id"),
+        "internal_db_url_available": bool(nested_field(item, "internal_db_url")),
+        "credentials_configured": bool(nested_field(item, "postgres_user", "postgres_db")),
+        "scope_details": scope_details,
+    }
+    if differences:
+        return {**base, "status": "incompatible", "differences": differences}
+    if unverified:
+        return {**base, "status": "compatibility_unverified", "unverified_fields": unverified}
+    return {**base, "status": "exists"}
+
+
+def hydrate_database_by_uuid(client: CoolifyClient, uuid: Any, fallback: dict[str, Any]) -> dict[str, Any]:
+    detail = client.get(f"/databases/{uuid}")
+    detail_item = detail.get("data") if isinstance(detail, dict) and isinstance(detail.get("data"), dict) else detail
+    if not isinstance(detail_item, dict):
+        raise ProvisioningError("PostgreSQL detail endpoint returned an unsupported shape.", error_type="coolify_api", code=2)
+    return {**fallback, **detail_item, "_discovery_source": "databases", "_detail_hydrated": True}
+
+
+def exact_postgres_matches(client: CoolifyClient, name: str) -> list[dict[str, Any]]:
+    return [item for item in item_list(client.get("/databases")) if str(field(item, "name") or "") == name]
+
+
+def ensure_postgresql(client: CoolifyClient, args: argparse.Namespace, project: dict[str, Any], environment: dict[str, Any], server: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]]) -> dict[str, Any]:
+    name = f"{args.product}-postgres-dev"
+    context = {"name": name, "project_uuid": project["uuid"], "environment_uuid": environment["uuid"], "server_uuid": server["uuid"]}
+    matches = exact_postgres_matches(client, name)
+    if len(matches) > 1:
+        raise ProvisioningError(f"Found multiple PostgreSQL resources named exactly '{name}'.", error_type="discovery")
+    if len(matches) == 1:
+        uuid = field(matches[0], "uuid", "id")
+        if not uuid:
+            return {"status": "compatibility_unverified", "name": name, "unverified_fields": [{"field": "uuid", "expected": "present"}]}
+        try:
+            detail = hydrate_database_by_uuid(client, uuid, matches[0])
+        except ProvisioningError:
+            if mode.is_apply:
+                raise
+            detail = matches[0]
+        result = postgres_classification_from_detail(detail, context)
+        if result["status"] == "exists":
+            actions.append(ActionRecord("postgresql", "reuse", "exists", verified=True).to_dict())
+        return result
+    if not mode.is_apply:
+        actions.append(ActionRecord("postgresql", "plan_create", "would_create").to_dict())
+        return {"status": "would_create", "name": name, "uuid": "${postgres.uuid}", "secret_requirements": ["Generate postgres_password in-memory only during apply creation."], "internal_db_url_available": False, "credentials_configured": False}
+    password = generate_postgres_password()
+    actions.append(ActionRecord("postgresql", "attempt_create", "attempted", request_attempted=False).to_dict())
+    try:
+        response = client.create_postgresql(postgresql_create_payload(args, str(project["uuid"]), str(server["uuid"]), password))
+    except ProvisioningError as exc:
+        if exc.write_outcome_unknown:
+            actions.append(ActionRecord("postgresql", "create", "outcome_unknown", request_attempted=True, write_outcome_unknown=True).to_dict())
+            raise
+        if exc.http_status in {409, 422}:
+            matches = exact_postgres_matches(client, name)
+            if len(matches) == 1 and field(matches[0], "uuid", "id"):
+                detail = hydrate_database_by_uuid(client, field(matches[0], "uuid", "id"), matches[0])
+                result = postgres_classification_from_detail(detail, context)
+                if result["status"] == "exists":
+                    result["recovered_after_conflict"] = True
+                    actions.append(ActionRecord("postgresql", "recover_after_conflict", "exists", request_attempted=True, verified=True, recovered_after_conflict=True).to_dict())
+                    return result
+        raise
+    item = response.data.get("data") if isinstance(response.data, dict) and isinstance(response.data.get("data"), dict) else response.data
+    uuid = field(item, "uuid", "id") if isinstance(item, dict) else None
+    if not uuid or response.status == 202:
+        matches = exact_postgres_matches(client, name)
+        if len(matches) == 1:
+            uuid = field(matches[0], "uuid", "id")
+            item = matches[0]
+    if not uuid:
+        actions.append(ActionRecord("postgresql", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
+        return {"status": "created_unverified", "name": name, "write_performed": True, "internal_db_url_available": False, "credentials_configured": True}
+    try:
+        detail = hydrate_database_by_uuid(client, uuid, item if isinstance(item, dict) else {"uuid": uuid, "name": name})
+    except ProvisioningError as exc:
+        actions.append(ActionRecord("postgresql", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
+        return {"status": "created_unverified", "name": name, "uuid": uuid, "write_performed": True, "verification_error": exc.message, "internal_db_url_available": False, "credentials_configured": True}
+    result = postgres_classification_from_detail(detail, context)
+    if result["status"] == "exists":
+        result["status"] = "created"
+        result["credentials_configured"] = True
+        actions.append(ActionRecord("postgresql", "create", "created", request_attempted=True, write_performed=True, verified=True).to_dict())
+        return result
+    actions.append(ActionRecord("postgresql", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
+    return {**result, "status": "created_unverified" if result["status"] in {"compatibility_unverified", "scope_unverified"} else result["status"], "write_performed": True, "credentials_configured": True}
+
+
+def global_status(mode: ExecutionMode, resources: list[dict[str, Any]], blockers: list[Any], actions: list[dict[str, Any]]) -> str:
+    statuses = {resource.get("status") for resource in resources}
+    write_performed = any(action.get("write_performed") for action in actions) or any(resource.get("write_performed") for resource in resources)
+    write_outcome_unknown = any(action.get("write_outcome_unknown") for action in actions) or any(resource.get("write_outcome_unknown") for resource in resources)
+    if "incompatible" in statuses:
+        return "recreate_required"
+    if write_outcome_unknown or "created_unverified" in statuses or (write_performed and blockers):
+        return "partial"
+    if blockers:
+        return "blocked"
+    if not mode.is_apply:
+        return "dry_run"
+    if statuses <= {"exists"}:
+        return "exists"
+    if "created" in statuses and statuses <= {"created", "exists"}:
+        return "created"
+    return "ready"
+
+
+def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: ExecutionMode) -> dict[str, Any]:
+    actions: list[dict[str, Any]] = []
+    warnings: list[Any] = []
+    blockers: list[Any] = []
+    server = select_unique_by_name(item_list(client.get("/servers")), args.server, "server")
+    github_app = select_unique_by_name(item_list(client.get("/github-apps")), args.github_app, "GitHub App")
+    server_summary = summary(server, "name", "uuid", "id")
+    github_app_summary = summary(github_app, "name", "uuid", "id")
+    server_uuid = server_summary.get("uuid") or server_summary.get("id")
+    if not server_uuid:
+        raise ProvisioningError("Selected Coolify server is missing an identifier.", error_type="discovery")
+    try:
+        project = ensure_project(client, args, mode, actions)
+        environment = ensure_environment(client, project, mode, actions)
+        postgres = ensure_postgresql(client, args, project, environment, {"uuid": server_uuid, "name": args.server}, mode, actions)
+    except ProvisioningError as exc:
+        if exc.write_performed or exc.write_outcome_unknown or any(action.get("write_performed") or action.get("write_outcome_unknown") for action in actions):
+            blockers.append({"message": exc.message, "type": exc.error_type, "write_performed": exc.write_performed, "write_outcome_unknown": exc.write_outcome_unknown})
+            project = locals().get("project", {"status": "blocked"})
+            environment = locals().get("environment", {"status": "blocked"})
+            postgres = locals().get("postgres", {"status": "blocked"})
+        else:
+            raise
+    if mode.is_apply and postgres.get("status") in {"compatibility_unverified", "scope_unverified", "out_of_scope"}:
+        blockers.append({"message": f"PostgreSQL status requires manual review: {postgres['status']}", "write_performed": False})
+    if postgres.get("status") == "incompatible":
+        blockers.append({"message": "Existing PostgreSQL contradicts desired state; manual recreation required.", "write_performed": False})
+    context = {
+        "project_uuid": project.get("uuid"),
+        "environment_uuid": environment.get("uuid"),
+        "environment_name": "dev",
+        "server_uuid": server_uuid,
+        "github_app_uuid": github_app_summary.get("uuid") or github_app_summary.get("id"),
+    }
+    discovery = {
+        "project": {"name": args.coolify_project, "uuid": project.get("uuid")},
+        "environment": {"name": "dev", "uuid": environment.get("uuid")},
+        "server": server_summary,
+        "github_app": github_app_summary,
+        "bindings": context,
+        "existing_resources": discover_existing_resources(client, args.product, context, args),
+    }
+    plan = build_plan(args, discovery)
+    plan["mode"] = mode.name
+    plan["safety"] = {
+        "writes_enabled": mode.is_apply and mode.allow_resource_writes and mode.confirm_product == mode.product,
+        "allowed_post_operations": sorted(ALLOWED_POST_KINDS) if mode.is_apply else [],
+        "forbidden_methods": ["PATCH", "PUT", "DELETE"],
+        "deploy_actions_enabled": False,
+        "application_creation_enabled": False,
+    }
+    for resource in plan["resources"]:
+        if resource["name"] == f"{args.product}-postgres-dev":
+            resource.update({"status": postgres.get("status"), "provisioning": postgres})
+        else:
+            resource["status"] = "planned_later"
+    status = global_status(mode, [project, environment, postgres], blockers, actions)
+    return redact({
+        **plan,
+        "status": status,
+        "mode": mode.name,
+        "safety_gates": mode.gates(),
+        "selected_server": server_summary,
+        "project": project,
+        "environment_resource": environment,
+        "postgresql": postgres,
+        "actions": actions,
+        "warnings": warnings,
+        "blockers": blockers,
+        "contract": {
+            "confirmed_endpoints": ["POST /api/v1/projects", "POST /api/v1/projects/{project_uuid}/environments", "POST /api/v1/databases/postgresql", "GET /api/v1/databases/{uuid}"],
+            "postgresql_payload_preview": redact(postgresql_create_payload(args, "${project.uuid}", "${server.uuid}", "${generated_secret}")),
+            "postgresql_payload_source": "Coolify OpenAPI/API reference for create PostgreSQL database; version is represented by the image field in this isolated builder pending any upstream contract rename.",
+        },
+    })
+
+
 def provision(args: argparse.Namespace, *, client_factory: Callable[[], CoolifyClient] | None = None) -> dict[str, Any]:
     validate_args(args)
-    client = client_factory() if client_factory else CoolifyClient.from_env()
-    return build_plan(args, discover(client, args))
+    mode = mode_from_args(args)
+    if mode.is_apply:
+        mode.assert_write_gates()
+    client = client_factory() if client_factory else CoolifyClient.from_env(mode)
+    if hasattr(client, "mode"):
+        client.mode = mode
+    return build_stage3_result(args, client, mode)
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Build a read-only Coolify development resource plan.")
+    parser = argparse.ArgumentParser(description="Build or apply a safe Coolify development resource plan.")
     parser.add_argument("--product", required=True)
     parser.add_argument("--repository", required=True)
     parser.add_argument("--branch", required=True, choices=[ALLOWED_BRANCH])
@@ -728,7 +1312,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--environment", required=True, choices=[ALLOWED_ENVIRONMENT])
     parser.add_argument("--server", required=True)
     parser.add_argument("--github-app", required=True, help="Exact Coolify GitHub App name")
-    parser.add_argument("--dry-run", action="store_true", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--apply", action="store_true")
+    parser.add_argument("--confirm-product")
     return parser
 
 
@@ -741,7 +1328,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(exc.to_dict(), indent=2, sort_keys=True), file=sys.stderr)
         return exc.code
     print(json.dumps(redact(result), indent=2, sort_keys=True))
-    return 0
+    return 2 if result.get("status") in NON_SUCCESS_EXIT_STATUSES else 0
 
 
 if __name__ == "__main__":
