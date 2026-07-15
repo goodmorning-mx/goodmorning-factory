@@ -792,5 +792,126 @@ class Stage3FinalCorrectionsTests(unittest.TestCase):
 
 
 
+class Stage3WriteOutcomeTests(unittest.TestCase):
+    def payloads(self, **overrides):
+        base = Stage3ProvisioningTests().missing_project_payloads(**{
+            "/projects": [],
+            "/projects/project-1": {"uuid": "project-1", "name": "ledger"},
+            "/projects/project-1/environments": [],
+            "/databases": [],
+        })
+        base.update(overrides)
+        return base
+
+    def apply_env(self):
+        return mock.patch.dict(os.environ, {"COOLIFY_ALLOW_RESOURCE_WRITES": "true"})
+
+    def test_project_post_http_500_is_outcome_unknown_partial_no_second_post(self):
+        error = pp.ProvisioningError(
+            "server failed after receiving request",
+            error_type="coolify_api",
+            http_status=500,
+            method="POST",
+            path="/projects",
+            write_outcome_unknown=True,
+        )
+        client = FakeWriteClient(self.payloads(), {"project": error})
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "partial")
+        self.assertTrue(any(action["write_outcome_unknown"] for action in result["actions"]))
+        self.assertEqual([call for call in client.calls if call[0] == "POST" and call[1] == "/projects"], [("POST", "/projects", {"name": "ledger"})])
+
+    def test_environment_post_timeout_is_outcome_unknown_partial_no_second_post(self):
+        error = pp.ProvisioningError(
+            "timeout after request attempt",
+            error_type="network",
+            method="POST",
+            path="/projects/project-1/environments",
+            write_outcome_unknown=True,
+        )
+        client = FakeWriteClient(self.payloads(**{"/projects": [{"uuid": "project-1", "name": "ledger"}]}), {"environment": error})
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "partial")
+        self.assertTrue(any(action["resource"] == "environment" and action["write_outcome_unknown"] for action in result["actions"]))
+        self.assertEqual([call[1] for call in client.calls if call[0] == "POST"].count("/projects/project-1/environments"), 1)
+
+    def test_postgresql_successful_response_with_invalid_json_is_outcome_unknown(self):
+        error = pp.ProvisioningError(
+            "Malformed JSON response for POST /databases/postgresql",
+            error_type="coolify_api",
+            method="POST",
+            path="/databases/postgresql",
+            write_outcome_unknown=True,
+        )
+        client = FakeWriteClient(self.payloads(**{
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": [{"uuid": "env-1", "name": "dev"}]},
+        }), {"postgresql": error})
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "partial")
+        self.assertNotIn(result["postgresql"].get("status"), {"exists", "created"})
+        self.assertEqual([call[1] for call in client.calls if call[0] == "POST"].count("/databases/postgresql"), 1)
+
+    def test_project_409_rediscovery_no_message_parsing_no_second_post(self):
+        conflict = pp.ProvisioningError("text says not a conflict number 500", error_type="coolify_api", http_status=409, method="POST", path="/projects")
+        client = FakeWriteClient(self.payloads(**{"/projects": [[], [{"uuid": "project-1", "name": "ledger"}]]}), {"project": conflict})
+        original_get = client.get
+        counter = {"/projects": 0}
+        def get(path):
+            if path == "/projects":
+                index = counter[path]
+                counter[path] += 1
+                return client.payloads[path][min(index, 1)]
+            return original_get(path)
+        client.get = get
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertTrue(result["project"].get("recovered_after_conflict"))
+        self.assertEqual([call[1] for call in client.calls if call[0] == "POST"].count("/projects"), 1)
+
+    def test_project_422_without_rediscovery_blocks_without_second_post(self):
+        conflict = pp.ProvisioningError("unprocessable", error_type="coolify_api", http_status=422, method="POST", path="/projects")
+        client = FakeWriteClient(self.payloads(), {"project": conflict})
+        with self.apply_env():
+            with self.assertRaises(pp.ProvisioningError):
+                pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual([call[1] for call in client.calls if call[0] == "POST"].count("/projects"), 1)
+
+    def test_get_error_does_not_mark_write_unknown(self):
+        client = FakeWriteClient(self.payloads(**{"/servers": pp.ProvisioningError("GET failed", error_type="network", method="GET", path="/servers")}))
+        with self.assertRaises(pp.ProvisioningError) as raised:
+            pp.provision(args(), client_factory=lambda: client)
+        self.assertFalse(raised.exception.write_performed)
+        self.assertFalse(raised.exception.write_outcome_unknown)
+        self.assertFalse(any(call[0] == "POST" for call in client.calls))
+
+    def test_safety_plan_reflects_dry_run_and_apply(self):
+        dry_client = FakeWriteClient(self.payloads())
+        dry = pp.provision(args(), client_factory=lambda: dry_client)
+        self.assertFalse(dry["safety"]["writes_enabled"])
+        self.assertEqual(dry["safety"]["allowed_post_operations"], [])
+        self.assertNotIn("pending_contract_decisions", json.dumps(dry))
+
+        apply_client = FakeWriteClient(self.payloads())
+        with self.apply_env():
+            applied = pp.provision(apply_args(), client_factory=lambda: apply_client)
+        self.assertTrue(applied["safety"]["writes_enabled"])
+        self.assertEqual(set(applied["safety"]["allowed_post_operations"]), {"project_create", "environment_create", "postgresql_create"})
+
+    def test_documentation_declares_three_resource_canonical_architecture_and_legacy_separation(self):
+        from pathlib import Path
+        canonical = Path("docs/coolify-development-provisioning.md").read_text()
+        legacy = Path("docs/legacy-coolify-compose-provisioning.md").read_text()
+        self.assertIn("independent Coolify resources", canonical)
+        self.assertIn("Backend Dockerfile Application", canonical)
+        self.assertIn("Frontend Dockerfile Application", canonical)
+        self.assertIn("Legacy Compose provisioning", canonical)
+        self.assertIn("deprecated for new products", canonical)
+        self.assertIn("Docker Compose", legacy)
+
+
 if __name__ == "__main__":
     unittest.main()

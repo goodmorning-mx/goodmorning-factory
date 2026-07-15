@@ -50,6 +50,7 @@ class ProvisioningError(Exception):
         method: str | None = None,
         path: str | None = None,
         write_performed: bool = False,
+        write_outcome_unknown: bool = False,
     ):
         super().__init__(redact(message))
         self.message = redact(message)
@@ -59,9 +60,10 @@ class ProvisioningError(Exception):
         self.method = method
         self.path = path
         self.write_performed = write_performed
+        self.write_outcome_unknown = write_outcome_unknown
 
     def to_dict(self) -> dict[str, Any]:
-        error = {"type": self.error_type, "message": self.message, "write_performed": self.write_performed}
+        error = {"type": self.error_type, "message": self.message, "write_performed": self.write_performed, "write_outcome_unknown": self.write_outcome_unknown}
         if self.http_status is not None:
             error["http_status"] = self.http_status
         if self.method:
@@ -114,7 +116,9 @@ class ActionRecord:
     resource: str
     action: str
     status: str
+    request_attempted: bool = False
     write_performed: bool = False
+    write_outcome_unknown: bool = False
     verified: bool = False
     recovered_after_conflict: bool = False
     details: dict[str, Any] | None = None
@@ -124,7 +128,9 @@ class ActionRecord:
             "resource": self.resource,
             "action": self.action,
             "status": self.status,
+            "request_attempted": self.request_attempted,
             "write_performed": self.write_performed,
+            "write_outcome_unknown": self.write_outcome_unknown,
             "verified": self.verified,
         }
         if self.recovered_after_conflict:
@@ -251,6 +257,7 @@ class CoolifyClient:
                         method=method,
                         path=path,
                         write_performed=method == "POST",
+                        write_outcome_unknown=False,
                     )
                 return Response(response.status, data, dict(response.headers))
         except urllib.error.HTTPError as exc:
@@ -263,6 +270,7 @@ class CoolifyClient:
                 method=method,
                 path=path,
                 write_performed=False,
+                write_outcome_unknown=(method == "POST" and exc.code >= 500),
             ) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise ProvisioningError(
@@ -272,6 +280,7 @@ class CoolifyClient:
                 method=method,
                 path=path,
                 write_performed=False,
+                write_outcome_unknown=(method == "POST"),
             ) from exc
         except json.JSONDecodeError as exc:
             raise ProvisioningError(
@@ -280,7 +289,8 @@ class CoolifyClient:
                 code=2,
                 method=method,
                 path=path,
-                write_performed=method == "POST",
+                write_performed=False,
+                write_outcome_unknown=(method == "POST"),
             ) from exc
 
     def get(self, path: str) -> Any:
@@ -820,7 +830,7 @@ def build_plan(args: argparse.Namespace, discovery: dict[str, Any]) -> dict[str,
                     "postgres_version": POSTGRES_VERSION,
                     "is_public": False,
                     "instant_deploy": False,
-                    "pending_contract_decisions": ["Confirm exact Coolify database creation field names before enabling writes."],
+                    "write_contract": "Stage 3 apply may create this native private PostgreSQL record with instant_deploy=false after all write gates pass.",
                 },
                 "secret_requirements": ["POSTGRES_PASSWORD or Coolify generated database password"],
             },
@@ -1022,16 +1032,19 @@ def ensure_project(client: CoolifyClient, args: argparse.Namespace, mode: Execut
     if not mode.is_apply:
         actions.append(ActionRecord("project", "plan_create", "would_create").to_dict())
         return {"status": "would_create", "name": args.coolify_project, "uuid": "${project.uuid}"}
-    actions.append(ActionRecord("project", "attempt_create", "attempted").to_dict())
+    actions.append(ActionRecord("project", "attempt_create", "attempted", request_attempted=False).to_dict())
     try:
         response = client.create_project(project_create_payload(args.coolify_project))
     except ProvisioningError as exc:
+        if exc.write_outcome_unknown:
+            actions.append(ActionRecord("project", "create", "outcome_unknown", request_attempted=True, write_outcome_unknown=True).to_dict())
+            raise
         if exc.http_status in {409, 422}:
             verified = verified_project_from_list(client, args.coolify_project)
             if verified:
                 verified["status"] = "exists"
                 verified["recovered_after_conflict"] = True
-                actions.append(ActionRecord("project", "recover_after_conflict", "exists", verified=True, recovered_after_conflict=True).to_dict())
+                actions.append(ActionRecord("project", "recover_after_conflict", "exists", request_attempted=True, verified=True, recovered_after_conflict=True).to_dict())
                 return verified
         raise
     verified = project_from_create_response(response.data, args.coolify_project)
@@ -1040,9 +1053,9 @@ def ensure_project(client: CoolifyClient, args: argparse.Namespace, mode: Execut
         if discovered:
             verified = {**discovered, "status": "created"}
     if not verified:
-        actions.append(ActionRecord("project", "create", "created_unverified", write_performed=True).to_dict())
+        actions.append(ActionRecord("project", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
         raise ProvisioningError("Project create write completed but exact project verification failed.", error_type="verification", code=2, method="POST", path=POST_PROJECT_CREATE, write_performed=True)
-    actions.append(ActionRecord("project", "create", "created", write_performed=True, verified=True).to_dict())
+    actions.append(ActionRecord("project", "create", "created", request_attempted=True, write_performed=True, verified=True).to_dict())
     return verified
 
 
@@ -1058,16 +1071,19 @@ def ensure_environment(client: CoolifyClient, project: dict[str, Any], mode: Exe
     if not mode.is_apply:
         actions.append(ActionRecord("environment", "plan_create", "would_create").to_dict())
         return {"status": "would_create", "name": "dev", "uuid": "${environment.uuid}", "project_uuid": project_uuid}
-    actions.append(ActionRecord("environment", "attempt_create", "attempted").to_dict())
+    actions.append(ActionRecord("environment", "attempt_create", "attempted", request_attempted=False).to_dict())
     try:
         response = client.create_environment(str(project_uuid), environment_create_payload())
     except ProvisioningError as exc:
+        if exc.write_outcome_unknown:
+            actions.append(ActionRecord("environment", "create", "outcome_unknown", request_attempted=True, write_outcome_unknown=True).to_dict())
+            raise
         if exc.http_status in {409, 422}:
             verified = verified_environment_from_list(client, str(project_uuid))
             if verified:
                 verified["status"] = "exists"
                 verified["recovered_after_conflict"] = True
-                actions.append(ActionRecord("environment", "recover_after_conflict", "exists", verified=True, recovered_after_conflict=True).to_dict())
+                actions.append(ActionRecord("environment", "recover_after_conflict", "exists", request_attempted=True, verified=True, recovered_after_conflict=True).to_dict())
                 return verified
         raise
     verified = environment_from_create_response(response.data, str(project_uuid))
@@ -1076,9 +1092,9 @@ def ensure_environment(client: CoolifyClient, project: dict[str, Any], mode: Exe
         if discovered:
             verified = {**discovered, "status": "created"}
     if not verified:
-        actions.append(ActionRecord("environment", "create", "created_unverified", write_performed=True).to_dict())
+        actions.append(ActionRecord("environment", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
         raise ProvisioningError("Environment create write completed but exact dev verification failed.", error_type="verification", code=2, method="POST", path=f"/projects/{project_uuid}/environments", write_performed=True)
-    actions.append(ActionRecord("environment", "create", "created", write_performed=True, verified=True).to_dict())
+    actions.append(ActionRecord("environment", "create", "created", request_attempted=True, write_performed=True, verified=True).to_dict())
     return verified
 
 
@@ -1138,10 +1154,13 @@ def ensure_postgresql(client: CoolifyClient, args: argparse.Namespace, project: 
         actions.append(ActionRecord("postgresql", "plan_create", "would_create").to_dict())
         return {"status": "would_create", "name": name, "uuid": "${postgres.uuid}", "secret_requirements": ["Generate postgres_password in-memory only during apply creation."], "internal_db_url_available": False, "credentials_configured": False}
     password = generate_postgres_password()
-    actions.append(ActionRecord("postgresql", "attempt_create", "attempted").to_dict())
+    actions.append(ActionRecord("postgresql", "attempt_create", "attempted", request_attempted=False).to_dict())
     try:
         response = client.create_postgresql(postgresql_create_payload(args, str(project["uuid"]), str(server["uuid"]), password))
     except ProvisioningError as exc:
+        if exc.write_outcome_unknown:
+            actions.append(ActionRecord("postgresql", "create", "outcome_unknown", request_attempted=True, write_outcome_unknown=True).to_dict())
+            raise
         if exc.http_status in {409, 422}:
             matches = exact_postgres_matches(client, name)
             if len(matches) == 1 and field(matches[0], "uuid", "id"):
@@ -1149,7 +1168,7 @@ def ensure_postgresql(client: CoolifyClient, args: argparse.Namespace, project: 
                 result = postgres_classification_from_detail(detail, context)
                 if result["status"] == "exists":
                     result["recovered_after_conflict"] = True
-                    actions.append(ActionRecord("postgresql", "recover_after_conflict", "exists", verified=True, recovered_after_conflict=True).to_dict())
+                    actions.append(ActionRecord("postgresql", "recover_after_conflict", "exists", request_attempted=True, verified=True, recovered_after_conflict=True).to_dict())
                     return result
         raise
     item = response.data.get("data") if isinstance(response.data, dict) and isinstance(response.data.get("data"), dict) else response.data
@@ -1160,29 +1179,30 @@ def ensure_postgresql(client: CoolifyClient, args: argparse.Namespace, project: 
             uuid = field(matches[0], "uuid", "id")
             item = matches[0]
     if not uuid:
-        actions.append(ActionRecord("postgresql", "create", "created_unverified", write_performed=True).to_dict())
+        actions.append(ActionRecord("postgresql", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
         return {"status": "created_unverified", "name": name, "write_performed": True, "internal_db_url_available": False, "credentials_configured": True}
     try:
         detail = hydrate_database_by_uuid(client, uuid, item if isinstance(item, dict) else {"uuid": uuid, "name": name})
     except ProvisioningError as exc:
-        actions.append(ActionRecord("postgresql", "create", "created_unverified", write_performed=True).to_dict())
+        actions.append(ActionRecord("postgresql", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
         return {"status": "created_unverified", "name": name, "uuid": uuid, "write_performed": True, "verification_error": exc.message, "internal_db_url_available": False, "credentials_configured": True}
     result = postgres_classification_from_detail(detail, context)
     if result["status"] == "exists":
         result["status"] = "created"
         result["credentials_configured"] = True
-        actions.append(ActionRecord("postgresql", "create", "created", write_performed=True, verified=True).to_dict())
+        actions.append(ActionRecord("postgresql", "create", "created", request_attempted=True, write_performed=True, verified=True).to_dict())
         return result
-    actions.append(ActionRecord("postgresql", "create", "created_unverified", write_performed=True).to_dict())
+    actions.append(ActionRecord("postgresql", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
     return {**result, "status": "created_unverified" if result["status"] in {"compatibility_unverified", "scope_unverified"} else result["status"], "write_performed": True, "credentials_configured": True}
 
 
 def global_status(mode: ExecutionMode, resources: list[dict[str, Any]], blockers: list[Any], actions: list[dict[str, Any]]) -> str:
     statuses = {resource.get("status") for resource in resources}
     write_performed = any(action.get("write_performed") for action in actions) or any(resource.get("write_performed") for resource in resources)
+    write_outcome_unknown = any(action.get("write_outcome_unknown") for action in actions) or any(resource.get("write_outcome_unknown") for resource in resources)
     if "incompatible" in statuses:
         return "recreate_required"
-    if "created_unverified" in statuses or (write_performed and blockers):
+    if write_outcome_unknown or "created_unverified" in statuses or (write_performed and blockers):
         return "partial"
     if blockers:
         return "blocked"
@@ -1211,8 +1231,8 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         environment = ensure_environment(client, project, mode, actions)
         postgres = ensure_postgresql(client, args, project, environment, {"uuid": server_uuid, "name": args.server}, mode, actions)
     except ProvisioningError as exc:
-        if exc.write_performed or any(action.get("write_performed") for action in actions):
-            blockers.append({"message": exc.message, "type": exc.error_type, "write_performed": True})
+        if exc.write_performed or exc.write_outcome_unknown or any(action.get("write_performed") or action.get("write_outcome_unknown") for action in actions):
+            blockers.append({"message": exc.message, "type": exc.error_type, "write_performed": exc.write_performed, "write_outcome_unknown": exc.write_outcome_unknown})
             project = locals().get("project", {"status": "blocked"})
             environment = locals().get("environment", {"status": "blocked"})
             postgres = locals().get("postgres", {"status": "blocked"})
@@ -1238,6 +1258,14 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         "existing_resources": discover_existing_resources(client, args.product, context, args),
     }
     plan = build_plan(args, discovery)
+    plan["mode"] = mode.name
+    plan["safety"] = {
+        "writes_enabled": mode.is_apply and mode.allow_resource_writes and mode.confirm_product == mode.product,
+        "allowed_post_operations": sorted(ALLOWED_POST_KINDS) if mode.is_apply else [],
+        "forbidden_methods": ["PATCH", "PUT", "DELETE"],
+        "deploy_actions_enabled": False,
+        "application_creation_enabled": False,
+    }
     for resource in plan["resources"]:
         if resource["name"] == f"{args.product}-postgres-dev":
             resource.update({"status": postgres.get("status"), "provisioning": postgres})
