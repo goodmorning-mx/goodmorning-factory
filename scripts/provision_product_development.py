@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import secrets
@@ -93,6 +94,16 @@ class ExecutionMode:
     def is_apply(self) -> bool:
         return self.name == "apply"
 
+    @property
+    def database_start_enabled(self) -> bool:
+        return (
+            self.is_apply
+            and self.allow_resource_writes
+            and self.confirm_product == self.product
+            and self.allow_database_start
+            and self.confirm_database_start == f"{self.product}-postgres-dev"
+        )
+
     def gates(self) -> dict[str, Any]:
         return {
             "apply_requested": self.is_apply,
@@ -101,6 +112,7 @@ class ExecutionMode:
             "allowed_post_kinds": sorted(ALLOWED_POST_KINDS),
             "database_start_env": self.allow_database_start,
             "confirm_database_start_matches": self.confirm_database_start == f"{self.product}-postgres-dev" if self.confirm_database_start is not None else False,
+            "database_start_enabled": self.database_start_enabled,
             "forbidden_methods": ["PATCH", "PUT", "DELETE"],
             "deployments_forbidden": True,
             "application_creation_forbidden": True,
@@ -220,7 +232,7 @@ class CoolifyClient:
             if post_kind == "postgresql_create" and path != POST_POSTGRES_CREATE:
                 raise ProvisioningError("PostgreSQL creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
             if post_kind == "postgresql_start":
-                if not self.mode.allow_database_start or self.mode.confirm_database_start != f"{self.mode.product}-postgres-dev":
+                if not self.mode.database_start_enabled:
                     raise ProvisioningError("PostgreSQL start requires COOLIFY_ALLOW_DATABASE_START=true and exact --confirm-database-start before POST.", error_type="safety", method=method, path=path)
                 if not re.fullmatch(r"/databases/[^/]+/start", path):
                     raise ProvisioningError("PostgreSQL start POST endpoint must include the exact selected database UUID.", error_type="safety", method=method, path=path)
@@ -865,6 +877,13 @@ def build_plan(args: argparse.Namespace, discovery: dict[str, Any]) -> dict[str,
     }
 
 
+def validate_readiness_timing_args(args: argparse.Namespace) -> None:
+    for name in ("postgres_readiness_interval", "postgres_readiness_timeout"):
+        value = getattr(args, name, None)
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            raise ProvisioningError(f"--{name.replace('_', '-')} must be a finite number greater than zero.", error_type="validation")
+
+
 def mode_from_args(args: argparse.Namespace) -> ExecutionMode:
     return ExecutionMode(
         "apply" if getattr(args, "apply", False) else "dry_run",
@@ -1220,10 +1239,11 @@ READINESS_STATUS_MAP = {
     "exited": "stopped",
     "stopped": "stopped",
     "running:unhealthy": "unhealthy",
+    "exited:unhealthy": "unhealthy",
     "unhealthy": "unhealthy",
     "failed": "unhealthy",
 }
-READINESS_FAILURE_STATUSES = {"unhealthy", "timeout", "partial"}
+READINESS_FAILURE_STATUSES = {"blocked", "readiness_unverified", "unhealthy", "timeout", "partial"}
 
 
 def classify_database_readiness_status(value: Any) -> str:
@@ -1238,17 +1258,22 @@ def database_raw_status(item: dict[str, Any]) -> Any:
 
 
 def prepare_psycopg_database_url(value: str) -> str:
-    if not isinstance(value, str) or not value:
-        raise ProvisioningError("DATABASE_URL has no supported PostgreSQL scheme.", error_type="validation")
+    error = ProvisioningError("DATABASE_URL has no supported PostgreSQL connection shape.", error_type="validation")
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise error
     if value.startswith("postgresql://"):
         rest = value[len("postgresql://"):]
     elif value.startswith("postgres://"):
         rest = value[len("postgres://"):]
     else:
-        raise ProvisioningError("DATABASE_URL has no supported PostgreSQL scheme.", error_type="validation")
-    parsed = urllib.parse.urlsplit(value)
-    if not parsed.scheme or not parsed.netloc:
-        raise ProvisioningError("DATABASE_URL has no supported PostgreSQL scheme.", error_type="validation")
+        raise error
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        hostname = parsed.hostname
+    except ValueError as exc:
+        raise error from exc
+    if parsed.fragment or not parsed.scheme or not parsed.netloc or not hostname or parsed.path in ("", "/"):
+        raise error
     return "postgresql+psycopg://" + rest
 
 
@@ -1270,7 +1295,7 @@ def readiness_result(status: str, uuid: Any = None, **updates: Any) -> dict[str,
 
 def verify_internal_db_url_flags(item: dict[str, Any]) -> dict[str, bool]:
     url = nested_field(item, "internal_db_url")
-    available = isinstance(url, str) and bool(url)
+    available = isinstance(url, str) and bool(url.strip())
     ready = False
     if available:
         try:
@@ -1343,7 +1368,7 @@ def ensure_postgresql_ready(client: CoolifyClient, args: argparse.Namespace, pos
     if state == "stopped":
         if not mode.is_apply:
             return readiness_result("would_start", uuid, **flags)
-        if not mode.allow_database_start or mode.confirm_database_start != f"{args.product}-postgres-dev":
+        if not mode.database_start_enabled:
             return readiness_result("blocked", uuid, **flags)
         try:
             client.start_postgresql(str(uuid))
@@ -1358,17 +1383,19 @@ def ensure_postgresql_ready(client: CoolifyClient, args: argparse.Namespace, pos
                     return poll_postgresql_readiness(client, str(uuid), timeout=getattr(args, "postgres_readiness_timeout", 300.0), interval=getattr(args, "postgres_readiness_interval", 5.0), sleeper=sleeper) if recovered_state == "starting" else readiness_result("healthy", uuid, poll_attempts=1, **verify_internal_db_url_flags(rediscovered))
                 return readiness_result("blocked", uuid, start_requested=True, request_attempted=True, **flags)
             raise
-        actions.append(ActionRecord("postgresql", "start", "started", request_attempted=True, write_performed=True, verified=True).to_dict())
+        actions.append(ActionRecord("postgresql", "start", "start_accepted", request_attempted=True, write_performed=True, verified=False).to_dict())
         polled = poll_postgresql_readiness(client, str(uuid), timeout=getattr(args, "postgres_readiness_timeout", 300.0), interval=getattr(args, "postgres_readiness_interval", 5.0), sleeper=sleeper)
+        if polled.get("status") == "healthy":
+            actions.append(ActionRecord("postgresql", "readiness", "healthy", request_attempted=False, write_performed=False, verified=True).to_dict())
         return {**polled, "start_requested": True, "request_attempted": True, "write_performed": True}
     return readiness_result("readiness_unverified", uuid, **flags)
 
 def global_status(mode: ExecutionMode, resources: list[dict[str, Any]], blockers: list[Any], actions: list[dict[str, Any]], readiness: dict[str, Any] | None = None) -> str:
     statuses = {resource.get("status") for resource in resources}
-    if mode.is_apply and readiness and readiness.get("status") in READINESS_FAILURE_STATUSES:
-        return readiness.get("status")
     write_performed = any(action.get("write_performed") for action in actions) or any(resource.get("write_performed") for resource in resources)
     write_outcome_unknown = any(action.get("write_outcome_unknown") for action in actions) or any(resource.get("write_outcome_unknown") for resource in resources)
+    if mode.is_apply and readiness and (readiness.get("write_outcome_unknown") or readiness.get("status") in READINESS_FAILURE_STATUSES):
+        return "partial" if readiness.get("write_outcome_unknown") else readiness.get("status")
     if "incompatible" in statuses:
         return "recreate_required"
     if write_outcome_unknown or "created_unverified" in statuses or (write_performed and blockers):
@@ -1433,7 +1460,8 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
     plan["mode"] = mode.name
     plan["safety"] = {
         "writes_enabled": mode.is_apply and mode.allow_resource_writes and mode.confirm_product == mode.product,
-        "allowed_post_operations": sorted(ALLOWED_POST_KINDS if mode.allow_database_start else (ALLOWED_POST_KINDS - {"postgresql_start"})) if mode.is_apply else [],
+        "allowed_post_operations": sorted(ALLOWED_POST_KINDS if mode.database_start_enabled else (ALLOWED_POST_KINDS - {"postgresql_start"})) if mode.is_apply else [],
+        "database_start_enabled": mode.database_start_enabled,
         "forbidden_methods": ["PATCH", "PUT", "DELETE"],
         "deploy_actions_enabled": False,
         "application_creation_enabled": False,
@@ -1467,6 +1495,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
 
 def provision(args: argparse.Namespace, *, client_factory: Callable[[], CoolifyClient] | None = None) -> dict[str, Any]:
     validate_args(args)
+    validate_readiness_timing_args(args)
     mode = mode_from_args(args)
     if mode.is_apply:
         mode.assert_write_gates()
