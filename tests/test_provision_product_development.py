@@ -1,111 +1,674 @@
-import argparse, os, unittest
+import argparse
+import json
+import os
+import unittest
 from unittest import mock
+
 import scripts.provision_product_development as pp
 
 
-def args(**o):
-    b=dict(product='ledger',repository='goodmorning-mx/ledger',branch='dev',coolify_project='ledger',environment='dev',server='development',github_app='gm-app',dry_run=True,apply=False,confirm_product=None)
-    b.update(o); return argparse.Namespace(**b)
+def args(**overrides):
+    base = dict(
+        product="ledger",
+        repository="goodmorning-mx/ledger",
+        branch="dev",
+        coolify_project="ledger",
+        environment="dev",
+        server="development",
+        github_app="goodmorning-mx-coolify",
+        dry_run=True,
+    )
+    base.update(overrides)
+    return argparse.Namespace(**base)
+
 
 class FakeClient:
-    def __init__(self,payloads): self.payloads=payloads; self.calls=[]; self.mode=None
-    def get(self,path):
-        self.calls.append(('GET',path))
-        v=self.payloads.get(path,[])
-        if isinstance(v,Exception): raise v
-        return v
-    def create_project(self,payload): self.calls.append(('POST','/projects',pp.redact(payload))); return pp.Response(201,{'uuid':'project-1','name':payload['name']},{})
-    def create_environment(self,project_uuid,payload): self.calls.append(('POST',f'/projects/{project_uuid}/environments',payload)); return pp.Response(201,{'uuid':'env-1','name':'dev'},{})
-    def create_postgresql(self,payload): self.calls.append(('POST','/databases/postgresql',pp.redact(payload))); return pp.Response(201,{'uuid':'db-1','internal_db_url':'postgres://fake:fake@fake/db'},{})
+    def __init__(self, payloads):
+        self.payloads = payloads
+        self.calls = []
+
+    def get(self, path):
+        self.calls.append(("GET", path))
+        if path not in self.payloads:
+            raise pp.ProvisioningError(f"missing fixture for {path}", error_type="test")
+        value = self.payloads[path]
+        if isinstance(value, Exception):
+            raise value
+        return value
 
 
-def fixtures(**o):
-    p={'/servers':[{'uuid':'server-1','name':'development'}],'/github-apps':{'github_apps':[{'uuid':'app-1','name':'gm-app'}]},'/projects':[{'uuid':'project-1','name':'ledger'}],'/projects/project-1':{'uuid':'project-1','name':'ledger','environments':[{'uuid':'env-1','name':'dev'}]},'/databases':[{'uuid':'db-1','name':'ledger-postgres-dev','database_type':'standalone-postgresql','image':'postgres:16-alpine','is_public':False,'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','postgres_user':'ledger_dev_user'}],'/databases/db-1':{'uuid':'db-1','name':'ledger-postgres-dev','database_type':'standalone-postgresql','image':'postgres:16-alpine','is_public':False,'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','postgres_user':'ledger_dev_user','internal_db_url':'postgres://fake:fake@fake/db'},'/applications':[]}
-    p.update(o); return p
+class ProductDevelopmentProvisionerTests(unittest.TestCase):
+    def client(self, **payload_overrides):
+        payloads = {
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {
+                "uuid": "project-1",
+                "name": "ledger",
+                "environments": [{"uuid": "env-1", "name": "dev"}],
+            },
+            "/servers": [{"uuid": "server-1", "name": "development"}],
+            "/github-apps": {
+                "github_apps": [
+                    {"uuid": "app-1", "name": "goodmorning-mx-coolify", "token": "hidden"}
+                ]
+            },
+            "/applications": [{"uuid": "api-1", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "git_repository": "goodmorning-mx/ledger", "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend", "dockerfile_location": "/Dockerfile", "ports_exposes": "8000", "domains": "https://api.dev.ledger.goodmorning.mx", "github_app_uuid": "app-1"}],
+            "/databases": [{"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"}],
+        }
+        payloads.update(payload_overrides)
+        return FakeClient(payloads)
 
-class ProvisionerStage3(unittest.TestCase):
-    def test_dry_run_existing_compatible_uses_get_only(self):
-        c=FakeClient(fixtures())
-        r=pp.provision(args(),client_factory=lambda:c)
-        self.assertEqual(r['status'],'dry_run'); self.assertEqual(r['postgresql']['status'],'exists')
-        self.assertFalse(any(x[0]=='POST' for x in c.calls))
-        self.assertTrue(r['postgresql']['internal_db_url_available'])
-        self.assertNotIn('fake:fake', str(r))
+    def test_builds_expected_three_resource_dry_run_plan(self):
+        client = self.client()
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["mode"], "read_only_plan")
+        self.assertEqual(
+            client.calls,
+            [
+                ("GET", "/projects"),
+                ("GET", "/projects/project-1"),
+                ("GET", "/servers"),
+                ("GET", "/github-apps"),
+                ("GET", "/applications"),
+                ("GET", "/applications/api-1"),
+                ("GET", "/databases"),
+                ("GET", "/databases/db-1"),
+            ],
+        )
+        postgres, backend, frontend = result["resources"]
+        self.assertEqual(postgres["desired_state"]["version"], "16")
+        self.assertFalse(postgres["desired_state"]["is_public"])
+        self.assertIsNone(postgres["desired_state"]["domain"])
+        self.assertEqual(
+            backend["create_payload_preview"],
+            {
+                "name": "ledger-api-dev",
+                "git_repository": "goodmorning-mx/ledger",
+                "git_branch": "dev",
+                "build_pack": "dockerfile",
+                "base_directory": "/backend",
+                "dockerfile_location": "/Dockerfile",
+                "ports_exposes": "8000",
+                "domains": "https://api.dev.ledger.goodmorning.mx",
+                "instant_deploy": False,
+                "project_uuid": "project-1",
+                "server_uuid": "server-1",
+                "environment_name": "dev",
+                "github_app_uuid": "app-1",
+            },
+        )
+        self.assertEqual(frontend["create_payload_preview"]["ports_exposes"], "80")
+        self.assertEqual(frontend["create_payload_preview"]["domains"], "https://dev.ledger.goodmorning.mx")
+        self.assertNotIn("auto_deploy", backend["create_payload_preview"])
+        self.assertFalse(backend["desired_state"]["deployment_policy"]["auto_deploy_enabled"])
+        self.assertEqual(result["discovery"]["github_app"], {"name": "goodmorning-mx-coolify", "uuid": "app-1"})
 
-    def test_dry_run_all_absent_plans_symbolic(self):
-        c=FakeClient(fixtures(**{'/projects':[], '/databases':[]}))
-        r=pp.provision(args(),client_factory=lambda:c)
-        self.assertEqual(r['project']['status'],'would_create')
-        self.assertEqual(r['environment_resource']['status'],'would_create')
-        self.assertEqual(r['postgresql']['status'],'would_create')
-        self.assertFalse(any(x[0]=='POST' for x in c.calls))
+    def test_rejects_any_non_dev_branch_or_environment(self):
+        with self.assertRaisesRegex(pp.ProvisioningError, "Only branch 'dev'"):
+            pp.validate_args(args(branch="main"))
+        with self.assertRaisesRegex(pp.ProvisioningError, "Only environment 'dev'"):
+            pp.validate_args(args(environment="prod"))
 
-    def test_project_exists_dev_absent_and_only_production_plans_dev(self):
-        c=FakeClient(fixtures(**{'/projects/project-1':{'environments':[{'uuid':'prod','name':'production'}]},'/projects/project-1/environments':[{'uuid':'prod','name':'production'}],'/databases':[]}))
-        r=pp.provision(args(),client_factory=lambda:c)
-        self.assertEqual(r['environment_resource']['status'],'would_create')
-        self.assertNotEqual(r['environment_resource'].get('uuid'),'prod')
+    def test_requires_dry_run(self):
+        with self.assertRaisesRegex(pp.ProvisioningError, "Only --dry-run"):
+            pp.validate_args(args(dry_run=False))
 
-    def test_postgres_incompatible_and_out_of_scope(self):
-        c=FakeClient(fixtures(**{'/databases':[{'uuid':'db-1','name':'ledger-postgres-dev','database_type':'standalone-postgresql','image':'postgres:15','is_public':False,'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1'}],'/databases/db-1':{'uuid':'db-1','name':'ledger-postgres-dev','database_type':'standalone-postgresql','image':'postgres:15','is_public':False,'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1'}}))
-        self.assertEqual(pp.provision(args(),client_factory=lambda:c)['status'],'recreate_required')
-        c=FakeClient(fixtures(**{'/databases':[{'uuid':'db-1','name':'ledger-postgres-dev','database_type':'standalone-postgresql','image':'postgres:16','is_public':False,'project_uuid':'other','environment_uuid':'env-1','server_uuid':'server-1'}],'/databases/db-1':{'uuid':'db-1','name':'ledger-postgres-dev','database_type':'standalone-postgresql','image':'postgres:16','is_public':False,'project_uuid':'other','environment_uuid':'env-1','server_uuid':'server-1'}}))
-        self.assertEqual(pp.provision(args(),client_factory=lambda:c)['postgresql']['status'],'out_of_scope')
+    def test_selects_project_environment_server_and_github_app_by_exact_unique_name(self):
+        client = self.client(
+            **{
+                "/projects": [
+                    {"uuid": "wrong", "name": "ledger-old"},
+                    {"uuid": "project-1", "name": "ledger"},
+                ],
+                "/servers": [
+                    {"uuid": "wrong", "name": "development-2"},
+                    {"uuid": "server-1", "name": "development"},
+                ],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["discovery"]["project"]["uuid"], "project-1")
+        self.assertEqual(result["discovery"]["server"]["uuid"], "server-1")
 
-    def test_duplicates_fail(self):
-        with self.assertRaisesRegex(pp.ProvisioningError,'multiple Coolify project'):
-            pp.provision(args(),client_factory=lambda:FakeClient(fixtures(**{'/projects':[{'name':'ledger','uuid':'1'},{'name':'ledger','uuid':'2'}]})))
-        with self.assertRaisesRegex(pp.ProvisioningError,'multiple PostgreSQL'):
-            pp.provision(args(),client_factory=lambda:FakeClient(fixtures(**{'/databases':[{'name':'ledger-postgres-dev','uuid':'1'},{'name':'ledger-postgres-dev','uuid':'2'}]})))
+    def test_environment_selection_fails_when_only_production_exists(self):
+        client = self.client(
+            **{
+                "/projects/project-1": {
+                    "uuid": "project-1",
+                    "name": "ledger",
+                    "environments": [{"uuid": "env-prod", "name": "production"}],
+                }
+            }
+        )
+        with self.assertRaisesRegex(pp.ProvisioningError, "environment named exactly 'dev'"):
+            pp.provision(args(), client_factory=lambda: client)
 
-    def test_legacy_compose_reported(self):
-        c=FakeClient(fixtures(**{'/applications':[{'uuid':'old','name':'ledger-dev','build_pack':'dockercompose'}]}))
-        r=pp.provision(args(),client_factory=lambda:c)
-        self.assertEqual(r['legacy_compose'][0]['name'],'ledger-dev')
+    def test_duplicate_exact_match_is_error(self):
+        client = self.client(**{"/projects": [{"uuid": "1", "name": "ledger"}, {"uuid": "2", "name": "ledger"}]})
+        with self.assertRaisesRegex(pp.ProvisioningError, "multiple Coolify project"):
+            pp.provision(args(), client_factory=lambda: client)
 
-    def test_apply_gates_and_client_safety(self):
-        mode=pp.ExecutionMode('dry_run','ledger',None,False); client=pp.CoolifyClient('https://coolify.example','token',mode=mode)
-        for method in ('POST','PATCH','PUT','DELETE'):
-            with self.assertRaises(pp.ProvisioningError): client.request(method,'/projects')
-        for path in ('/deploy','/applications/x/start','/databases/x/restart','/databases/x/stop'):
-            with self.assertRaises(pp.ProvisioningError): client.request('GET',path)
-        for m in [pp.ExecutionMode('apply','ledger',None,True), pp.ExecutionMode('apply','ledger','other',True), pp.ExecutionMode('apply','ledger','ledger',False)]:
-            client=pp.CoolifyClient('https://coolify.example','token',mode=m)
-            with self.assertRaises(pp.ProvisioningError): client.create_project({'name':'ledger'})
-        client=pp.CoolifyClient('https://coolify.example','token',mode=pp.ExecutionMode('apply','ledger','ledger',True))
-        with self.assertRaisesRegex(pp.ProvisioningError,'Application'): client.request('POST','/applications',post_kind='project_create')
-        with self.assertRaisesRegex(pp.ProvisioningError,'allowlisted'): client.request('POST','/databases/mysql',post_kind='postgresql_create')
+    def test_missing_environment_can_be_discovered_from_environment_endpoint(self):
+        client = self.client(
+            **{
+                "/projects/project-1": {"uuid": "project-1", "name": "ledger"},
+                "/projects/project-1/environments": [{"uuid": "env-1", "name": "dev"}],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertIn(("GET", "/projects/project-1/environments"), client.calls)
+        self.assertEqual(result["discovery"]["environment"]["uuid"], "env-1")
 
-    @mock.patch.dict(os.environ, {'COOLIFY_ALLOW_RESOURCE_WRITES':'true'})
-    @mock.patch('scripts.provision_product_development.generate_postgres_password', return_value='FAKE_TEST_PASSWORD_MARKER')
-    def test_apply_creates_project_dev_postgres_without_deploy(self,_):
-        c=FakeClient(fixtures(**{'/projects':[],'/databases':[], '/databases/db-1':{'uuid':'db-1','name':'ledger-postgres-dev','database_type':'standalone-postgresql','image':'postgres:16-alpine','is_public':False,'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','postgres_user':'ledger_dev_user','internal_db_url':'postgres://fake:fake@fake/db'}}))
-        r=pp.provision(args(dry_run=False,apply=True,confirm_product='ledger'),client_factory=lambda:c)
-        self.assertEqual(r['status'],'created')
-        self.assertIn(('POST','/projects',{'name':'ledger'}), c.calls)
-        self.assertFalse(any('deploy' in call[1] or 'start' in call[1] for call in c.calls))
-        self.assertNotIn('FAKE_TEST_PASSWORD_MARKER', str(r)); self.assertNotIn('fake:fake', str(r))
+    def test_existing_resource_discovery_classifies_found_absent_duplicate_incompatible_and_legacy_compose(self):
+        client = self.client(
+            **{
+                "/applications": [
+                    {"uuid": "api-1", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"},
+                    {"uuid": "api-2", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"},
+                    {"uuid": "frontend-1", "name": "ledger-frontend-dev", "build_pack": "dockercompose", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"},
+                    {"uuid": "other", "name": "ledger-worker-dev", "type": "application"},
+                    {"uuid": "ignored", "name": "another-api-dev", "type": "application"},
+                ],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        classifications = {
+            item["name"]: item["status"]
+            for item in result["discovery"]["existing_resources"]["classification"]
+        }
+        self.assertEqual(classifications["ledger-postgres-dev"], "absent")
+        self.assertEqual(classifications["ledger-api-dev"], "duplicate")
+        self.assertEqual(classifications["ledger-frontend-dev"], "legacy_compose_migration_required")
+        self.assertEqual(
+            result["discovery"]["existing_resources"]["unexpected_same_product_prefix"][0]["name"],
+            "ledger-worker-dev",
+        )
 
-    def test_apply_without_env_gate_or_confirm_fails_before_post(self):
-        for kw in ({'confirm_product':'ledger'}, {'confirm_product':None}, {'confirm_product':'other'}):
-            c=FakeClient(fixtures(**{'/projects':[]}))
-            with self.assertRaises(pp.ProvisioningError): pp.provision(args(dry_run=False,apply=True,**kw),client_factory=lambda:c)
-            self.assertFalse(any(x[0]=='POST' for x in c.calls))
+    def test_existing_resource_discovery_classifies_incompatible_same_name(self):
+        client = self.client(
+            **{
+                "/applications": [{"uuid": "bad", "name": "ledger-postgres-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"}],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        classifications = {
+            item["name"]: item["status"]
+            for item in result["discovery"]["existing_resources"]["classification"]
+        }
+        self.assertEqual(classifications["ledger-postgres-dev"], "incompatible")
 
-    def test_malformed_creation_after_project_is_partial(self):
-        class Bad(FakeClient):
-            def create_environment(self,project_uuid,payload): self.calls.append(('POST','env',payload)); raise pp.ProvisioningError('boom password=FAKE', error_type='coolify_api')
-        with mock.patch.dict(os.environ, {'COOLIFY_ALLOW_RESOURCE_WRITES':'true'}):
-            r=pp.provision(args(dry_run=False,apply=True,confirm_product='ledger'),client_factory=lambda:Bad(fixtures(**{'/projects':[], '/projects/project-1':{}, '/projects/project-1/environments':[]})))
-        self.assertEqual(r['status'],'partial'); self.assertNotIn('FAKE', str(r))
+    def test_client_refuses_write_methods(self):
+        with mock.patch.dict(os.environ, {}, clear=True):
+            client = pp.CoolifyClient("https://coolify.example", "secret-token")
+            for method in ("POST", "PATCH", "PUT", "DELETE"):
+                with self.assertRaisesRegex(pp.ProvisioningError, "Refusing non-read-only"):
+                    client.request(method, "/applications")
 
-    def test_redaction(self):
-        msg=pp.safe_http_body('{"postgres_password":"FAKEPASS","internal_db_url":"postgres://u:p@h/db","DATABASE_URL":"postgresql://u:p@h/db","nested":{"Authorization":"Bearer FAKEBEARER"}}')
-        for s in ('FAKEPASS','u:p','FAKEBEARER'): self.assertNotIn(s,msg)
-        e=pp.ProvisioningError('Authorization: Bearer FAKE token=NOPE password=NO')
-        self.assertNotIn('FAKE', e.message); self.assertNotIn('NOPE', e.message)
+    def test_redacts_env_token_and_secret_like_keys_without_redacting_operational_fields(self):
+        with mock.patch.dict(os.environ, {"COOLIFY_API_TOKEN": "secret-token"}):
+            self.assertEqual(pp.redact("Bearer secret-token"), "Bearer [REDACTED]")
+            self.assertEqual(
+                pp.redact(
+                    {
+                        "api_token": "secret-token",
+                        "git_repository": "goodmorning-mx/ledger",
+                        "git_branch": "dev",
+                        "base_directory": "/backend",
+                        "dockerfile_location": "/Dockerfile",
+                        "ports_exposes": "8000",
+                        "domains": "https://api.dev.ledger.goodmorning.mx",
+                    }
+                ),
+                {
+                    "api_token": "[REDACTED]",
+                    "git_repository": "goodmorning-mx/ledger",
+                    "git_branch": "dev",
+                    "base_directory": "/backend",
+                    "dockerfile_location": "/Dockerfile",
+                    "ports_exposes": "8000",
+                    "domains": "https://api.dev.ledger.goodmorning.mx",
+                },
+            )
 
-    def test_sql_names_are_deterministic_safe(self):
-        self.assertEqual(pp.deterministic_sql_names('my-product')['postgres_db'],'my_product_dev')
+    def test_main_prints_structured_json(self):
+        expected = {"status": "dry_run", "resources": []}
+        with mock.patch.object(pp, "provision", return_value=expected):
+            with mock.patch("sys.stdout") as stdout:
+                code = pp.main(
+                    [
+                        "--product",
+                        "ledger",
+                        "--repository",
+                        "goodmorning-mx/ledger",
+                        "--branch",
+                        "dev",
+                        "--coolify-project",
+                        "ledger",
+                        "--environment",
+                        "dev",
+                        "--server",
+                        "development",
+                        "--github-app",
+                        "goodmorning-mx-coolify",
+                        "--dry-run",
+                    ]
+                )
+        self.assertEqual(code, 0)
+        printed = "".join(call.args[0] for call in stdout.write.call_args_list if call.args)
+        self.assertEqual(json.loads(printed), expected)
 
-if __name__=='__main__': unittest.main()
+    def test_selection_does_not_accept_uuid_or_slug_instead_of_name(self):
+        client = self.client(
+            **{
+                "/projects": [{"uuid": "ledger", "slug": "ledger", "name": "not-ledger"}],
+            }
+        )
+        with self.assertRaisesRegex(pp.ProvisioningError, "project named exactly 'ledger'"):
+            pp.provision(args(), client_factory=lambda: client)
+
+        client = self.client(
+            **{
+                "/servers": [{"uuid": "development", "slug": "development", "name": "not-development"}],
+            }
+        )
+        with self.assertRaisesRegex(pp.ProvisioningError, "server named exactly 'development'"):
+            pp.provision(args(), client_factory=lambda: client)
+
+        client = self.client(
+            **{
+                "/github-apps": {"github_apps": [{"uuid": "goodmorning-mx-coolify", "slug": "goodmorning-mx-coolify", "name": "not-app"}]},
+            }
+        )
+        with self.assertRaisesRegex(pp.ProvisioningError, "GitHub App named exactly 'goodmorning-mx-coolify'"):
+            pp.provision(args(), client_factory=lambda: client)
+
+    def test_same_name_in_other_project_is_out_of_scope_not_duplicate(self):
+        client = self.client(
+            **{
+                "/applications": [
+                    {"uuid": "api-1", "name": "ledger-api-dev", "type": "application", "project_uuid": "other", "environment_uuid": "env-1", "server_uuid": "server-1"},
+                    {"uuid": "api-2", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "git_repository": "goodmorning-mx/ledger", "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend", "dockerfile_location": "/Dockerfile", "ports_exposes": "8000", "domains": "https://api.dev.ledger.goodmorning.mx", "github_app_uuid": "app-1"},
+                ],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        api = next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-api-dev")
+        self.assertEqual(api["status"], "found")
+        self.assertTrue(any(match.get("status") == "out_of_scope" for match in api["matches"]))
+
+    def test_application_contradictions_are_incompatible_and_missing_fields_are_unverified(self):
+        client = self.client(
+            **{
+                "/applications": [{"uuid": "api-1", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "git_repository": "goodmorning-mx/ledger", "git_branch": "main"}],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        api = next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-api-dev")
+        self.assertEqual(api["status"], "incompatible")
+        self.assertIn({"field": "git_branch", "expected": "dev", "actual": "main"}, api["differences"])
+
+        client = self.client(
+            **{
+                "/applications": [{"uuid": "api-1", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"}],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        api = next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-api-dev")
+        self.assertEqual(api["status"], "compatibility_unverified")
+
+    def test_legacy_compose_product_dev_is_reported_separately(self):
+        client = self.client(
+            **{
+                "/applications": [{"uuid": "old", "name": "ledger-dev", "build_pack": "dockercompose", "docker_compose_location": "/compose.yaml", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"}],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        legacy = result["discovery"]["existing_resources"]["legacy_compose"]
+        self.assertEqual(legacy[0]["status"], "legacy_compose_migration_required")
+        self.assertEqual(legacy[0]["resource"]["name"], "ledger-dev")
+
+    def test_http_error_redacts_sensitive_non_json_and_json_bodies(self):
+        message = pp.safe_http_body('password=hunter2 token=abc123 Authorization Bearer bearer-secret DATABASE_URL=postgresql://user:pass@db:5432/app')
+        for forbidden in ("hunter2", "abc123", "bearer-secret", "user:pass"):
+            self.assertNotIn(forbidden, message)
+        json_message = pp.safe_http_body('{"message":"password=hunter2 DATABASE_URL=postgresql://user:pass@db/app","error":"Bearer bearer-secret","items":["token=nested-token"],"nested":{"token":"other-token"}}')
+        for forbidden in ("other-token", "user:pass", "hunter2", "bearer-secret", "nested-token"):
+            self.assertNotIn(forbidden, json_message)
+        string_json = pp.safe_http_body('"secret=string-secret https://user:pass@example.test/path"')
+        self.assertNotIn("string-secret", string_json)
+        self.assertNotIn("user:pass", string_json)
+    def test_candidate_listing_is_hydrated_before_classification(self):
+        client = self.client(
+            **{
+                "/applications": [{"uuid": "api-min", "name": "ledger-api-dev"}],
+                "/applications/api-min": {"uuid": "api-min", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "git_repository": "goodmorning-mx/ledger", "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend", "dockerfile_location": "/Dockerfile", "ports_exposes": "8000", "domains": "https://api.dev.ledger.goodmorning.mx", "github_app_uuid": "app-1"},
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertIn(("GET", "/applications/api-min"), client.calls)
+        api = next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-api-dev")
+        self.assertEqual(api["status"], "found")
+
+    def test_legacy_compose_scope_is_classified(self):
+        client = self.client(
+            **{
+                "/applications": [
+                    {"uuid": "old-other", "name": "ledger-dev", "build_pack": "dockercompose", "project_uuid": "other", "environment_uuid": "env-1", "server_uuid": "server-1"},
+                    {"uuid": "old-unknown", "name": "ledger-dev", "build_pack": "dockercompose"},
+                ],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        statuses = [item["status"] for item in result["discovery"]["existing_resources"]["legacy_compose"]]
+        self.assertIn("out_of_scope", statuses)
+        self.assertIn("scope_unverified", statuses)
+
+    def test_postgres_compatibility_cases(self):
+        def status_for(database):
+            client = self.client(**{"/applications": [], "/databases": [database]})
+            result = pp.provision(args(), client_factory=lambda: client)
+            return next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-postgres-dev")
+
+        compatible = status_for({"uuid": "db", "name": "ledger-postgres-dev", "type": "postgres", "version": "16", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
+        self.assertEqual(compatible["status"], "found")
+        mysql = status_for({"uuid": "db", "name": "ledger-postgres-dev", "type": "mysql", "version": "16", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
+        self.assertEqual(mysql["status"], "incompatible")
+        public = status_for({"uuid": "db", "name": "ledger-postgres-dev", "type": "postgresql", "version": "16", "is_public": True, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
+        self.assertEqual(public["status"], "incompatible")
+        version = status_for({"uuid": "db", "name": "ledger-postgres-dev", "type": "postgresql", "version": "15", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
+        self.assertEqual(version["status"], "incompatible")
+        unknown = status_for({"uuid": "db", "name": "ledger-postgres-dev", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
+        self.assertEqual(unknown["status"], "compatibility_unverified")
+
+    def test_application_normalization_accepts_equivalent_values_and_rejects_contradictions(self):
+        client = self.client(
+            **{
+                "/applications": [{"uuid": "api", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "git_repository": "https://github.com/goodmorning-mx/ledger", "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend", "dockerfile_location": "/Dockerfile", "ports_exposes": [8000], "domains": ["https://api.dev.ledger.goodmorning.mx/"], "github_app_uuid": "app-1"}],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        api = next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-api-dev")
+        self.assertEqual(api["status"], "found")
+
+        client = self.client(
+            **{
+                "/applications": [{"uuid": "api", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "git_repository": "goodmorning-mx/other", "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend", "dockerfile_location": "/Dockerfile", "ports_exposes": "8000", "domains": "https://api.dev.ledger.goodmorning.mx", "github_app_uuid": "app-1"}],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        api = next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-api-dev")
+        self.assertEqual(api["status"], "incompatible")
+
+
+    def test_base_url_validation_rejects_credentials_paths_query_fragment_and_http(self):
+        for url in (
+            "https://user:pass@coolify.example",
+            "https://coolify.example/api",
+            "https://coolify.example?x=1",
+            "https://coolify.example#frag",
+            "http://coolify.example",
+        ):
+            with self.assertRaises(pp.ProvisioningError):
+                pp.validate_base_url(url)
+        self.assertEqual(pp.validate_base_url("https://coolify.example/"), "https://coolify.example")
+
+    def test_single_character_product_slug_is_valid(self):
+        pp.validate_args(args(product="a", repository="goodmorning-mx/a"))
+
+class FakeWriteClient(FakeClient):
+    def __init__(self, payloads, responses=None):
+        super().__init__(payloads)
+        self.responses = responses or {}
+        self.mode = None
+
+    def create_project(self, payload):
+        self.calls.append(("POST", "/projects", pp.redact(payload)))
+        value = self.responses.get("project", {"uuid": "project-1", "name": payload["name"]})
+        if isinstance(value, Exception):
+            raise value
+        return pp.Response(self.responses.get("project_status", 201), value, {})
+
+    def create_environment(self, project_uuid, payload):
+        self.calls.append(("POST", f"/projects/{project_uuid}/environments", pp.redact(payload)))
+        value = self.responses.get("environment", {"uuid": "env-1", "name": "dev"})
+        if isinstance(value, Exception):
+            raise value
+        return pp.Response(self.responses.get("environment_status", 201), value, {})
+
+    def create_postgresql(self, payload):
+        self.calls.append(("POST", "/databases/postgresql", pp.redact(payload)))
+        value = self.responses.get("postgresql", {"uuid": "db-1", "name": payload["name"]})
+        if isinstance(value, Exception):
+            raise value
+        return pp.Response(self.responses.get("postgresql_status", 201), value, {})
+
+
+def apply_args(**overrides):
+    return args(dry_run=False, apply=True, confirm_product="ledger", **overrides)
+
+
+class Stage3ProvisioningTests(unittest.TestCase):
+    def apply_env(self):
+        return mock.patch.dict(os.environ, {"COOLIFY_ALLOW_RESOURCE_WRITES": "true"})
+
+    def missing_project_payloads(self, **overrides):
+        payloads = {
+            "/projects": [],
+            "/servers": [{"uuid": "server-1", "name": "development"}],
+            "/github-apps": {"github_apps": [{"uuid": "app-1", "name": "goodmorning-mx-coolify"}]},
+            "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": []},
+            "/projects/project-1/environments": [],
+            "/databases": [],
+            "/databases/db-1": {
+                "uuid": "db-1",
+                "name": "ledger-postgres-dev",
+                "database_type": "standalone-postgresql",
+                "image": "postgres:16-alpine",
+                "is_public": False,
+                "project_uuid": "project-1",
+                "environment_uuid": "env-1",
+                "server_uuid": "server-1",
+                "postgres_user": "ledger_dev_user",
+                "postgres_db": "ledger_dev",
+                "internal_db_url": "postgres://fake:fake@fake/db",
+            },
+            "/applications": [],
+        }
+        payloads.update(overrides)
+        return payloads
+
+    def test_dry_run_missing_everything_plans_without_post_or_password(self):
+        client = FakeWriteClient(self.missing_project_payloads())
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["project"]["status"], "would_create")
+        self.assertEqual(result["environment_resource"]["status"], "would_create")
+        postgres = next(resource for resource in result["resources"] if resource["kind"] == "database")
+        self.assertEqual(postgres["status"], "would_create")
+        self.assertFalse(any(call[0] == "POST" for call in client.calls))
+        self.assertNotIn("fake:fake", json.dumps(result))
+
+    def test_apply_creates_project_environment_and_verified_postgresql(self):
+        client = FakeWriteClient(self.missing_project_payloads(**{
+            "/projects": [],
+            "/projects/project-1": {"uuid": "project-1", "name": "ledger"},
+            "/projects/project-1/environments": [],
+            "/databases": [],
+        }))
+        with self.apply_env(), mock.patch.object(pp, "generate_postgres_password", return_value="FAKE_PASSWORD_MARKER"):
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "created")
+        self.assertEqual([call[0] for call in client.calls].count("POST"), 3)
+        self.assertFalse(any("deploy" in call[1] or "start" in call[1] for call in client.calls))
+        self.assertNotIn("FAKE_PASSWORD_MARKER", json.dumps(result))
+        self.assertNotIn("fake:fake", json.dumps(result))
+
+    def test_apply_gates_fail_before_any_post(self):
+        for confirm, env in (("ledger", {}), (None, {"COOLIFY_ALLOW_RESOURCE_WRITES": "true"}), ("other", {"COOLIFY_ALLOW_RESOURCE_WRITES": "true"})):
+            client = FakeWriteClient(self.missing_project_payloads())
+            with mock.patch.dict(os.environ, env, clear=True):
+                with self.assertRaises(pp.ProvisioningError):
+                    pp.provision(args(dry_run=False, apply=True, confirm_product=confirm), client_factory=lambda: client)
+            self.assertFalse(any(call[0] == "POST" for call in client.calls))
+
+    def test_conflict_recovery_uses_http_status_not_message_text(self):
+        conflict = pp.ProvisioningError("body mentions 409", error_type="coolify_api", http_status=500, method="POST", path="/projects")
+        client = FakeWriteClient(self.missing_project_payloads(), {"project": conflict})
+        with self.apply_env():
+            with self.assertRaises(pp.ProvisioningError):
+                pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual([call for call in client.calls if call[0] == "POST"], [("POST", "/projects", {"name": "ledger"})])
+
+    def test_project_create_without_uuid_is_verified_by_discovery(self):
+        client = FakeWriteClient(self.missing_project_payloads(**{
+            "/projects": [[], [{"uuid": "project-1", "name": "ledger"}]],
+            "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/databases": [{"uuid": "db-1", "name": "ledger-postgres-dev", "database_type": "postgresql", "version": "16", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"}],
+        }), {"project": {"name": "ledger"}})
+        original_get = client.get
+        counters = {"/projects": 0}
+        def sequenced(path):
+            if path == "/projects" and isinstance(client.payloads[path], list) and client.payloads[path] and isinstance(client.payloads[path][0], list):
+                index = counters[path]
+                counters[path] += 1
+                return client.payloads[path][min(index, len(client.payloads[path]) - 1)]
+            return original_get(path)
+        client.get = sequenced
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["project"]["status"], "created")
+
+    def test_project_create_wrong_name_becomes_partial(self):
+        client = FakeWriteClient(self.missing_project_payloads(), {"project": {"uuid": "project-1", "name": "wrong"}})
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "partial")
+        self.assertTrue(result["blockers"])
+
+    def test_environment_create_without_uuid_is_verified_by_discovery(self):
+        client = FakeWriteClient(self.missing_project_payloads(**{
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/databases": [],
+        }), {"environment": {"name": "dev"}})
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertIn(result["environment_resource"]["status"], {"exists", "created"})
+
+    def test_environment_create_wrong_name_is_partial_no_second_post(self):
+        client = FakeWriteClient(self.missing_project_payloads(**{"/projects": [{"uuid": "project-1", "name": "ledger"}]}), {"environment": {"uuid": "env-prod", "name": "production"}})
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual([call[1] for call in client.calls if call[0] == "POST"].count("/projects/project-1/environments"), 1)
+
+    def test_postgresql_202_uses_discovery_and_detail(self):
+        client = FakeWriteClient(self.missing_project_payloads(**{
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/databases": [[], [{"uuid": "db-1", "name": "ledger-postgres-dev"}]],
+        }), {"postgresql": {"name": "ledger-postgres-dev"}, "postgresql_status": 202})
+        original_get = client.get
+        count = {"/databases": 0}
+        def sequenced(path):
+            if path == "/databases":
+                index = count[path]
+                count[path] += 1
+                return client.payloads[path][min(index, 1)]
+            return original_get(path)
+        client.get = sequenced
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql"]["status"], "created")
+
+    def test_postgresql_created_with_incomplete_detail_is_created_unverified_partial(self):
+        client = FakeWriteClient(self.missing_project_payloads(**{
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/databases/db-1": {"uuid": "db-1", "name": "ledger-postgres-dev"},
+        }))
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["postgresql"]["status"], "created_unverified")
+
+    def test_postgresql_detail_failure_is_created_unverified(self):
+        client = FakeWriteClient(self.missing_project_payloads(**{
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/databases/db-1": pp.ProvisioningError("detail failed", error_type="coolify_api"),
+        }))
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["postgresql"]["status"], "created_unverified")
+
+    def test_postgresql_created_but_incompatible_requires_recreate(self):
+        client = FakeWriteClient(self.missing_project_payloads(**{
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/databases/db-1": {"uuid": "db-1", "name": "ledger-postgres-dev", "database_type": "mysql", "version": "16", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"},
+        }))
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "recreate_required")
+
+    def test_second_execution_reuses_verified_postgresql_without_duplicate(self):
+        client = FakeWriteClient(self.missing_project_payloads(**{
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/databases": [{"uuid": "db-1", "name": "ledger-postgres-dev"}],
+        }))
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "exists")
+        self.assertFalse(any(call[0] == "POST" for call in client.calls))
+
+    def test_postgres_version_parser_accepts_only_exact_major_16(self):
+        accepted = ["16", 16, "postgres:16", "postgres:16-alpine"]
+        rejected = ["15", "116", "postgres:15", "postgres:16.1", "mysql:16"]
+        for value in accepted:
+            self.assertEqual(pp.postgres_major_version(value), "16")
+        for value in rejected:
+            self.assertNotEqual(pp.postgres_major_version(value), "16")
+        differences, unverified = pp.postgres_differences({"type": "postgresql", "image": "postgres:16.1", "is_public": False})
+        self.assertTrue(differences)
+        self.assertFalse(unverified)
+
+    def test_operational_urls_are_visible_but_connection_urls_are_redacted(self):
+        value = pp.redact({
+            "COOLIFY_BASE_URL": "https://coolify.example",
+            "VITE_API_URL": "https://api.dev.ledger.goodmorning.mx",
+            "internal_db_url": "postgres://user:pass@db/app",
+            "DATABASE_URL": "postgresql://user:pass@db/app",
+        })
+        self.assertEqual(value["COOLIFY_BASE_URL"], "https://coolify.example")
+        self.assertEqual(value["VITE_API_URL"], "https://api.dev.ledger.goodmorning.mx")
+        self.assertEqual(value["internal_db_url"], "[REDACTED]")
+        self.assertEqual(value["DATABASE_URL"], "[REDACTED]")
+
+    def test_main_returns_two_for_partial_blocked_and_recreate_required(self):
+        for status in ("partial", "blocked", "recreate_required", "created_unverified"):
+            with mock.patch.object(pp, "provision", return_value={"status": status}):
+                with mock.patch("sys.stdout"):
+                    code = pp.main([
+                        "--product", "ledger", "--repository", "goodmorning-mx/ledger", "--branch", "dev",
+                        "--coolify-project", "ledger", "--environment", "dev", "--server", "development",
+                        "--github-app", "goodmorning-mx-coolify", "--dry-run",
+                    ])
+            self.assertEqual(code, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

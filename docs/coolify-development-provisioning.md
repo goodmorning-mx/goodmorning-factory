@@ -212,7 +212,7 @@ The stage-3 payload builders are isolated in `scripts/provision_product_developm
 - `POST /api/v1/databases/postgresql` with `server_uuid`, `project_uuid`, `environment_name`, `name`, `image`, PostgreSQL credential fields, `is_public=false`, and `instant_deploy=false`.
 - `GET /api/v1/databases/{uuid}` for PostgreSQL detail verification.
 
-Success statuses accepted by the client for these creation endpoints are `200`, `201`, and `202`. Coolify uses `/api/v1` and Bearer authentication. PostgreSQL creation may return `internal_db_url`; Factory treats that value as a secret and reports only `internal_db_url_available: true|false`.
+Success statuses accepted by the client for these creation endpoints are `200`, `201`, and `202`. Coolify uses `/api/v1` and Bearer authentication. PostgreSQL creation may return `internal_db_url`; Factory treats that value as a secret and reports only `internal_db_url_available: true|false`. The PostgreSQL version is represented in the isolated payload builder with `image=postgres:16-alpine`; if upstream OpenAPI renames this field in a future Coolify release, only that builder should change.
 
 `instant_deploy=false` is sent during PostgreSQL creation so this stage creates the Coolify record without starting, restarting, stopping, or deploying anything.
 

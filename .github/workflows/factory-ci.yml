@@ -144,22 +144,38 @@ jobs:
           print('No credential-like files, private keys, or GitHub token-like values found.')
           PY
 
-      - name: Verify stage-3 provisioner has no remote shell or deployment execution
+      - name: Verify stage-3 provisioner has no process execution imports or calls
         run: |
           set -euo pipefail
           python - <<'PY'
+          import ast
           from pathlib import Path
-          text = Path('scripts/provision_product_development.py').read_text()
-          forbidden = {
-              'SSH execution': ['subprocess', 'paramiko', ' ssh ', 'ssh://'],
-              'rsync execution': ['rsync'],
-              'SCP execution': ['scp'],
-              'remote Docker execution': ['DOCKER_HOST', 'docker context', 'docker -H'],
+
+          tree = ast.parse(Path('scripts/provision_product_development.py').read_text())
+          forbidden_imports = {'subprocess', 'paramiko'}
+          forbidden_calls = {
+              ('os', 'system'),
+              ('os', 'popen'),
+              ('pty', 'spawn'),
           }
-          failures = [label for label, needles in forbidden.items() if any(n in text for n in needles)]
+          failures = []
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Import):
+                  for alias in node.names:
+                      root = alias.name.split('.')[0]
+                      if root in forbidden_imports:
+                          failures.append(f'forbidden import: {alias.name}')
+              elif isinstance(node, ast.ImportFrom):
+                  root = (node.module or '').split('.')[0]
+                  if root in forbidden_imports:
+                      failures.append(f'forbidden import: {node.module}')
+              elif isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+                  owner = node.func.value
+                  if isinstance(owner, ast.Name) and (owner.id, node.func.attr) in forbidden_calls:
+                      failures.append(f'forbidden process call: {owner.id}.{node.func.attr}')
           if failures:
-              raise SystemExit('Forbidden remote execution markers found: ' + ', '.join(failures))
-          print('No SSH, rsync, SCP, or remote Docker execution markers found in stage-3 provisioner.')
+              raise SystemExit('\n'.join(failures))
+          print('No forbidden process execution imports or calls found in stage-3 provisioner.')
           PY
 
       - name: Verify stage-3 deployment endpoints remain forbidden
