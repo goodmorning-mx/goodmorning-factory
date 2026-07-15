@@ -143,3 +143,37 @@ jobs:
               raise SystemExit('\n'.join(failures))
           print('No credential-like files, private keys, or GitHub token-like values found.')
           PY
+
+      - name: Verify stage-3 provisioner has no remote shell or deployment execution
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          text = Path('scripts/provision_product_development.py').read_text()
+          forbidden = {
+              'SSH execution': ['subprocess', 'paramiko', ' ssh ', 'ssh://'],
+              'rsync execution': ['rsync'],
+              'SCP execution': ['scp'],
+              'remote Docker execution': ['DOCKER_HOST', 'docker context', 'docker -H'],
+          }
+          failures = [label for label, needles in forbidden.items() if any(n in text for n in needles)]
+          if failures:
+              raise SystemExit('Forbidden remote execution markers found: ' + ', '.join(failures))
+          print('No SSH, rsync, SCP, or remote Docker execution markers found in stage-3 provisioner.')
+          PY
+
+      - name: Verify stage-3 deployment endpoints remain forbidden
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import scripts.provision_product_development as pp
+          mode = pp.ExecutionMode('apply', 'ledger', 'ledger', True)
+          client = pp.CoolifyClient('https://coolify.example', 'unit-test-token', mode=mode)
+          for path in ('/deploy', '/deployments', '/applications/app/start', '/databases/db/restart', '/databases/db/stop'):
+              try:
+                  client.request('GET', path)
+              except pp.ProvisioningError:
+                  continue
+              raise SystemExit(f'{path} was not blocked')
+          print('Deployment and lifecycle endpoints are blocked by the stage-3 client.')
+          PY

@@ -192,3 +192,70 @@ Secret values are redacted. Public frontend values may appear because they are i
 ## Rollback
 
 If a development Coolify application is created incorrectly, do not use this automation to delete it. Disable or remove the resource manually in Coolify after review, then rerun the workflow once project, server, GitHub App, branch, compose path, domains, and variables are corrected. To roll back this factory change, revert the commit that introduced it and rerun the previous reviewed workflow.
+
+## Stage 3: Product development primitives
+
+The product development provisioner now follows the three-resource architecture for a development product environment:
+
+- `<product>-postgres-dev` — native PostgreSQL 16 database resource.
+- `<product>-api-dev` — backend Application, still `planned_later` in this stage.
+- `<product>-frontend-dev` — frontend Application, still `planned_later` in this stage.
+
+This stage implements controlled writes only for the Coolify Project, exact Project Environment `dev`, and a private native PostgreSQL 16 resource. Implementing this capability does **not** mean it has been executed against GoodMorning Coolify. Normal planning remains `--dry-run`, and operational apply runs require explicit approval and gates.
+
+### Confirmed Coolify API contract
+
+The stage-3 payload builders are isolated in `scripts/provision_product_development.py` for future Coolify API changes. The confirmed API surface for this stage is:
+
+- `POST /api/v1/projects` with JSON body `{ "name": "<project>" }`.
+- `POST /api/v1/projects/{project_uuid}/environments` with JSON body `{ "name": "dev" }`.
+- `POST /api/v1/databases/postgresql` with `server_uuid`, `project_uuid`, `environment_name`, `name`, `image`, PostgreSQL credential fields, `is_public=false`, and `instant_deploy=false`.
+- `GET /api/v1/databases/{uuid}` for PostgreSQL detail verification.
+
+Success statuses accepted by the client for these creation endpoints are `200`, `201`, and `202`. Coolify uses `/api/v1` and Bearer authentication. PostgreSQL creation may return `internal_db_url`; Factory treats that value as a secret and reports only `internal_db_url_available: true|false`.
+
+`instant_deploy=false` is sent during PostgreSQL creation so this stage creates the Coolify record without starting, restarting, stopping, or deploying anything.
+
+### Execution modes and gates
+
+`--dry-run`:
+
+- permits only GET discovery;
+- rejects all POST, PATCH, PUT, and DELETE;
+- plans missing resources with safe symbolic references;
+- never generates a real password;
+- maintains recursive redaction.
+
+`--apply`:
+
+- requires `COOLIFY_ALLOW_RESOURCE_WRITES=true`;
+- requires `--confirm-product <product>` exactly matching `--product`;
+- permits only the three allowlisted POST operations above;
+- still forbids PATCH, PUT, DELETE, Application creation, deployments, `/start`, `/restart`, and `/stop`.
+
+SSH, rsync, SCP, and remote Docker are not used by this provisioner.
+
+### Idempotency and safety
+
+Project selection is by exact `--coolify-project` name only. Environment selection is exact `dev` inside the selected Project; `production`, `prod`, UUID, slug, and “first environment” fallbacks are not accepted.
+
+PostgreSQL identity is `<product>-postgres-dev`. Existing database resources are reused only if list and detail GET discovery verify type PostgreSQL, version/image 16 when exposed, selected Project, exact `dev` environment, selected server, `is_public=false`, and no public port when exposed. If compatibility cannot be proven, the result is `compatibility_unverified` and apply is blocked. If the existing resource contradicts desired state, the result is `incompatible` and global status becomes `recreate_required`; the provisioner does not PATCH, delete, or create a duplicate same-name resource.
+
+### PostgreSQL credentials and secrets
+
+Non-secret SQL identifiers are deterministic and avoid hyphens:
+
+- database: `<product-with-underscores>_dev`;
+- user: `<product-with-underscores>_dev_user`.
+
+A PostgreSQL password is generated with Python `secrets` only during apply and only when the PostgreSQL resource will actually be created. It is not printed, written to `.env`, committed, or included in JSON results/errors. `internal_db_url`, connection strings, `DATABASE_URL`, `postgres_password`, Bearer tokens, and nested secret-like fields are redacted.
+
+### Partial failures and legacy Compose
+
+If apply creates a Project but a later step fails, the result is `partial`; no destructive rollback is attempted. The next execution should continue idempotently from the existing resources after review.
+
+The legacy Application Compose `<product>-dev` is reported only. It is not modified, deleted, or migrated automatically in this stage.
+
+### Later stages
+
+Backend Application and Frontend Application creation, Application variables, conversion of `internal_db_url` for backend use, deployments, public health checks, and smoke tests remain future stages with separate safety gates.
