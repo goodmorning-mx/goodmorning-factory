@@ -50,24 +50,44 @@ class Response:
     headers: dict[str, str]
 
 
-def redact(value: Any) -> Any:
-    """Redact secrets from nested values and strings."""
+def sanitize_string(text: str) -> str:
+    for key in SENSITIVE_ENV:
+        secret = os.environ.get(key)
+        if secret:
+            text = text.replace(secret, "[REDACTED]")
+    text = re.sub(r"Bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", text, flags=re.I)
+    text = re.sub(r"(https?://)([^:/\s]+):([^@/\s]+)@", r"\1[REDACTED]@", text)
+    text = re.sub(r"postgres(?:ql)?://[^\s'\"]+", "postgresql://[REDACTED]", text, flags=re.I)
+    text = re.sub(r"DATABASE_URL\s*=\s*[^\s,&}]+", "DATABASE_URL=[REDACTED]", text, flags=re.I)
+    text = re.sub(r"(password|token|secret)([=:]\s*)([^\s,&}]+)", r"\1\2[REDACTED]", text, flags=re.I)
+    return text
 
+
+def sanitize_for_output(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: "[REDACTED]" if SECRET_KEY_RE.search(str(key)) else redact(item)
+            key: "[REDACTED]" if SECRET_KEY_RE.search(str(key)) else sanitize_for_output(item)
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [redact(item) for item in value]
+        return [sanitize_for_output(item) for item in value]
     if isinstance(value, str):
-        text = value
-        for key in SENSITIVE_ENV:
-            secret = os.environ.get(key)
-            if secret:
-                text = text.replace(secret, "[REDACTED]")
-        return text
+        return sanitize_string(value)
     return value
+
+
+def redact(value: Any) -> Any:
+    """Redact secrets from nested values and strings."""
+
+    return sanitize_for_output(value)
+
+
+def safe_http_body(raw: str, *, limit: int = 1000) -> str:
+    try:
+        text = json.dumps(sanitize_for_output(json.loads(raw)), sort_keys=True)
+    except json.JSONDecodeError:
+        text = sanitize_string(raw)
+    return text[:limit] + ("...[truncated]" if len(text) > limit else "")
 
 
 class CoolifyClient:
@@ -129,24 +149,6 @@ class CoolifyClient:
 
     def get(self, path: str) -> Any:
         return self.request("GET", path).data
-
-
-
-
-def redact_non_json_body(text: str, *, limit: int = 1000) -> str:
-    text = redact(text)
-    text = re.sub(r"Bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", text, flags=re.I)
-    text = re.sub(r"(https?://)([^:/\s]+):([^@/\s]+)@", r"\1[REDACTED]@", text)
-    text = re.sub(r"postgres(?:ql)?://[^\s'\"]+", "postgresql://[REDACTED]", text, flags=re.I)
-    text = re.sub(r"(password|token|secret)([=:]\s*)([^\s,&}]+)", r"\1\2[REDACTED]", text, flags=re.I)
-    return text[:limit] + ("...[truncated]" if len(text) > limit else "")
-
-
-def safe_http_body(raw: str) -> str:
-    try:
-        return json.dumps(redact(json.loads(raw)), sort_keys=True)[:1000]
-    except json.JSONDecodeError:
-        return redact_non_json_body(raw)
 
 
 def validate_base_url(value: str) -> str:
@@ -318,6 +320,38 @@ def resource_scope(item: dict[str, Any], context: dict[str, Any]) -> tuple[str, 
     return "in_scope", details
 
 
+def candidate_identifier(item: dict[str, Any]) -> Any:
+    return field(item, "uuid", "id")
+
+
+def is_expected_or_related_candidate(item: dict[str, Any], product: str, repository: str) -> bool:
+    name = str(field(item, "name") or "")
+    if name in expected_resource_specs(product):
+        return True
+    if name == f"{product}-dev":
+        return True
+    if is_compose_application(item) and (name.startswith(f"{product}-") or nested_field(item, "git_repository", "repository") == repository):
+        return True
+    return False
+
+
+def hydrate_candidate(client: CoolifyClient, item: dict[str, Any], source_kind: str) -> tuple[dict[str, Any], dict[str, str] | None]:
+    identifier = candidate_identifier(item)
+    if not identifier:
+        return item, {"endpoint": source_kind, "warning": f"Candidate {field(item, 'name') or '[unnamed]'} has no uuid/id for detail hydration."}
+    singular = "applications" if source_kind == "applications" else "databases"
+    path = f"/{singular}/{identifier}"
+    try:
+        detail = client.get(path)
+    except ProvisioningError as exc:
+        return item, {"endpoint": path, "warning": exc.message}
+    detail_item = detail.get("data") if isinstance(detail, dict) and isinstance(detail.get("data"), dict) else detail
+    if not isinstance(detail_item, dict):
+        return item, {"endpoint": path, "warning": "Detail endpoint returned an unsupported shape."}
+    merged = {**item, **detail_item, "_discovery_source": source_kind, "_detail_hydrated": True}
+    return merged, None
+
+
 def resource_kind(item: dict[str, Any]) -> str:
     source_kind = str(item.get("_discovery_source") or "")
     raw = str(field(item, "kind", "type", "resource_type") or "").lower()
@@ -353,6 +387,70 @@ def operational_summary(item: dict[str, Any]) -> dict[str, Any]:
     )
 
 
+def normalize_repository(value: Any) -> str:
+    text = str(value or "").strip().removesuffix(".git")
+    prefix = "https://github.com/"
+    if text.startswith(prefix):
+        text = text[len(prefix):]
+    return text.strip("/")
+
+
+def normalize_domain(value: Any) -> str:
+    if isinstance(value, list) and len(value) == 1:
+        value = value[0]
+    return str(value or "").rstrip("/")
+
+
+def normalize_port(value: Any) -> str:
+    if isinstance(value, list) and len(value) == 1:
+        value = value[0]
+    return str(value or "")
+
+
+def normalized_equal(key: str, actual: Any, expected: Any) -> bool:
+    if key == "git_repository":
+        return normalize_repository(actual) == normalize_repository(expected)
+    if key == "domains":
+        return normalize_domain(actual) == normalize_domain(expected)
+    if key == "ports_exposes":
+        return normalize_port(actual) == normalize_port(expected)
+    return str(actual) == str(expected)
+
+
+def bool_value(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.lower()
+        if lowered in {"false", "0", "no"}:
+            return False
+        if lowered in {"true", "1", "yes"}:
+            return True
+    return None
+
+
+def postgres_differences(item: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    differences = []
+    unverified = []
+    engine = nested_field(item, "type", "kind", "database_type")
+    if engine in (None, ""):
+        unverified.append({"field": "type", "expected": "postgresql"})
+    elif str(engine).lower() not in {"postgres", "postgresql"}:
+        differences.append({"field": "type", "expected": "postgresql", "actual": engine})
+    version = nested_field(item, "version", "postgres_version", "image_tag")
+    if version in (None, ""):
+        unverified.append({"field": "version", "expected": POSTGRES_VERSION})
+    elif not str(version).startswith(POSTGRES_VERSION):
+        differences.append({"field": "version", "expected": POSTGRES_VERSION, "actual": version})
+    is_public = nested_field(item, "is_public", "public")
+    public_value = bool_value(is_public)
+    if public_value is None:
+        unverified.append({"field": "is_public", "expected": False})
+    elif public_value is not False:
+        differences.append({"field": "is_public", "expected": False, "actual": is_public})
+    return differences, unverified
+
+
 def application_differences(item: dict[str, Any], expected: dict[str, Any], context: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     field_paths = {
         "git_repository": ("git_repository", "repository", "source.git_repository"),
@@ -370,7 +468,7 @@ def application_differences(item: dict[str, Any], expected: dict[str, Any], cont
         actual = nested_field(item, *paths)
         if actual in (None, ""):
             unverified.append({"field": key, "expected": expected_value})
-        elif str(actual) != str(expected_value):
+        elif not normalized_equal(key, actual, expected_value):
             differences.append({"field": key, "expected": expected_value, "actual": actual})
     source_uuid = nested_field(item, "github_app_uuid", "source_uuid", "source.uuid", "github_app.uuid")
     if source_uuid in (None, ""):
@@ -406,6 +504,12 @@ def classify_expected_resource(name: str, expected: dict[str, Any], matches: lis
     item = scoped[0]
     if resource_kind(item) != expected["kind"]:
         return {"name": name, "status": "incompatible", "matches": reports, "differences": [{"field": "kind", "expected": expected["kind"], "actual": resource_kind(item)}]}
+    if expected["kind"] == "database":
+        differences, unverified = postgres_differences(item)
+        if differences:
+            return {"name": name, "status": "incompatible", "matches": reports, "differences": differences}
+        if unverified:
+            return {"name": name, "status": "compatibility_unverified", "matches": reports, "unverified_fields": unverified}
     if expected["kind"] == "application":
         if is_compose_application(item):
             return {"name": name, "status": "legacy_compose_migration_required", "matches": reports}
@@ -415,6 +519,15 @@ def classify_expected_resource(name: str, expected: dict[str, Any], matches: lis
         if unverified:
             return {"name": name, "status": "compatibility_unverified", "matches": reports, "unverified_fields": unverified}
     return {"name": name, "status": "found", "matches": reports}
+
+
+def legacy_compose_report(name: str, item: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
+    scope_status, scope_details = resource_scope(item, context)
+    if scope_status == "in_scope":
+        status = "legacy_compose_migration_required"
+    else:
+        status = scope_status
+    return {"name": name, "status": status, "resource": operational_summary(item), "scope_details": scope_details}
 
 
 def discover_existing_resources(client: CoolifyClient, product: str, context: dict[str, Any], args: argparse.Namespace) -> dict[str, Any]:
@@ -435,6 +548,10 @@ def discover_existing_resources(client: CoolifyClient, product: str, context: di
         for item in resources:
             item = dict(item)
             item["_discovery_source"] = source_kind
+            if is_expected_or_related_candidate(item, product, args.repository):
+                item, warning = hydrate_candidate(client, item, source_kind)
+                if warning:
+                    warnings.append(warning)
             collected.append(item)
 
     expected = expected_resource_specs(product, args)
@@ -461,11 +578,8 @@ def discover_existing_resources(client: CoolifyClient, product: str, context: di
 
     return {
         "classification": classifications,
-        "legacy_compose": [
-            {"name": legacy_name, "status": "legacy_compose_migration_required", "resource": operational_summary(item)}
-            for item in legacy_matches
-        ],
-        "defensive_compose_related": [operational_summary(item) for item in defensive_compose],
+        "legacy_compose": [legacy_compose_report(legacy_name, item, context) for item in legacy_matches],
+        "defensive_compose_related": [legacy_compose_report(str(field(item, "name") or ""), item, context) for item in defensive_compose],
         "unexpected_same_product_prefix": unexpected_same_product_prefix,
         "warnings": warnings,
     }

@@ -29,6 +29,8 @@ class FakeClient:
 
     def get(self, path):
         self.calls.append(("GET", path))
+        if path not in self.payloads:
+            raise pp.ProvisioningError(f"missing fixture for {path}", error_type="test")
         value = self.payloads[path]
         if isinstance(value, Exception):
             raise value
@@ -69,7 +71,9 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
                 ("GET", "/servers"),
                 ("GET", "/github-apps"),
                 ("GET", "/applications"),
+                ("GET", "/applications/api-1"),
                 ("GET", "/databases"),
+                ("GET", "/databases/db-1"),
             ],
         )
         postgres, backend, frontend = result["resources"]
@@ -334,9 +338,78 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
         message = pp.safe_http_body('password=hunter2 token=abc123 Authorization Bearer bearer-secret DATABASE_URL=postgresql://user:pass@db:5432/app')
         for forbidden in ("hunter2", "abc123", "bearer-secret", "user:pass"):
             self.assertNotIn(forbidden, message)
-        json_message = pp.safe_http_body('{"message":"bad","database_url":"postgresql://user:pass@db/app","nested":{"token":"other-token"}}')
-        self.assertNotIn("other-token", json_message)
-        self.assertNotIn("user:pass", json_message)
+        json_message = pp.safe_http_body('{"message":"password=hunter2 DATABASE_URL=postgresql://user:pass@db/app","error":"Bearer bearer-secret","items":["token=nested-token"],"nested":{"token":"other-token"}}')
+        for forbidden in ("other-token", "user:pass", "hunter2", "bearer-secret", "nested-token"):
+            self.assertNotIn(forbidden, json_message)
+        string_json = pp.safe_http_body('"secret=string-secret https://user:pass@example.test/path"')
+        self.assertNotIn("string-secret", string_json)
+        self.assertNotIn("user:pass", string_json)
+    def test_candidate_listing_is_hydrated_before_classification(self):
+        client = self.client(
+            **{
+                "/applications": [{"uuid": "api-min", "name": "ledger-api-dev"}],
+                "/applications/api-min": {"uuid": "api-min", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "git_repository": "goodmorning-mx/ledger", "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend", "dockerfile_location": "/Dockerfile", "ports_exposes": "8000", "domains": "https://api.dev.ledger.goodmorning.mx", "github_app_uuid": "app-1"},
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertIn(("GET", "/applications/api-min"), client.calls)
+        api = next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-api-dev")
+        self.assertEqual(api["status"], "found")
+
+    def test_legacy_compose_scope_is_classified(self):
+        client = self.client(
+            **{
+                "/applications": [
+                    {"uuid": "old-other", "name": "ledger-dev", "build_pack": "dockercompose", "project_uuid": "other", "environment_uuid": "env-1", "server_uuid": "server-1"},
+                    {"uuid": "old-unknown", "name": "ledger-dev", "build_pack": "dockercompose"},
+                ],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        statuses = [item["status"] for item in result["discovery"]["existing_resources"]["legacy_compose"]]
+        self.assertIn("out_of_scope", statuses)
+        self.assertIn("scope_unverified", statuses)
+
+    def test_postgres_compatibility_cases(self):
+        def status_for(database):
+            client = self.client(**{"/applications": [], "/databases": [database]})
+            result = pp.provision(args(), client_factory=lambda: client)
+            return next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-postgres-dev")
+
+        compatible = status_for({"uuid": "db", "name": "ledger-postgres-dev", "type": "postgres", "version": "16", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
+        self.assertEqual(compatible["status"], "found")
+        mysql = status_for({"uuid": "db", "name": "ledger-postgres-dev", "type": "mysql", "version": "16", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
+        self.assertEqual(mysql["status"], "incompatible")
+        public = status_for({"uuid": "db", "name": "ledger-postgres-dev", "type": "postgresql", "version": "16", "is_public": True, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
+        self.assertEqual(public["status"], "incompatible")
+        version = status_for({"uuid": "db", "name": "ledger-postgres-dev", "type": "postgresql", "version": "15", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
+        self.assertEqual(version["status"], "incompatible")
+        unknown = status_for({"uuid": "db", "name": "ledger-postgres-dev", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
+        self.assertEqual(unknown["status"], "compatibility_unverified")
+
+    def test_application_normalization_accepts_equivalent_values_and_rejects_contradictions(self):
+        client = self.client(
+            **{
+                "/applications": [{"uuid": "api", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "git_repository": "https://github.com/goodmorning-mx/ledger", "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend", "dockerfile_location": "/Dockerfile", "ports_exposes": [8000], "domains": ["https://api.dev.ledger.goodmorning.mx/"], "github_app_uuid": "app-1"}],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        api = next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-api-dev")
+        self.assertEqual(api["status"], "found")
+
+        client = self.client(
+            **{
+                "/applications": [{"uuid": "api", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "git_repository": "goodmorning-mx/other", "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend", "dockerfile_location": "/Dockerfile", "ports_exposes": "8000", "domains": "https://api.dev.ledger.goodmorning.mx", "github_app_uuid": "app-1"}],
+                "/databases": [],
+            }
+        )
+        result = pp.provision(args(), client_factory=lambda: client)
+        api = next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-api-dev")
+        self.assertEqual(api["status"], "incompatible")
+
 
     def test_base_url_validation_rejects_credentials_paths_query_fragment_and_http(self):
         for url in (
