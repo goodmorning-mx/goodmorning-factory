@@ -17,6 +17,11 @@ def args(**overrides):
         server="development",
         github_app="goodmorning-mx-coolify",
         dry_run=True,
+        apply=False,
+        confirm_product=None,
+        confirm_database_start=None,
+        postgres_readiness_interval=0.01,
+        postgres_readiness_timeout=0.01,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -26,12 +31,24 @@ class FakeClient:
     def __init__(self, payloads):
         self.payloads = payloads
         self.calls = []
+        self.mode = None
 
     def get(self, path):
         self.calls.append(("GET", path))
         if path not in self.payloads:
             raise pp.ProvisioningError(f"missing fixture for {path}", error_type="test")
         value = self.payloads[path]
+        if isinstance(value, list) and value and isinstance(value[0], tuple):
+            method, result = value.pop(0)
+            assert method == "GET"
+            value = result
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def start_postgresql(self, uuid):
+        self.calls.append(("POST", f"/databases/{uuid}/start"))
+        value = self.payloads.get(f"POST /databases/{uuid}/start", pp.Response(200, {"message": "Database starting."}, {}))
         if isinstance(value, Exception):
             raise value
         return value
@@ -53,7 +70,8 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
                 ]
             },
             "/applications": [{"uuid": "api-1", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "git_repository": "goodmorning-mx/ledger", "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend", "dockerfile_location": "/Dockerfile", "ports_exposes": "8000", "domains": "https://api.dev.ledger.goodmorning.mx", "github_app_uuid": "app-1"}],
-            "/databases": [{"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"}],
+            "/databases": [{"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "version": "16", "is_public": False, "status": "exited"}],
+            "/databases/db-1": {"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "version": "16", "is_public": False, "status": "exited", "internal_db_url": "postgresql://user:p%40ss@host:5432/db"},
         }
         payloads.update(payload_overrides)
         return FakeClient(payloads)
@@ -508,7 +526,7 @@ class Stage3ProvisioningTests(unittest.TestCase):
         }))
         with self.apply_env(), mock.patch.object(pp, "generate_postgres_password", return_value="FAKE_PASSWORD_MARKER"):
             result = pp.provision(apply_args(), client_factory=lambda: client)
-        self.assertEqual(result["status"], "created")
+        self.assertEqual(result["status"], "readiness_unverified")
         self.assertEqual([call[0] for call in client.calls].count("POST"), 3)
         self.assertFalse(any("deploy" in call[1] or "start" in call[1] for call in client.calls))
         self.assertNotIn("FAKE_PASSWORD_MARKER", json.dumps(result))
@@ -553,7 +571,7 @@ class Stage3ProvisioningTests(unittest.TestCase):
         client = FakeWriteClient(self.missing_project_payloads(), {"project": {"uuid": "project-1", "name": "wrong"}})
         with self.apply_env():
             result = pp.provision(apply_args(), client_factory=lambda: client)
-        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["status"], "blocked")
         self.assertTrue(result["blockers"])
 
     def test_environment_create_without_uuid_is_verified_by_discovery(self):
@@ -570,7 +588,7 @@ class Stage3ProvisioningTests(unittest.TestCase):
         client = FakeWriteClient(self.missing_project_payloads(**{"/projects": [{"uuid": "project-1", "name": "ledger"}]}), {"environment": {"uuid": "env-prod", "name": "production"}})
         with self.apply_env():
             result = pp.provision(apply_args(), client_factory=lambda: client)
-        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["status"], "blocked")
         self.assertEqual([call[1] for call in client.calls if call[0] == "POST"].count("/projects/project-1/environments"), 1)
 
     def test_postgresql_202_uses_discovery_and_detail(self):
@@ -600,7 +618,7 @@ class Stage3ProvisioningTests(unittest.TestCase):
         }))
         with self.apply_env():
             result = pp.provision(apply_args(), client_factory=lambda: client)
-        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["postgresql"]["status"], "created_unverified")
 
     def test_postgresql_detail_failure_is_created_unverified(self):
@@ -611,7 +629,7 @@ class Stage3ProvisioningTests(unittest.TestCase):
         }))
         with self.apply_env():
             result = pp.provision(apply_args(), client_factory=lambda: client)
-        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["status"], "blocked")
         self.assertEqual(result["postgresql"]["status"], "created_unverified")
 
     def test_postgresql_created_but_incompatible_requires_recreate(self):
@@ -622,7 +640,7 @@ class Stage3ProvisioningTests(unittest.TestCase):
         }))
         with self.apply_env():
             result = pp.provision(apply_args(), client_factory=lambda: client)
-        self.assertEqual(result["status"], "recreate_required")
+        self.assertEqual(result["status"], "blocked")
 
     def test_second_execution_reuses_verified_postgresql_without_duplicate(self):
         client = FakeWriteClient(self.missing_project_payloads(**{
@@ -632,7 +650,7 @@ class Stage3ProvisioningTests(unittest.TestCase):
         }))
         with self.apply_env():
             result = pp.provision(apply_args(), client_factory=lambda: client)
-        self.assertEqual(result["status"], "exists")
+        self.assertEqual(result["status"], "readiness_unverified")
         self.assertFalse(any(call[0] == "POST" for call in client.calls))
 
     def test_postgres_version_parser_accepts_only_exact_major_16(self):
@@ -818,7 +836,7 @@ class Stage3WriteOutcomeTests(unittest.TestCase):
         client = FakeWriteClient(self.payloads(), {"project": error})
         with self.apply_env():
             result = pp.provision(apply_args(), client_factory=lambda: client)
-        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["status"], "blocked")
         self.assertTrue(any(action["write_outcome_unknown"] for action in result["actions"]))
         self.assertEqual([call for call in client.calls if call[0] == "POST" and call[1] == "/projects"], [("POST", "/projects", {"name": "ledger"})])
 
@@ -833,7 +851,7 @@ class Stage3WriteOutcomeTests(unittest.TestCase):
         client = FakeWriteClient(self.payloads(**{"/projects": [{"uuid": "project-1", "name": "ledger"}]}), {"environment": error})
         with self.apply_env():
             result = pp.provision(apply_args(), client_factory=lambda: client)
-        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["status"], "blocked")
         self.assertTrue(any(action["resource"] == "environment" and action["write_outcome_unknown"] for action in result["actions"]))
         self.assertEqual([call[1] for call in client.calls if call[0] == "POST"].count("/projects/project-1/environments"), 1)
 
@@ -851,7 +869,7 @@ class Stage3WriteOutcomeTests(unittest.TestCase):
         }), {"postgresql": error})
         with self.apply_env():
             result = pp.provision(apply_args(), client_factory=lambda: client)
-        self.assertEqual(result["status"], "partial")
+        self.assertEqual(result["status"], "blocked")
         self.assertNotIn(result["postgresql"].get("status"), {"exists", "created"})
         self.assertEqual([call[1] for call in client.calls if call[0] == "POST"].count("/databases/postgresql"), 1)
 
@@ -915,3 +933,234 @@ class Stage3WriteOutcomeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class Stage4PostgresqlReadinessTests(unittest.TestCase):
+    def client(self, status="exited", **overrides):
+        base = ProductDevelopmentProvisionerTests().client()
+        db = {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":status,"internal_db_url":"postgresql://user:p%40ss@host:5432/db?sslmode=require"}
+        base.payloads["/databases"] = [dict(db)]
+        base.payloads["/databases/db-1"] = dict(db)
+        base.payloads.update(overrides)
+        return base
+
+    def test_dry_run_stopped_would_start_zero_post(self):
+        client=self.client("exited")
+        result=pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "would_start")
+        self.assertFalse(any(c[0]=="POST" for c in client.calls))
+
+    def test_dry_run_healthy_already_healthy_zero_post(self):
+        client=self.client("running:healthy")
+        result=pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "already_healthy")
+        self.assertTrue(result["postgresql_readiness"]["database_url_driver_ready"])
+        self.assertFalse(any(c[0]=="POST" for c in client.calls))
+
+    def test_apply_missing_database_start_gate_blocks_before_post(self):
+        client=self.client("exited")
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true"},clear=True):
+            result=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger"), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "blocked")
+        self.assertFalse(any(c[0]=="POST" for c in client.calls))
+
+    def test_apply_wrong_database_start_confirm_blocks_before_post(self):
+        client=self.client("exited")
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_DATABASE_START":"true"},clear=True):
+            result=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_database_start="wrong"), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "blocked")
+        self.assertFalse(any(c[0]=="POST" for c in client.calls))
+
+    def test_start_with_all_gates_posts_once_then_get_polls(self):
+        client=self.client("exited", **{"/databases/db-1":[("GET",{"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"exited"}),("GET",{"uuid":"db-1","status":"exited"}),("GET",{"uuid":"db-1","status":"running:healthy","internal_db_url":"postgresql://u:p@h:5432/d"})]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_DATABASE_START":"true"},clear=True):
+            result=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_database_start="ledger-postgres-dev"), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "healthy")
+        self.assertEqual([c for c in client.calls if c[0]=="POST"],[('POST','/databases/db-1/start')])
+
+    def test_start_http_500_is_partial_unknown_once(self):
+        exc=pp.ProvisioningError("boom", http_status=500, method="POST", path="/databases/db-1/start", write_outcome_unknown=True)
+        client=self.client("exited", **{"POST /databases/db-1/start": exc})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_DATABASE_START":"true"},clear=True):
+            result=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_database_start="ledger-postgres-dev"), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "partial")
+        self.assertTrue(result["postgresql_readiness"]["write_outcome_unknown"])
+        self.assertEqual(len([c for c in client.calls if c[0]=="POST"]),1)
+
+    def test_status_normalization_exact(self):
+        self.assertEqual(pp.classify_database_readiness_status("queued"), "starting")
+        self.assertEqual(pp.classify_database_readiness_status("running:healthy"), "healthy")
+        self.assertEqual(pp.classify_database_readiness_status("nothealthy"), "readiness_unverified")
+        self.assertEqual(pp.classify_database_readiness_status("unhealthy-running"), "readiness_unverified")
+
+    def test_psycopg_url_conversion_and_rejections(self):
+        self.assertEqual(pp.prepare_psycopg_database_url("postgresql://user:p%40ss@host:5432/db"), "postgresql+psycopg://user:p%40ss@host:5432/db")
+        self.assertEqual(pp.prepare_psycopg_database_url("postgres://user:pass@host:5432/db?sslmode=require"), "postgresql+psycopg://user:pass@host:5432/db?sslmode=require")
+        for bad in ["mysql://u:p@h/db", "sqlite://x", "http://x", "postgresql://"]:
+            with self.assertRaises(pp.ProvisioningError) as cm:
+                pp.prepare_psycopg_database_url(bad)
+            self.assertNotIn(bad, cm.exception.message)
+
+    def test_internal_db_url_redacted_and_output_booleans_only(self):
+        secret="postgresql://user:p%40ss@host:5432/db"
+        red=pp.redact({"internal_db_url":secret,"nested":[{"message":f"DATABASE_URL={secret}"}],"body":{"password":"x"}})
+        self.assertEqual(red["internal_db_url"], "[REDACTED]")
+        self.assertNotIn(secret, json.dumps(red))
+        client=self.client("running:healthy")
+        result=pp.provision(args(), client_factory=lambda: client)
+        self.assertNotIn(secret, json.dumps(result["postgresql_readiness"]).lower())
+
+    def test_applications_remain_planned_and_client_blocks_forbidden_lifecycle(self):
+        client=self.client("running:healthy")
+        result=pp.provision(args(), client_factory=lambda: client)
+        apps=[r for r in result["resources"] if r["kind"]=="application"]
+        self.assertTrue(all(r["status"]=="planned_later" for r in apps))
+        real=pp.CoolifyClient("https://coolify.example","token")
+        for method,path in [("POST","/applications"),("POST","/applications/a/start"),("POST","/databases/db-1/restart"),("POST","/databases/db-1/stop"),("PATCH","/databases/db-1")]:
+            with self.assertRaises(pp.ProvisioningError):
+                real.request(method,path,post_kind="postgresql_start")
+
+class Stage4ReviewCorrectionTests(unittest.TestCase):
+    def client(self, status="exited", **overrides):
+        return Stage4PostgresqlReadinessTests().client(status, **overrides)
+
+    def apply_env(self, database_start=True):
+        env = {"COOLIFY_ALLOW_RESOURCE_WRITES": "true"}
+        if database_start:
+            env["COOLIFY_ALLOW_DATABASE_START"] = "true"
+        return mock.patch.dict(os.environ, env, clear=True)
+
+    def apply_args(self, **overrides):
+        defaults = {"dry_run": False, "apply": True, "confirm_product": "ledger", "confirm_database_start": "ledger-postgres-dev", "postgres_readiness_interval": 0.01, "postgres_readiness_timeout": 0.02}
+        defaults.update(overrides)
+        return args(**defaults)
+
+    def test_incomplete_database_start_gates_not_in_safety_metadata(self):
+        client = self.client("exited")
+        with mock.patch.dict(os.environ, {"COOLIFY_ALLOW_RESOURCE_WRITES": "true", "COOLIFY_ALLOW_DATABASE_START": "true"}, clear=True):
+            result = pp.provision(self.apply_args(confirm_database_start="wrong"), client_factory=lambda: client)
+        self.assertFalse(result["safety"]["database_start_enabled"])
+        self.assertNotIn("postgresql_start", result["safety"]["allowed_post_operations"])
+        self.assertFalse(any(call[0] == "POST" for call in client.calls))
+
+    def test_complete_database_start_gates_in_safety_metadata(self):
+        client = self.client("running:healthy")
+        with self.apply_env():
+            result = pp.provision(self.apply_args(), client_factory=lambda: client)
+        self.assertTrue(result["safety"]["database_start_enabled"])
+        self.assertIn("postgresql_start", result["safety"]["allowed_post_operations"])
+
+    def test_blocked_and_unverified_apply_exit_nonzero(self):
+        for readiness_status in ("blocked", "readiness_unverified", "unhealthy", "timeout", "partial"):
+            with self.subTest(readiness_status=readiness_status), mock.patch.object(pp, "provision", return_value={"status": readiness_status}):
+                self.assertEqual(pp.main(["--product","ledger","--repository","goodmorning-mx/ledger","--branch","dev","--coolify-project","ledger","--environment","dev","--server","development","--github-app","goodmorning-mx-coolify","--apply","--confirm-product","ledger"]), 2)
+        with mock.patch.object(pp, "provision", return_value={"status": "dry_run", "postgresql_readiness": {"status": "would_start"}}):
+            self.assertEqual(pp.main(["--product","ledger","--repository","goodmorning-mx/ledger","--branch","dev","--coolify-project","ledger","--environment","dev","--server","development","--github-app","goodmorning-mx-coolify","--dry-run"]), 0)
+
+    def test_invalid_polling_args_fail_before_requests(self):
+        for field, value in (("postgres_readiness_interval", 0), ("postgres_readiness_timeout", -1), ("postgres_readiness_interval", float("nan")), ("postgres_readiness_timeout", float("inf"))):
+            client = self.client("exited")
+            with self.subTest(field=field, value=value), self.assertRaises(pp.ProvisioningError):
+                pp.provision(args(**{field: value}), client_factory=lambda: client)
+            self.assertEqual(client.calls, [])
+
+    def test_incompatible_out_of_scope_unverified_and_created_unverified_do_not_start(self):
+        cases = [
+            ({"version": "15"}, "blocked"),
+            ({"project_uuid": "other"}, "blocked"),
+            ({"version": None}, "blocked"),
+        ]
+        for overrides, expected_status in cases:
+            db = {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"exited"}
+            db.update(overrides)
+            client = self.client("exited", **{"/databases": [db], "/databases/db-1": db})
+            with self.apply_env():
+                result = pp.provision(self.apply_args(), client_factory=lambda: client)
+            self.assertEqual(result["status"], expected_status)
+            self.assertFalse(any(call[0] == "POST" and call[1].endswith("/start") for call in client.calls))
+
+    def test_starting_polls_without_start_and_transitions(self):
+        client = self.client("starting", **{"/databases/db-1": [("GET", {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"starting"}), ("GET", {"uuid":"db-1","status":"starting"}), ("GET", {"uuid":"db-1","status":"running:healthy","internal_db_url":"postgres://u:p@h/db"})]})
+        with self.apply_env():
+            result = pp.provision(self.apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "healthy")
+        self.assertFalse(any(call[0] == "POST" for call in client.calls))
+
+    def test_starting_to_unhealthy_no_restart_or_second_post(self):
+        client = self.client("starting", **{"/databases/db-1": [("GET", {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"starting"}), ("GET", {"uuid":"db-1","status":"running:unhealthy"})]})
+        with self.apply_env():
+            result = pp.provision(self.apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "unhealthy")
+        self.assertFalse(any(call[0] == "POST" for call in client.calls))
+
+    def test_start_accepted_verified_only_after_healthy(self):
+        client = self.client("exited", **{"/databases/db-1": [("GET", {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"exited"}), ("GET", {"uuid":"db-1","status":"exited"}), ("GET", {"uuid":"db-1","status":"exited"}), ("GET", {"uuid":"db-1","status":"starting"}), ("GET", {"uuid":"db-1","status":"running:healthy","internal_db_url":"postgres://u:p@h/db"})]})
+        with self.apply_env():
+            result = pp.provision(self.apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "healthy")
+        start_actions = [a for a in result["actions"] if a["action"] == "start"]
+        readiness_actions = [a for a in result["actions"] if a["action"] == "readiness"]
+        self.assertEqual(len([c for c in client.calls if c[0] == "POST"]), 1)
+        self.assertFalse(start_actions[0]["verified"])
+        self.assertTrue(readiness_actions[0]["verified"])
+
+    def test_start_accepted_unhealthy_not_verified(self):
+        client = self.client("exited", **{"/databases/db-1": [("GET", {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"exited"}), ("GET", {"uuid":"db-1","status":"exited"}), ("GET", {"uuid":"db-1","status":"running:unhealthy"})]})
+        with self.apply_env():
+            result = pp.provision(self.apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "unhealthy")
+        self.assertFalse(any(a["action"] == "start" and a["verified"] for a in result["actions"]))
+        self.assertEqual(len([c for c in client.calls if c[0] == "POST"]), 1)
+
+    def test_polling_timeout_and_get_error(self):
+        client = self.client("starting", **{"/databases/db-1": [("GET", {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"starting"}), ("GET", {"uuid":"db-1","status":"starting"}), ("GET", {"uuid":"db-1","status":"starting"}), ("GET", {"uuid":"db-1","status":"starting"}), ("GET", {"uuid":"db-1","status":"starting"})]})
+        with self.apply_env():
+            result = pp.provision(self.apply_args(postgres_readiness_timeout=0.02, postgres_readiness_interval=0.01), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "timeout")
+        self.assertLessEqual(result["postgresql_readiness"]["poll_attempts"], 3)
+        err = pp.ProvisioningError("GET failed", error_type="network", method="GET", path="/databases/db-1")
+        client = self.client("starting", **{"/databases/db-1": [("GET", {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"starting"}), ("GET", err)]})
+        with self.apply_env():
+            result = pp.provision(self.apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "readiness_unverified")
+        self.assertFalse(result["postgresql_readiness"]["write_outcome_unknown"])
+
+    def test_start_urlerror_timeout_and_invalid_json_are_partial_once(self):
+        errors = [
+            pp.ProvisioningError("timed out", error_type="network", method="POST", path="/databases/db-1/start", write_outcome_unknown=True),
+            pp.ProvisioningError("url", error_type="network", method="POST", path="/databases/db-1/start", write_outcome_unknown=True),
+            pp.ProvisioningError("bad json", error_type="coolify_api", method="POST", path="/databases/db-1/start", write_outcome_unknown=True),
+        ]
+        for exc in errors:
+            client = self.client("exited", **{"POST /databases/db-1/start": exc})
+            with self.apply_env():
+                result = pp.provision(self.apply_args(), client_factory=lambda: client)
+            self.assertEqual(result["postgresql_readiness"]["status"], "partial")
+            self.assertTrue(result["postgresql_readiness"]["write_outcome_unknown"])
+            self.assertEqual(len([c for c in client.calls if c[0] == "POST"]), 1)
+
+    def test_start_conflict_rediscovery_and_422_blocked_no_text_parsing(self):
+        conflict = pp.ProvisioningError("ignore this message", http_status=409, method="POST", path="/databases/db-1/start")
+        client = self.client("exited", **{"POST /databases/db-1/start": conflict, "/databases/db-1": [("GET", {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"exited"}), ("GET", {"uuid":"db-1","status":"exited"}), ("GET", {"uuid":"db-1","status":"starting"}), ("GET", {"uuid":"db-1","status":"running:healthy","internal_db_url":"postgres://u:p@h/db"})]})
+        with self.apply_env():
+            result = pp.provision(self.apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "healthy")
+        self.assertEqual(len([c for c in client.calls if c[0] == "POST"]), 1)
+        unverified = pp.ProvisioningError("starting healthy words must not matter", http_status=422, method="POST", path="/databases/db-1/start")
+        client = self.client("exited", **{"POST /databases/db-1/start": unverified, "/databases/db-1": [("GET", {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"exited"}), ("GET", {"uuid":"db-1","status":"exited"}), ("GET", {"uuid":"db-1","status":"exited"})]})
+        with self.apply_env():
+            result = pp.provision(self.apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "blocked")
+        self.assertEqual(len([c for c in client.calls if c[0] == "POST"]), 1)
+
+    def test_exited_unhealthy_is_exact_unhealthy_not_ambiguous(self):
+        self.assertEqual(pp.classify_database_readiness_status("exited:unhealthy"), "unhealthy")
+        self.assertEqual(pp.classify_database_readiness_status("exited-something-unknown"), "readiness_unverified")
+
+    def test_psycopg_url_hardening(self):
+        self.assertEqual(pp.prepare_psycopg_database_url("postgresql://user:p%25@host:5432/db?sslmode=require"), "postgresql+psycopg://user:p%25@host:5432/db?sslmode=require")
+        self.assertEqual(pp.prepare_psycopg_database_url("postgres://user:pass@[::1]:5432/db?x=1"), "postgresql+psycopg://user:pass@[::1]:5432/db?x=1")
+        for bad in ["postgresql://host", "postgresql:///db", "postgresql://[::1/db", " postgresql://u:p@h/db", "postgresql://u:p@h/db ", "mysql://u:p@h/db", "postgresql://u:p@h/db#frag"]:
+            with self.assertRaises(pp.ProvisioningError) as raised:
+                pp.prepare_psycopg_database_url(bad)
+            self.assertNotIn(bad, raised.exception.message)
+        self.assertEqual(pp.verify_internal_db_url_flags({"internal_db_url":"   "}), {"internal_db_url_available": False, "database_url_driver_ready": False})

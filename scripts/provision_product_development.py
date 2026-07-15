@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import re
 import secrets
@@ -32,9 +33,9 @@ REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 READ_ONLY_METHODS = {"GET"}
 POST_PROJECT_CREATE = "/projects"
 POST_POSTGRES_CREATE = "/databases/postgresql"
-ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create"}
-FORBIDDEN_ENDPOINT_RE = re.compile(r"/(deploy|deployments|start|restart|stop)(?:/|$)", re.I)
-NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error"}
+ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start"}
+FORBIDDEN_ENDPOINT_RE = re.compile(r"/(deploy|deployments|restart|stop)(?:/|$)", re.I)
+NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
 
 
 class ProvisioningError(Exception):
@@ -86,10 +87,22 @@ class ExecutionMode:
     product: str
     confirm_product: str | None
     allow_resource_writes: bool
+    allow_database_start: bool = False
+    confirm_database_start: str | None = None
 
     @property
     def is_apply(self) -> bool:
         return self.name == "apply"
+
+    @property
+    def database_start_enabled(self) -> bool:
+        return (
+            self.is_apply
+            and self.allow_resource_writes
+            and self.confirm_product == self.product
+            and self.allow_database_start
+            and self.confirm_database_start == f"{self.product}-postgres-dev"
+        )
 
     def gates(self) -> dict[str, Any]:
         return {
@@ -97,6 +110,9 @@ class ExecutionMode:
             "resource_write_env": self.allow_resource_writes,
             "confirm_product_matches": self.confirm_product == self.product if self.confirm_product is not None else False,
             "allowed_post_kinds": sorted(ALLOWED_POST_KINDS),
+            "database_start_env": self.allow_database_start,
+            "confirm_database_start_matches": self.confirm_database_start == f"{self.product}-postgres-dev" if self.confirm_database_start is not None else False,
+            "database_start_enabled": self.database_start_enabled,
             "forbidden_methods": ["PATCH", "PUT", "DELETE"],
             "deployments_forbidden": True,
             "application_creation_forbidden": True,
@@ -156,7 +172,7 @@ def sanitize_string(text: str) -> str:
 def sanitize_for_output(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: "[REDACTED]" if SECRET_KEY_RE.search(str(key)) else sanitize_for_output(item)
+            key: sanitize_for_output(item) if str(key) in {"internal_db_url_available", "database_url_driver_ready"} else ("[REDACTED]" if SECRET_KEY_RE.search(str(key)) else sanitize_for_output(item))
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -199,7 +215,7 @@ class CoolifyClient:
         method = method.upper()
         if not path.startswith("/"):
             raise ProvisioningError("Coolify API path must start with '/'.")
-        if FORBIDDEN_ENDPOINT_RE.search(path):
+        if FORBIDDEN_ENDPOINT_RE.search(path) or ("/start" in path and not (method == "POST" and post_kind == "postgresql_start" and re.fullmatch(r"/databases/[^/]+/start", path))):
             raise ProvisioningError(f"Lifecycle/deployment endpoint is forbidden in this stage: {path}", error_type="safety", method=method, path=path)
         if method in {"PATCH", "PUT", "DELETE"}:
             raise ProvisioningError(f"Refusing non-read-only Coolify method {method}. Method {method} is always forbidden in this stage.", error_type="safety", method=method, path=path)
@@ -215,6 +231,11 @@ class CoolifyClient:
                 raise ProvisioningError("Environment creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
             if post_kind == "postgresql_create" and path != POST_POSTGRES_CREATE:
                 raise ProvisioningError("PostgreSQL creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
+            if post_kind == "postgresql_start":
+                if not self.mode.database_start_enabled:
+                    raise ProvisioningError("PostgreSQL start requires COOLIFY_ALLOW_DATABASE_START=true and exact --confirm-database-start before POST.", error_type="safety", method=method, path=path)
+                if not re.fullmatch(r"/databases/[^/]+/start", path):
+                    raise ProvisioningError("PostgreSQL start POST endpoint must include the exact selected database UUID.", error_type="safety", method=method, path=path)
         elif method not in READ_ONLY_METHODS:
             raise ProvisioningError(f"Refusing non-read-only Coolify method {method}.", error_type="safety", method=method, path=path)
 
@@ -305,6 +326,10 @@ class CoolifyClient:
 
     def create_postgresql(self, payload: dict[str, Any]) -> Response:
         return self.request("POST", POST_POSTGRES_CREATE, json_body=payload, allowed_statuses={200, 201, 202}, post_kind="postgresql_create")
+
+    def start_postgresql(self, uuid: str) -> Response:
+        path = f"/databases/{urllib.parse.quote(str(uuid), safe='')}/start"
+        return self.request("POST", path, allowed_statuses={200, 201, 202}, post_kind="postgresql_start")
 
 
 def validate_base_url(value: str) -> str:
@@ -852,12 +877,21 @@ def build_plan(args: argparse.Namespace, discovery: dict[str, Any]) -> dict[str,
     }
 
 
+def validate_readiness_timing_args(args: argparse.Namespace) -> None:
+    for name in ("postgres_readiness_interval", "postgres_readiness_timeout"):
+        value = getattr(args, name, None)
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0:
+            raise ProvisioningError(f"--{name.replace('_', '-')} must be a finite number greater than zero.", error_type="validation")
+
+
 def mode_from_args(args: argparse.Namespace) -> ExecutionMode:
     return ExecutionMode(
         "apply" if getattr(args, "apply", False) else "dry_run",
         args.product,
         getattr(args, "confirm_product", None),
         os.environ.get("COOLIFY_ALLOW_RESOURCE_WRITES") == "true",
+        os.environ.get("COOLIFY_ALLOW_DATABASE_START") == "true",
+        getattr(args, "confirm_database_start", None),
     )
 
 
@@ -1196,10 +1230,172 @@ def ensure_postgresql(client: CoolifyClient, args: argparse.Namespace, project: 
     return {**result, "status": "created_unverified" if result["status"] in {"compatibility_unverified", "scope_unverified"} else result["status"], "write_performed": True, "credentials_configured": True}
 
 
-def global_status(mode: ExecutionMode, resources: list[dict[str, Any]], blockers: list[Any], actions: list[dict[str, Any]]) -> str:
+
+READINESS_STATUS_MAP = {
+    "queued": "starting",
+    "starting": "starting",
+    "running:healthy": "healthy",
+    "healthy": "healthy",
+    "exited": "stopped",
+    "stopped": "stopped",
+    "running:unhealthy": "unhealthy",
+    "exited:unhealthy": "unhealthy",
+    "unhealthy": "unhealthy",
+    "failed": "unhealthy",
+}
+READINESS_FAILURE_STATUSES = {"blocked", "readiness_unverified", "unhealthy", "timeout", "partial"}
+
+
+def classify_database_readiness_status(value: Any) -> str:
+    if value in (None, ""):
+        return "readiness_unverified"
+    text = str(value).strip().lower()
+    return READINESS_STATUS_MAP.get(text, "readiness_unverified")
+
+
+def database_raw_status(item: dict[str, Any]) -> Any:
+    return nested_field(item, "status", "human_status", "resource.status")
+
+
+def prepare_psycopg_database_url(value: str) -> str:
+    error = ProvisioningError("DATABASE_URL has no supported PostgreSQL connection shape.", error_type="validation")
+    if not isinstance(value, str) or not value or value != value.strip():
+        raise error
+    if value.startswith("postgresql://"):
+        rest = value[len("postgresql://"):]
+    elif value.startswith("postgres://"):
+        rest = value[len("postgres://"):]
+    else:
+        raise error
+    try:
+        parsed = urllib.parse.urlsplit(value)
+        hostname = parsed.hostname
+    except ValueError as exc:
+        raise error from exc
+    if parsed.fragment or not parsed.scheme or not parsed.netloc or not hostname or parsed.path in ("", "/"):
+        raise error
+    return "postgresql+psycopg://" + rest
+
+
+def readiness_result(status: str, uuid: Any = None, **updates: Any) -> dict[str, Any]:
+    result = {
+        "status": status,
+        "uuid": uuid,
+        "start_requested": False,
+        "request_attempted": False,
+        "write_performed": False,
+        "write_outcome_unknown": False,
+        "poll_attempts": 0,
+        "internal_db_url_available": False,
+        "database_url_driver_ready": False,
+    }
+    result.update(updates)
+    return result
+
+
+def verify_internal_db_url_flags(item: dict[str, Any]) -> dict[str, bool]:
+    url = nested_field(item, "internal_db_url")
+    available = isinstance(url, str) and bool(url.strip())
+    ready = False
+    if available:
+        try:
+            prepare_psycopg_database_url(url)
+            ready = True
+        except ProvisioningError:
+            ready = False
+    return {"internal_db_url_available": available, "database_url_driver_ready": ready}
+
+
+def postgresql_start_preconditions(args: argparse.Namespace, postgres: dict[str, Any]) -> list[dict[str, Any]]:
+    blockers = []
+    if postgres.get("name") != f"{args.product}-postgres-dev" or not postgres.get("uuid"):
+        blockers.append({"reason": "identity_unverified"})
+    if postgres.get("status") not in {"exists", "created"}:
+        blockers.append({"reason": f"postgresql_status_{postgres.get('status')}"})
+    if postgres.get("write_outcome_unknown"):
+        blockers.append({"reason": "prior_write_outcome_unknown"})
+    return blockers
+
+
+def poll_postgresql_readiness(client: CoolifyClient, uuid: str, *, timeout: float, interval: float, sleeper: Callable[[float], None] | None = None) -> dict[str, Any]:
+    sleeper = sleeper or (lambda seconds: None if seconds <= 0 else __import__("time").sleep(seconds))
+    attempts = 0
+    max_attempts = max(1, int(timeout // interval) + 1 if interval > 0 else 1)
+    last_item: dict[str, Any] = {}
+    for attempt in range(max_attempts):
+        attempts += 1
+        try:
+            data = client.get(f"/databases/{uuid}")
+        except ProvisioningError:
+            return readiness_result("readiness_unverified", uuid, poll_attempts=attempts)
+        item = data.get("data") if isinstance(data, dict) and isinstance(data.get("data"), dict) else data
+        if not isinstance(item, dict):
+            return readiness_result("readiness_unverified", uuid, poll_attempts=attempts)
+        last_item = item
+        classified = classify_database_readiness_status(database_raw_status(item))
+        if classified == "healthy":
+            return readiness_result("healthy", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(item))
+        if classified == "unhealthy":
+            return readiness_result("unhealthy", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(item))
+        if classified == "readiness_unverified":
+            return readiness_result("readiness_unverified", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(item))
+        if attempt < max_attempts - 1:
+            sleeper(interval)
+    return readiness_result("timeout", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(last_item))
+
+
+def ensure_postgresql_ready(client: CoolifyClient, args: argparse.Namespace, postgres: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]], *, sleeper: Callable[[float], None] | None = None) -> dict[str, Any]:
+    uuid = postgres.get("uuid")
+    blockers = postgresql_start_preconditions(args, postgres)
+    if blockers:
+        return readiness_result("blocked", uuid)
+    try:
+        detail = hydrate_database_by_uuid(client, uuid, postgres)
+    except ProvisioningError:
+        if mode.is_apply:
+            return readiness_result("readiness_unverified", uuid)
+        detail = postgres
+    state = classify_database_readiness_status(database_raw_status(detail))
+    flags = verify_internal_db_url_flags(detail)
+    if state == "healthy":
+        return readiness_result("already_healthy", uuid, **flags)
+    if state == "unhealthy":
+        return readiness_result("unhealthy", uuid, **flags)
+    if state == "readiness_unverified":
+        return readiness_result("readiness_unverified", uuid, **flags)
+    if state == "starting":
+        return poll_postgresql_readiness(client, str(uuid), timeout=getattr(args, "postgres_readiness_timeout", 300.0), interval=getattr(args, "postgres_readiness_interval", 5.0), sleeper=sleeper)
+    if state == "stopped":
+        if not mode.is_apply:
+            return readiness_result("would_start", uuid, **flags)
+        if not mode.database_start_enabled:
+            return readiness_result("blocked", uuid, **flags)
+        try:
+            client.start_postgresql(str(uuid))
+        except ProvisioningError as exc:
+            if exc.write_outcome_unknown:
+                actions.append(ActionRecord("postgresql", "start", "outcome_unknown", request_attempted=True, write_outcome_unknown=True).to_dict())
+                return readiness_result("partial", uuid, start_requested=True, request_attempted=True, write_outcome_unknown=True, **flags)
+            if exc.http_status in {409, 422}:
+                rediscovered = hydrate_database_by_uuid(client, uuid, postgres)
+                recovered_state = classify_database_readiness_status(database_raw_status(rediscovered))
+                if recovered_state in {"starting", "healthy"}:
+                    return poll_postgresql_readiness(client, str(uuid), timeout=getattr(args, "postgres_readiness_timeout", 300.0), interval=getattr(args, "postgres_readiness_interval", 5.0), sleeper=sleeper) if recovered_state == "starting" else readiness_result("healthy", uuid, poll_attempts=1, **verify_internal_db_url_flags(rediscovered))
+                return readiness_result("blocked", uuid, start_requested=True, request_attempted=True, **flags)
+            raise
+        actions.append(ActionRecord("postgresql", "start", "start_accepted", request_attempted=True, write_performed=True, verified=False).to_dict())
+        polled = poll_postgresql_readiness(client, str(uuid), timeout=getattr(args, "postgres_readiness_timeout", 300.0), interval=getattr(args, "postgres_readiness_interval", 5.0), sleeper=sleeper)
+        if polled.get("status") == "healthy":
+            actions.append(ActionRecord("postgresql", "readiness", "healthy", request_attempted=False, write_performed=False, verified=True).to_dict())
+        return {**polled, "start_requested": True, "request_attempted": True, "write_performed": True}
+    return readiness_result("readiness_unverified", uuid, **flags)
+
+def global_status(mode: ExecutionMode, resources: list[dict[str, Any]], blockers: list[Any], actions: list[dict[str, Any]], readiness: dict[str, Any] | None = None) -> str:
     statuses = {resource.get("status") for resource in resources}
     write_performed = any(action.get("write_performed") for action in actions) or any(resource.get("write_performed") for resource in resources)
     write_outcome_unknown = any(action.get("write_outcome_unknown") for action in actions) or any(resource.get("write_outcome_unknown") for resource in resources)
+    if mode.is_apply and readiness and (readiness.get("write_outcome_unknown") or readiness.get("status") in READINESS_FAILURE_STATUSES):
+        return "partial" if readiness.get("write_outcome_unknown") else readiness.get("status")
     if "incompatible" in statuses:
         return "recreate_required"
     if write_outcome_unknown or "created_unverified" in statuses or (write_performed and blockers):
@@ -1230,14 +1426,17 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         project = ensure_project(client, args, mode, actions)
         environment = ensure_environment(client, project, mode, actions)
         postgres = ensure_postgresql(client, args, project, environment, {"uuid": server_uuid, "name": args.server}, mode, actions)
+        postgresql_readiness = ensure_postgresql_ready(client, args, postgres, mode, actions)
     except ProvisioningError as exc:
         if exc.write_performed or exc.write_outcome_unknown or any(action.get("write_performed") or action.get("write_outcome_unknown") for action in actions):
             blockers.append({"message": exc.message, "type": exc.error_type, "write_performed": exc.write_performed, "write_outcome_unknown": exc.write_outcome_unknown})
             project = locals().get("project", {"status": "blocked"})
             environment = locals().get("environment", {"status": "blocked"})
             postgres = locals().get("postgres", {"status": "blocked"})
+            postgresql_readiness = locals().get("postgresql_readiness", readiness_result("blocked", postgres.get("uuid")))
         else:
             raise
+    postgresql_readiness = locals().get("postgresql_readiness", readiness_result("blocked", postgres.get("uuid")))
     if mode.is_apply and postgres.get("status") in {"compatibility_unverified", "scope_unverified", "out_of_scope"}:
         blockers.append({"message": f"PostgreSQL status requires manual review: {postgres['status']}", "write_performed": False})
     if postgres.get("status") == "incompatible":
@@ -1261,7 +1460,8 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
     plan["mode"] = mode.name
     plan["safety"] = {
         "writes_enabled": mode.is_apply and mode.allow_resource_writes and mode.confirm_product == mode.product,
-        "allowed_post_operations": sorted(ALLOWED_POST_KINDS) if mode.is_apply else [],
+        "allowed_post_operations": sorted(ALLOWED_POST_KINDS if mode.database_start_enabled else (ALLOWED_POST_KINDS - {"postgresql_start"})) if mode.is_apply else [],
+        "database_start_enabled": mode.database_start_enabled,
         "forbidden_methods": ["PATCH", "PUT", "DELETE"],
         "deploy_actions_enabled": False,
         "application_creation_enabled": False,
@@ -1271,7 +1471,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
             resource.update({"status": postgres.get("status"), "provisioning": postgres})
         else:
             resource["status"] = "planned_later"
-    status = global_status(mode, [project, environment, postgres], blockers, actions)
+    status = global_status(mode, [project, environment, postgres], blockers, actions, postgresql_readiness)
     return redact({
         **plan,
         "status": status,
@@ -1281,11 +1481,12 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         "project": project,
         "environment_resource": environment,
         "postgresql": postgres,
+        "postgresql_readiness": postgresql_readiness,
         "actions": actions,
         "warnings": warnings,
         "blockers": blockers,
         "contract": {
-            "confirmed_endpoints": ["POST /api/v1/projects", "POST /api/v1/projects/{project_uuid}/environments", "POST /api/v1/databases/postgresql", "GET /api/v1/databases/{uuid}"],
+            "confirmed_endpoints": ["POST /api/v1/projects", "POST /api/v1/projects/{project_uuid}/environments", "POST /api/v1/databases/postgresql", "GET /api/v1/databases/{uuid}", "POST /api/v1/databases/{uuid}/start"],
             "postgresql_payload_preview": redact(postgresql_create_payload(args, "${project.uuid}", "${server.uuid}", "${generated_secret}")),
             "postgresql_payload_source": "Coolify OpenAPI/API reference for create PostgreSQL database; version is represented by the image field in this isolated builder pending any upstream contract rename.",
         },
@@ -1294,6 +1495,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
 
 def provision(args: argparse.Namespace, *, client_factory: Callable[[], CoolifyClient] | None = None) -> dict[str, Any]:
     validate_args(args)
+    validate_readiness_timing_args(args)
     mode = mode_from_args(args)
     if mode.is_apply:
         mode.assert_write_gates()
@@ -1316,6 +1518,9 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--dry-run", action="store_true")
     mode.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm-product")
+    parser.add_argument("--confirm-database-start")
+    parser.add_argument("--postgres-readiness-interval", type=float, default=5.0)
+    parser.add_argument("--postgres-readiness-timeout", type=float, default=300.0)
     return parser
 
 
