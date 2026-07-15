@@ -28,7 +28,7 @@ jobs:
           python-version: '3.12'
 
       - name: Validate Python syntax
-        run: python -m py_compile scripts/create_product.py scripts/provision_coolify_development.py tests/test_create_product.py tests/test_provision_coolify_development.py tests/test_verify_coolify_workflow.py
+        run: python -m py_compile scripts/create_product.py scripts/provision_coolify_development.py scripts/provision_product_development.py tests/test_create_product.py tests/test_provision_coolify_development.py tests/test_provision_product_development.py tests/test_verify_coolify_workflow.py
 
       - name: Run dependency-free unit tests
         run: python -m unittest discover -s tests -v
@@ -43,6 +43,8 @@ jobs:
           test -f .github/workflows/provision-coolify-development.yml
           test -f scripts/provision_coolify_development.py
           test -f tests/test_provision_coolify_development.py
+          test -f scripts/provision_product_development.py
+          test -f tests/test_provision_product_development.py
           test -f docs/coolify-development-provisioning.md
 
 
