@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Plan a GoodMorning Coolify development environment using separate resources.
+"""Plan or safely apply GoodMorning Coolify development primitives.
 
-This provisioner is intentionally read-only. It validates inputs, discovers existing
-Coolify records, builds the desired resource plan, and prints a dry-run JSON plan.
-It must not create, patch, delete, start, or deploy any Coolify resource.
+Dry-run is GET-only and produces the complete three-resource plan. Apply can
+create only the Coolify Project, exact ``dev`` Environment, and private native
+PostgreSQL record after explicit gates. Applications, deployments, and lifecycle
+actions remain forbidden in this stage.
 """
 
 from __future__ import annotations
@@ -578,27 +579,6 @@ def bool_value(value: Any) -> bool | None:
     return None
 
 
-def postgres_differences(item: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    differences = []
-    unverified = []
-    engine = nested_field(item, "type", "kind", "database_type")
-    if engine in (None, ""):
-        unverified.append({"field": "type", "expected": "postgresql"})
-    elif str(engine).lower() not in {"postgres", "postgresql"}:
-        differences.append({"field": "type", "expected": "postgresql", "actual": engine})
-    version = nested_field(item, "version", "postgres_version", "image_tag")
-    if version in (None, ""):
-        unverified.append({"field": "version", "expected": POSTGRES_VERSION})
-    elif not str(version).startswith(POSTGRES_VERSION):
-        differences.append({"field": "version", "expected": POSTGRES_VERSION, "actual": version})
-    is_public = nested_field(item, "is_public", "public")
-    public_value = bool_value(is_public)
-    if public_value is None:
-        unverified.append({"field": "is_public", "expected": False})
-    elif public_value is not False:
-        differences.append({"field": "is_public", "expected": False, "actual": is_public})
-    return differences, unverified
-
 
 def application_differences(item: dict[str, Any], expected: dict[str, Any], context: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     field_paths = {
@@ -871,10 +851,20 @@ def mode_from_args(args: argparse.Namespace) -> ExecutionMode:
     )
 
 
-def is_postgres_engine(value: Any) -> bool | None:
+POSTGRES_ENGINE_VALUES = {"postgres", "postgresql", "standalone-postgresql"}
+
+
+def normalize_postgres_engine(value: Any) -> str | None:
     if value in (None, ""):
         return None
-    return "postgres" in str(value).lower()
+    text = str(value).strip().lower().replace("_", "-")
+    return text if text in POSTGRES_ENGINE_VALUES else None
+
+def is_postgres_engine(value: Any) -> bool | None:
+    normalized = normalize_postgres_engine(value)
+    if normalized is None and value in (None, ""):
+        return None
+    return normalized is not None
 
 
 def postgres_major_version(value: Any) -> str | None:
@@ -1134,7 +1124,12 @@ def ensure_postgresql(client: CoolifyClient, args: argparse.Namespace, project: 
         uuid = field(matches[0], "uuid", "id")
         if not uuid:
             return {"status": "compatibility_unverified", "name": name, "unverified_fields": [{"field": "uuid", "expected": "present"}]}
-        detail = hydrate_database_by_uuid(client, uuid, matches[0])
+        try:
+            detail = hydrate_database_by_uuid(client, uuid, matches[0])
+        except ProvisioningError:
+            if mode.is_apply:
+                raise
+            detail = matches[0]
         result = postgres_classification_from_detail(detail, context)
         if result["status"] == "exists":
             actions.append(ActionRecord("postgresql", "reuse", "exists", verified=True).to_dict())
@@ -1223,7 +1218,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
             postgres = locals().get("postgres", {"status": "blocked"})
         else:
             raise
-    if postgres.get("status") in {"compatibility_unverified", "scope_unverified", "out_of_scope"}:
+    if mode.is_apply and postgres.get("status") in {"compatibility_unverified", "scope_unverified", "out_of_scope"}:
         blockers.append({"message": f"PostgreSQL status requires manual review: {postgres['status']}", "write_performed": False})
     if postgres.get("status") == "incompatible":
         blockers.append({"message": "Existing PostgreSQL contradicts desired state; manual recreation required.", "write_performed": False})
@@ -1277,18 +1272,6 @@ def provision(args: argparse.Namespace, *, client_factory: Callable[[], CoolifyC
     client = client_factory() if client_factory else CoolifyClient.from_env(mode)
     if hasattr(client, "mode"):
         client.mode = mode
-    if not mode.is_apply:
-        try:
-            result = build_plan(args, discover(client, args))
-            result["safety_gates"] = mode.gates()
-            result["actions"] = []
-            return result
-        except ProvisioningError as exc:
-            if exc.error_type == "discovery" and "project named exactly" in exc.message:
-                projects = item_list(client.get("/projects"))
-                if not projects:
-                    return build_stage3_result(args, client, mode)
-            raise
     return build_stage3_result(args, client, mode)
 
 

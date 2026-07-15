@@ -212,7 +212,7 @@ The stage-3 payload builders are isolated in `scripts/provision_product_developm
 - `POST /api/v1/databases/postgresql` with `server_uuid`, `project_uuid`, `environment_name`, `name`, `image`, PostgreSQL credential fields, `is_public=false`, and `instant_deploy=false`.
 - `GET /api/v1/databases/{uuid}` for PostgreSQL detail verification.
 
-Success statuses accepted by the client for these creation endpoints are `200`, `201`, and `202`. Coolify uses `/api/v1` and Bearer authentication. PostgreSQL creation may return `internal_db_url`; Factory treats that value as a secret and reports only `internal_db_url_available: true|false`. The PostgreSQL version is represented in the isolated payload builder with `image=postgres:16-alpine`; if upstream OpenAPI renames this field in a future Coolify release, only that builder should change.
+Success statuses accepted by the client for these creation endpoints are `200`, `201`, and `202`. Coolify uses `/api/v1` and Bearer authentication. PostgreSQL creation may return `internal_db_url`; Factory treats that value as a secret and reports only `internal_db_url_available: true|false`. The PostgreSQL version is represented in the isolated payload builder with `image=postgres:16-alpine`, matching the upstream Coolify API/CLI contract for database creation flags (`--image <image>`) and the official Coolify database docs that describe PostgreSQL as a native database resource. If upstream `coollabsio/coolify` OpenAPI or route validation renames this field in a future release, only that builder should change.
 
 `instant_deploy=false` is sent during PostgreSQL creation so this stage creates the Coolify record without starting, restarting, stopping, or deploying anything.
 
@@ -258,4 +258,4 @@ The legacy Application Compose `<product>-dev` is reported only. It is not modif
 
 ### Later stages
 
-Backend Application and Frontend Application creation, Application variables, conversion of `internal_db_url` for backend use, deployments, public health checks, and smoke tests remain future stages with separate safety gates.
+Backend Application and Frontend Application creation, Application variables, conversion of `internal_db_url` for backend use, deployments, public health checks, and smoke tests remain future stages with separate safety gates. This stage creates only the Coolify database record with `instant_deploy=false`; it does not claim a PostgreSQL container exists. A later authorized stage must start PostgreSQL through the API, wait for a healthy state, verify that `internal_db_url` is available, and fail before creating or deploying Backend if PostgreSQL is not healthy. Upstream issue `coollabsio/coolify#9235` reports a risk where API database creation/start may create a record without a usable container in some environments; that issue is documented as risk evidence only, not as the schema authority for this repository.

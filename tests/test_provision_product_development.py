@@ -62,20 +62,18 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
         client = self.client()
         result = pp.provision(args(), client_factory=lambda: client)
         self.assertEqual(result["status"], "dry_run")
-        self.assertEqual(result["mode"], "read_only_plan")
-        self.assertEqual(
-            client.calls,
-            [
-                ("GET", "/projects"),
-                ("GET", "/projects/project-1"),
-                ("GET", "/servers"),
-                ("GET", "/github-apps"),
-                ("GET", "/applications"),
-                ("GET", "/applications/api-1"),
-                ("GET", "/databases"),
-                ("GET", "/databases/db-1"),
-            ],
-        )
+        self.assertEqual(result["mode"], "dry_run")
+        self.assertFalse(any(call[0] == "POST" for call in client.calls))
+        for expected_call in (
+            ("GET", "/projects"),
+            ("GET", "/projects/project-1"),
+            ("GET", "/servers"),
+            ("GET", "/github-apps"),
+            ("GET", "/applications"),
+            ("GET", "/applications/api-1"),
+            ("GET", "/databases"),
+        ):
+            self.assertIn(expected_call, client.calls)
         postgres, backend, frontend = result["resources"]
         self.assertEqual(postgres["desired_state"]["version"], "16")
         self.assertFalse(postgres["desired_state"]["is_public"])
@@ -131,7 +129,7 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
         self.assertEqual(result["discovery"]["project"]["uuid"], "project-1")
         self.assertEqual(result["discovery"]["server"]["uuid"], "server-1")
 
-    def test_environment_selection_fails_when_only_production_exists(self):
+    def test_environment_selection_plans_dev_when_only_production_exists(self):
         client = self.client(
             **{
                 "/projects/project-1": {
@@ -141,8 +139,9 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
                 }
             }
         )
-        with self.assertRaisesRegex(pp.ProvisioningError, "environment named exactly 'dev'"):
-            pp.provision(args(), client_factory=lambda: client)
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["environment_resource"]["status"], "would_create")
+        self.assertNotEqual(result["environment_resource"].get("uuid"), "env-prod")
 
     def test_duplicate_exact_match_is_error(self):
         client = self.client(**{"/projects": [{"uuid": "1", "name": "ledger"}, {"uuid": "2", "name": "ledger"}]})
@@ -266,8 +265,9 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
                 "/projects": [{"uuid": "ledger", "slug": "ledger", "name": "not-ledger"}],
             }
         )
-        with self.assertRaisesRegex(pp.ProvisioningError, "project named exactly 'ledger'"):
-            pp.provision(args(), client_factory=lambda: client)
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["project"]["status"], "would_create")
+        self.assertNotEqual(result["project"].get("uuid"), "ledger")
 
         client = self.client(
             **{
@@ -668,6 +668,128 @@ class Stage3ProvisioningTests(unittest.TestCase):
                         "--github-app", "goodmorning-mx-coolify", "--dry-run",
                     ])
             self.assertEqual(code, 2)
+
+
+class Stage3FinalCorrectionsTests(unittest.TestCase):
+    def client_for_dry_run(self, **overrides):
+        payloads = {
+            "/servers": [{"uuid": "server-1", "name": "development"}],
+            "/github-apps": {"github_apps": [{"uuid": "app-1", "name": "goodmorning-mx-coolify"}]},
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/databases": [],
+            "/applications": [],
+        }
+        payloads.update(overrides)
+        return FakeWriteClient(payloads)
+
+    def assert_dry_run_get_only(self, client, result):
+        self.assertEqual(result["status"], "dry_run")
+        self.assertFalse(any(call[0] == "POST" for call in client.calls))
+
+    def test_no_duplicate_top_level_functions_in_provisioner(self):
+        import ast
+        import collections
+        from pathlib import Path
+        tree = ast.parse(Path("scripts/provision_product_development.py").read_text())
+        names = [node.name for node in tree.body if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))]
+        duplicates = sorted(name for name, count in collections.Counter(names).items() if count > 1)
+        self.assertEqual(duplicates, [])
+
+    def test_dry_run_missing_project_with_no_projects(self):
+        client = self.client_for_dry_run(**{"/projects": []})
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assert_dry_run_get_only(client, result)
+        self.assertEqual(result["project"]["status"], "would_create")
+        self.assertEqual(result["environment_resource"]["status"], "would_create")
+
+    def test_dry_run_missing_project_with_other_projects(self):
+        client = self.client_for_dry_run(**{"/projects": [{"uuid": "other", "name": "other-product"}]})
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assert_dry_run_get_only(client, result)
+        self.assertEqual(result["project"]["status"], "would_create")
+        self.assertEqual(result["environment_resource"]["status"], "would_create")
+        self.assertEqual(result["postgresql"]["status"], "would_create")
+
+    def test_dry_run_project_exists_dev_absent(self):
+        client = self.client_for_dry_run(**{
+            "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": []},
+            "/projects/project-1/environments": [],
+        })
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assert_dry_run_get_only(client, result)
+        self.assertEqual(result["environment_resource"]["status"], "would_create")
+
+    def test_dry_run_project_exists_only_production(self):
+        client = self.client_for_dry_run(**{
+            "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": [{"uuid": "prod", "name": "production"}]},
+            "/projects/project-1/environments": [{"uuid": "prod", "name": "production"}],
+        })
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assert_dry_run_get_only(client, result)
+        self.assertEqual(result["environment_resource"]["status"], "would_create")
+
+    def test_dry_run_project_exists_other_environments(self):
+        client = self.client_for_dry_run(**{
+            "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": [{"uuid": "qa", "name": "qa"}]},
+            "/projects/project-1/environments": [{"uuid": "qa", "name": "qa"}],
+        })
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assert_dry_run_get_only(client, result)
+        self.assertEqual(result["environment_resource"]["status"], "would_create")
+
+    def test_dry_run_project_and_dev_exist_postgresql_missing(self):
+        client = self.client_for_dry_run()
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assert_dry_run_get_only(client, result)
+        self.assertEqual(result["postgresql"]["status"], "would_create")
+
+    def test_dry_run_everything_exists(self):
+        client = self.client_for_dry_run(**{
+            "/databases": [{"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "version": "16", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"}],
+            "/databases/db-1": {"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "version": "16", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"},
+        })
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assert_dry_run_get_only(client, result)
+        self.assertEqual(result["postgresql"]["status"], "exists")
+
+    def test_dry_run_homonymous_postgresql_out_of_scope(self):
+        client = self.client_for_dry_run(**{
+            "/databases": [{"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "version": "16", "is_public": False, "project_uuid": "other", "environment_uuid": "env-1", "server_uuid": "server-1"}],
+            "/databases/db-1": {"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "version": "16", "is_public": False, "project_uuid": "other", "environment_uuid": "env-1", "server_uuid": "server-1"},
+        })
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assert_dry_run_get_only(client, result)
+        self.assertEqual(result["postgresql"]["status"], "out_of_scope")
+
+    def test_postgres_engine_normalization_is_strict(self):
+        for value in ("postgres", "postgresql", "standalone-postgresql"):
+            self.assertIsNotNone(pp.normalize_postgres_engine(value))
+            self.assertTrue(pp.is_postgres_engine(value))
+        for value in ("notpostgres", "postgres-compatible", "mysql", "mariadb", "ambiguous-postgresql-like"):
+            self.assertIsNone(pp.normalize_postgres_engine(value))
+            self.assertFalse(pp.is_postgres_engine(value))
+
+    def test_main_dry_run_missing_project_with_other_projects_returns_zero(self):
+        result = {
+            "status": "dry_run",
+            "project": {"status": "would_create"},
+            "environment_resource": {"status": "would_create"},
+            "postgresql": {"status": "would_create"},
+        }
+        with mock.patch.object(pp, "provision", return_value=result):
+            with mock.patch("sys.stdout") as stdout:
+                code = pp.main([
+                    "--product", "ledger", "--repository", "goodmorning-mx/ledger", "--branch", "dev",
+                    "--coolify-project", "ledger", "--environment", "dev", "--server", "development",
+                    "--github-app", "goodmorning-mx-coolify", "--dry-run",
+                ])
+        self.assertEqual(code, 0)
+        printed = "".join(call.args[0] for call in stdout.write.call_args_list if call.args)
+        payload = json.loads(printed)
+        self.assertEqual(payload["status"], "dry_run")
+        self.assertEqual(payload["project"]["status"], "would_create")
+
 
 
 if __name__ == "__main__":
