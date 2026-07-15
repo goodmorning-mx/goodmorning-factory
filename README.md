@@ -2,8 +2,8 @@
 
 ## Coolify-safe Compose baseline
 
-This repository includes a Coolify-safe `compose.yaml` baseline for frontend, backend, and PostgreSQL services. The frontend baseline uses the default `nginx:1.27-alpine` image without a repository Dockerfile or nginx.conf override, so the real nginx listen port is container port `80`. The deployment file does not publish frontend or backend host ports; Coolify owns public ingress and routes traffic to container-only `expose` ports. Services communicate through Docker DNS and internal networks.
+This repository includes a Coolify-safe `compose.yaml` baseline for frontend, backend, and PostgreSQL services. The baseline deploys as one Docker Compose application from GitHub through the private GoodMorning Coolify GitHub App. The deployment file never publishes host `ports`; Coolify/Traefik owns public ingress and reaches services through container-only `expose` ports and explicit Traefik service-port labels.
 
-The baseline follows the Cards Coolify pattern for factory smoke-test provisioning: create a Docker Compose application from the GoodMorning GitHub App source, use branch `dev`, compose path `/compose.yaml`, domain `dev.factory-smoke-test.goodmorning.mx`, and keep `instant_deploy=false` so the initial provisioning step does not deploy automatically.
+The factory smoke-test pattern uses branch `dev`, compose path `/compose.yaml`, public domains `https://dev.factory-smoke-test.goodmorning.mx` and `https://api.dev.factory-smoke-test.goodmorning.mx`, `instant_deploy=false`, API-based reconciliation, and an explicit authorized Coolify API deployment step.
 
 See `docs/coolify-compose.md` and `docs/coolify-development-provisioning.md` for the deployment and review checklists.
