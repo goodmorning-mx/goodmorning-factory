@@ -17,6 +17,11 @@ def args(**overrides):
         server="development",
         github_app="goodmorning-mx-coolify",
         dry_run=True,
+        apply=False,
+        confirm_product=None,
+        confirm_database_start=None,
+        postgres_readiness_interval=0,
+        postgres_readiness_timeout=0,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -26,12 +31,24 @@ class FakeClient:
     def __init__(self, payloads):
         self.payloads = payloads
         self.calls = []
+        self.mode = None
 
     def get(self, path):
         self.calls.append(("GET", path))
         if path not in self.payloads:
             raise pp.ProvisioningError(f"missing fixture for {path}", error_type="test")
         value = self.payloads[path]
+        if isinstance(value, list) and value and isinstance(value[0], tuple):
+            method, result = value.pop(0)
+            assert method == "GET"
+            value = result
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def start_postgresql(self, uuid):
+        self.calls.append(("POST", f"/databases/{uuid}/start"))
+        value = self.payloads.get(f"POST /databases/{uuid}/start", pp.Response(200, {"message": "Database starting."}, {}))
         if isinstance(value, Exception):
             raise value
         return value
@@ -53,7 +70,8 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
                 ]
             },
             "/applications": [{"uuid": "api-1", "name": "ledger-api-dev", "type": "application", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "git_repository": "goodmorning-mx/ledger", "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend", "dockerfile_location": "/Dockerfile", "ports_exposes": "8000", "domains": "https://api.dev.ledger.goodmorning.mx", "github_app_uuid": "app-1"}],
-            "/databases": [{"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"}],
+            "/databases": [{"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "version": "16", "is_public": False, "status": "exited"}],
+            "/databases/db-1": {"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1", "version": "16", "is_public": False, "status": "exited", "internal_db_url": "postgresql://user:p%40ss@host:5432/db"},
         }
         payloads.update(payload_overrides)
         return FakeClient(payloads)
@@ -915,3 +933,88 @@ class Stage3WriteOutcomeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+class Stage4PostgresqlReadinessTests(unittest.TestCase):
+    def client(self, status="exited", **overrides):
+        base = ProductDevelopmentProvisionerTests().client()
+        db = {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":status,"internal_db_url":"postgresql://user:p%40ss@host:5432/db?sslmode=require"}
+        base.payloads["/databases"] = [dict(db)]
+        base.payloads["/databases/db-1"] = dict(db)
+        base.payloads.update(overrides)
+        return base
+
+    def test_dry_run_stopped_would_start_zero_post(self):
+        client=self.client("exited")
+        result=pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "would_start")
+        self.assertFalse(any(c[0]=="POST" for c in client.calls))
+
+    def test_dry_run_healthy_already_healthy_zero_post(self):
+        client=self.client("running:healthy")
+        result=pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "already_healthy")
+        self.assertTrue(result["postgresql_readiness"]["database_url_driver_ready"])
+        self.assertFalse(any(c[0]=="POST" for c in client.calls))
+
+    def test_apply_missing_database_start_gate_blocks_before_post(self):
+        client=self.client("exited")
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true"},clear=True):
+            result=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger"), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "blocked")
+        self.assertFalse(any(c[0]=="POST" for c in client.calls))
+
+    def test_apply_wrong_database_start_confirm_blocks_before_post(self):
+        client=self.client("exited")
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_DATABASE_START":"true"},clear=True):
+            result=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_database_start="wrong"), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "blocked")
+        self.assertFalse(any(c[0]=="POST" for c in client.calls))
+
+    def test_start_with_all_gates_posts_once_then_get_polls(self):
+        client=self.client("exited", **{"/databases/db-1":[("GET",{"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"exited"}),("GET",{"uuid":"db-1","status":"exited"}),("GET",{"uuid":"db-1","status":"running:healthy","internal_db_url":"postgresql://u:p@h:5432/d"})]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_DATABASE_START":"true"},clear=True):
+            result=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_database_start="ledger-postgres-dev"), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "healthy")
+        self.assertEqual([c for c in client.calls if c[0]=="POST"],[('POST','/databases/db-1/start')])
+
+    def test_start_http_500_is_partial_unknown_once(self):
+        exc=pp.ProvisioningError("boom", http_status=500, method="POST", path="/databases/db-1/start", write_outcome_unknown=True)
+        client=self.client("exited", **{"POST /databases/db-1/start": exc})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_DATABASE_START":"true"},clear=True):
+            result=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_database_start="ledger-postgres-dev"), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "partial")
+        self.assertTrue(result["postgresql_readiness"]["write_outcome_unknown"])
+        self.assertEqual(len([c for c in client.calls if c[0]=="POST"]),1)
+
+    def test_status_normalization_exact(self):
+        self.assertEqual(pp.classify_database_readiness_status("queued"), "starting")
+        self.assertEqual(pp.classify_database_readiness_status("running:healthy"), "healthy")
+        self.assertEqual(pp.classify_database_readiness_status("nothealthy"), "readiness_unverified")
+        self.assertEqual(pp.classify_database_readiness_status("unhealthy-running"), "readiness_unverified")
+
+    def test_psycopg_url_conversion_and_rejections(self):
+        self.assertEqual(pp.prepare_psycopg_database_url("postgresql://user:p%40ss@host:5432/db"), "postgresql+psycopg://user:p%40ss@host:5432/db")
+        self.assertEqual(pp.prepare_psycopg_database_url("postgres://user:pass@host:5432/db?sslmode=require"), "postgresql+psycopg://user:pass@host:5432/db?sslmode=require")
+        for bad in ["mysql://u:p@h/db", "sqlite://x", "http://x", "postgresql://"]:
+            with self.assertRaises(pp.ProvisioningError) as cm:
+                pp.prepare_psycopg_database_url(bad)
+            self.assertNotIn(bad, cm.exception.message)
+
+    def test_internal_db_url_redacted_and_output_booleans_only(self):
+        secret="postgresql://user:p%40ss@host:5432/db"
+        red=pp.redact({"internal_db_url":secret,"nested":[{"message":f"DATABASE_URL={secret}"}],"body":{"password":"x"}})
+        self.assertEqual(red["internal_db_url"], "[REDACTED]")
+        self.assertNotIn(secret, json.dumps(red))
+        client=self.client("running:healthy")
+        result=pp.provision(args(), client_factory=lambda: client)
+        self.assertNotIn(secret, json.dumps(result["postgresql_readiness"]).lower())
+
+    def test_applications_remain_planned_and_client_blocks_forbidden_lifecycle(self):
+        client=self.client("running:healthy")
+        result=pp.provision(args(), client_factory=lambda: client)
+        apps=[r for r in result["resources"] if r["kind"]=="application"]
+        self.assertTrue(all(r["status"]=="planned_later" for r in apps))
+        real=pp.CoolifyClient("https://coolify.example","token")
+        for method,path in [("POST","/applications"),("POST","/applications/a/start"),("POST","/databases/db-1/restart"),("POST","/databases/db-1/stop"),("PATCH","/databases/db-1")]:
+            with self.assertRaises(pp.ProvisioningError):
+                real.request(method,path,post_kind="postgresql_start")
