@@ -121,11 +121,11 @@ jobs:
                   payload = json.loads(line)
               except json.JSONDecodeError:
                   continue
-              if isinstance(payload, dict) and payload.get("status") == "recreate_required":
+              if isinstance(payload, dict) and payload.get("status") in {"recreate_required", "manual_review_required"}:
                   sys.exit(0)
           sys.exit(1)
           PY
           then
-            echo "Coolify provisioning returned status=recreate_required; failing workflow."
+            echo "Coolify provisioning returned status=recreate_required or manual_review_required; failing workflow."
             exit 1
           fi

@@ -30,9 +30,12 @@ COMPOSE_READY_POLL_SECONDS = 5
 DEPLOYMENT_TIMEOUT_SECONDS = 600
 DEPLOYMENT_POLL_SECONDS = 10
 HEALTH_TIMEOUT_SECONDS = 30
+HEALTH_RETRIES = 3
+HEALTH_RETRY_SLEEP_SECONDS = 2
 SENSITIVE_ENV = ("COOLIFY_API_TOKEN",)
 REAL_DEPLOY_ENV = "COOLIFY_ALLOW_REAL_DEPLOYMENT"
 ENVIRONMENT_UUID_RE = re.compile(r"^[a-z0-9]{24}$")
+SECRET_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY)", re.IGNORECASE)
 
 
 class ProvisioningError(Exception):
@@ -415,7 +418,24 @@ def wait_for_deployment(deployment_uuid: Any) -> dict[str, Any]:
         time.sleep(DEPLOYMENT_POLL_SECONDS)
 
 
-def verify_url(url: str) -> dict[str, Any]:
+def classify_url_error(exc: BaseException) -> str:
+    if isinstance(exc, TimeoutError):
+        return "timeout"
+    reason = getattr(exc, "reason", exc)
+    reason_text = str(reason).lower()
+    if "certificate" in reason_text or "tls" in reason_text or "ssl" in reason_text:
+        return "tls"
+    if (
+        "name or service not known" in reason_text
+        or "temporary failure in name resolution" in reason_text
+    ):
+        return "dns"
+    if "timed out" in reason_text or "timeout" in reason_text:
+        return "timeout"
+    return "network"
+
+
+def verify_url_once(url: str) -> dict[str, Any]:
     req = urllib.request.Request(
         url,
         method="GET",
@@ -431,7 +451,25 @@ def verify_url(url: str) -> dict[str, Any]:
     except urllib.error.HTTPError as exc:
         raise ProvisioningError(f"Health check {url} returned HTTP {exc.code}.", code=2)
     except (urllib.error.URLError, TimeoutError) as exc:
-        raise ProvisioningError(f"Health check {url} failed: {exc}", code=2)
+        raise ProvisioningError(
+            f"Health check {url} failed with {classify_url_error(exc)} error: {exc}",
+            code=2,
+        )
+
+
+def verify_url(url: str) -> dict[str, Any]:
+    last_error: ProvisioningError | None = None
+    for attempt in range(1, HEALTH_RETRIES + 1):
+        try:
+            result = verify_url_once(url)
+            result["attempts"] = attempt
+            return result
+        except ProvisioningError as exc:
+            last_error = exc
+            if attempt < HEALTH_RETRIES:
+                time.sleep(HEALTH_RETRY_SLEEP_SECONDS)
+    assert last_error is not None
+    raise last_error
 
 
 def development_host_without_port(development_domain: str) -> str:
@@ -485,13 +523,24 @@ def desired_environment_variables(args: argparse.Namespace) -> dict[str, str]:
     product = args.product.strip()
     return {
         "VITE_API_URL": f"https://api.dev.{product}.goodmorning.mx",
+        "NEXT_PUBLIC_API_URL": f"https://api.dev.{product}.goodmorning.mx",
         "CORS_ORIGINS": f"https://dev.{product}.goodmorning.mx",
         "APP_ENV": "dev",
+        "POSTGRES_DB": "goodmorning",
+        "POSTGRES_USER": "goodmorning",
+        "POSTGRES_PASSWORD": "${SERVICE_PASSWORD_POSTGRES}",
     }
 
 
 def environment_variable_summary(variables: dict[str, str]) -> list[dict[str, str]]:
-    return [{"key": key, "value": value} for key, value in variables.items()]
+    return [
+        {
+            "key": key,
+            "value": "[REDACTED]" if SECRET_KEY_RE.search(key) else value,
+            "secret": bool(SECRET_KEY_RE.search(key)),
+        }
+        for key, value in variables.items()
+    ]
 
 
 def environment_variable_key(item: dict[str, Any]) -> str | None:
@@ -667,6 +716,23 @@ def docker_compose_domains(development_domain: str) -> list[dict[str, str]]:
     ]
 
 
+def internal_routing() -> list[dict[str, Any]]:
+    return [
+        {
+            "service": "frontend",
+            "internal_port": 80,
+            "mechanism": "compose_traefik_label",
+            "label": "traefik.http.services.frontend.loadbalancer.server.port=80",
+        },
+        {
+            "service": "backend",
+            "internal_port": 8000,
+            "mechanism": "compose_traefik_label",
+            "label": "traefik.http.services.backend.loadbalancer.server.port=8000",
+        },
+    ]
+
+
 def domain_patch_payload(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "docker_compose_domains": docker_compose_domains(args.domain),
@@ -732,7 +798,10 @@ def scalar_values(data: Any) -> list[str]:
 
 
 def application_deployment_source_configured(
-    application: dict[str, Any], args: argparse.Namespace
+    application: dict[str, Any],
+    args: argparse.Namespace,
+    coolify_environment: dict[str, Any],
+    github_app: dict[str, Any],
 ) -> bool:
     data = (
         application.get("data")
@@ -746,10 +815,29 @@ def application_deployment_source_configured(
         args.repository.lower(),
         f"https://github.com/{args.repository}".lower(),
     }
+    environment_values = {
+        str(value).lower()
+        for value in (
+            args.environment,
+            COOLIFY_DEVELOPMENT_ENVIRONMENT,
+            field(coolify_environment, "name", "slug", "uuid", "id"),
+        )
+        if value
+    }
+    github_app_values = {
+        str(value).lower()
+        for value in (
+            github_app_uuid(github_app),
+            field(github_app, "name"),
+        )
+        if value
+    }
     return (
         bool(values & repository_values)
         and args.branch.lower() in values
         and args.compose.lower() in values
+        and bool(values & environment_values)
+        and bool(values & github_app_values)
     )
 
 
@@ -783,6 +871,30 @@ def creation_payload(
         "name": f"{args.product}-{args.environment}",
         "instant_deploy": False,
     }
+
+
+def create_application(
+    payload: dict[str, Any], args: argparse.Namespace
+) -> tuple[dict[str, Any], bool]:
+    response = request(
+        "POST",
+        "/applications/private-github-app",
+        body=payload,
+        allowed_statuses=(201, 409),
+    )
+    if response.status == 201:
+        if not isinstance(response.data, dict):
+            raise ProvisioningError("Malformed Coolify application creation response.")
+        return response.data, True
+
+    applications = items(request("GET", "/applications").data)
+    existing = existing_application(applications, args)
+    if existing is not None:
+        return existing, False
+    raise ProvisioningError(
+        "Coolify reported an application creation conflict, but no matching application was returned afterwards.",
+        code=2,
+    )
 
 
 def validate_inputs(args: argparse.Namespace) -> None:
@@ -849,6 +961,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         "compose": args.compose,
         "domain": args.domain,
         "docker_compose_domains": docker_compose_domains(args.domain),
+        "internal_routing": internal_routing(),
         "environment_variables": environment_variable_summary(
             desired_environment_variables(args)
         ),
@@ -876,8 +989,10 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         result["would_create_project"] = planned_project
     if existing:
         result["application"] = application_summary(existing)
-        source_configured = application_deployment_source_configured(existing, args)
-        if docker_compose_raw_loaded(existing) or source_configured:
+        source_configured = application_deployment_source_configured(
+            existing, args, coolify_environment, github_app
+        )
+        if source_configured:
             if source_configured:
                 result["source_configured"] = True
             if args.dry_run:
@@ -898,20 +1013,34 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
                 if result["deployment"].get("queued"):
                     result["health_checks"] = verify_development_health(args)
         else:
-            result["status"] = "recreate_required"
-            result["recreate_required"] = True
+            result["status"] = "manual_review_required"
+            result["manual_review_required"] = True
             result["reason"] = (
                 "Existing Coolify application is missing verified repository, branch, "
-                "compose path, and loaded docker_compose_raw data; manual review is "
-                "required before domains can be reconciled."
+                "compose path, environment, GitHub App source, and loaded "
+                "docker_compose_raw data; manual review is required before domains "
+                "can be reconciled."
             )
         return result
     if args.dry_run:
         result["would_create"] = payload
         return result
-    created = request("POST", "/applications/private-github-app", body=payload).data
-    if not isinstance(created, dict):
-        raise ProvisioningError("Malformed Coolify application creation response.")
+    created, application_created = create_application(payload, args)
+    if not application_created:
+        if not application_deployment_source_configured(
+            created, args, coolify_environment, github_app
+        ):
+            result["status"] = "manual_review_required"
+            result["manual_review_required"] = True
+            result["reason"] = (
+                "Coolify reported an application creation conflict, but the matching "
+                "application could not be verified against repository, branch, "
+                "compose path, environment, and GitHub App source."
+            )
+            result["application"] = application_summary(created)
+            return result
+        result["status"] = "exists"
+        result["application_reused_after_conflict"] = True
     result["application"] = application_summary(created)
     wait_for_docker_compose_raw(result["application"]["uuid"])
     result["docker_compose_raw_loaded"] = True
@@ -965,7 +1094,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         result = provision(args)
         print(json.dumps(result, sort_keys=True))
-        if result.get("status") == "recreate_required":
+        if result.get("status") in {"recreate_required", "manual_review_required"}:
             return 2
         return 0
     except ProvisioningError as exc:
