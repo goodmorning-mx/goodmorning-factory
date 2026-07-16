@@ -51,7 +51,7 @@ Unexpected true gates fail closed; required missing gates fail closed.
 
 A plan is safe when resources are compatible/existing or absent with planned `would_create`, `would_start`, or `would_deploy` actions. It is unsafe for duplicates, incompatible resources, recreate requirements, out-of-scope resources, scope or compatibility unverified states, legacy Compose migration requirements, ambiguous/missing destinations, ambiguous project/environment/server/GitHub App identity, identity contradictions, UUID ambiguity, created-unverified or write-outcome-unknown states.
 
-Mutating workflow runs always execute a separate `plan` phase before apply. The apply phase re-discovers current state and fails closed independently; it does not trust the previous JSON blindly.
+Mutating workflow runs always execute a separate `--phase plan` for the selected target operation before `--phase apply`. The apply phase re-discovers current state and fails closed independently; it does not trust the previous JSON blindly.
 
 ## GitHub Environment `dev`
 
@@ -66,7 +66,7 @@ Concurrency is per product: `goodmorning-factory-dev-${{ inputs.product }}` with
 
 ## Interpreting JSON
 
-The orchestrator prints one redacted JSON document per execution. The `orchestration` object contains `operation`, `phase`, `confirmation_required`, `confirmation_matches`, `plan_safe`, `apply_authorized`, `deployment_order`, and `next_action`. Runtime/smoke outputs are booleans/statuses only; secrets, tokens, `DATABASE_URL`, `internal_db_url`, HTML bodies, response bodies, and deployment logs are not printed.
+The orchestrator prints one redacted JSON document per execution. The `orchestration` object contains `target_operation`, `operation`, `phase`, `confirmation_required`, `confirmation_matches`, `plan_safe`, `apply_authorized`, `deployment_order`, and `next_action`. Runtime/smoke outputs are booleans/statuses only; secrets, tokens, `DATABASE_URL`, `internal_db_url`, HTML bodies, response bodies, and deployment logs are not printed.
 
 Successful apply states have overall status outside the non-success set and verified resource-specific states. Partial failures, unknown writes, unhealthy runtime, failed smoke, or timeouts return non-zero and must be inspected before re-running. Re-running is safe after the cause is corrected because the provisioner re-discovers resources and reuses compatible existing resources. Deployment POSTs are not automatically retried after unknown outcomes, and Stage 9 performs zero automatic rollback.
 
@@ -76,13 +76,14 @@ Use only with placeholder/test credentials unless Abel has approved real dev ope
 
 ```bash
 python scripts/orchestrate_product_development.py \
-  --operation plan \
+  --operation deploy-full \
+  --phase plan \
   --product ledger \
   --server development \
   --github-app goodmorning-mx-coolify
 ```
 
-For apply operations, set only the exact gates for the operation and pass the exact confirmation. Abort before apply by running `plan` only or by not approving the GitHub Environment reviewer gate.
+For apply operations, use the same target operation with `--phase apply`, set only the exact gates for the operation, and pass the exact confirmation. Abort before apply by running `plan` only or by not approving the GitHub Environment reviewer gate.
 
 ## Manual workflow use
 

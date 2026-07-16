@@ -2,6 +2,7 @@ import argparse
 import ast
 import os
 from pathlib import Path
+import re
 import unittest
 from unittest import mock
 
@@ -10,18 +11,19 @@ import scripts.provision_product_development as pp
 
 
 def oargs(**kw):
-    base=dict(operation="plan", product="ledger", server="development", github_app="goodmorning-mx-coolify", destination_uuid=None, confirmation=None)
+    base=dict(operation="plan", phase="plan", product="ledger", server="development", github_app="goodmorning-mx-coolify", destination_uuid=None, confirmation=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
 
-def env_for(operation):
-    return {g:("true" if g in op.ALLOWED_TRUE_GATES[operation] else "false") for g in op.GATES}
+def env_for(operation, phase="apply"):
+    allowed = frozenset() if phase == "plan" else op.APPLY_TRUE_GATES[operation]
+    return {g:("true" if g in allowed else "false") for g in op.GATES}
 
 
 class Stage9OrchestratorTests(unittest.TestCase):
     def test_inputs_derive_fixed_contract_and_reject_invalid_slug(self):
-        d=op.validate_orchestration_inputs(oargs())
+        d=op.validate_orchestration_inputs(oargs(operation="deploy-full", phase="plan"))
         self.assertEqual(d["repository"], "goodmorning-mx/ledger")
         self.assertEqual(d["branch"], "dev")
         self.assertEqual(d["environment"], "dev")
@@ -29,60 +31,97 @@ class Stage9OrchestratorTests(unittest.TestCase):
         self.assertEqual(d["frontend_domain"], "https://dev.ledger.goodmorning.mx")
         with self.assertRaises(pp.ProvisioningError): op.validate_orchestration_inputs(oargs(product="Bad_Slug"))
 
-    def test_confirmation_contract_exact(self):
+    def test_operation_phase_valid_and_invalid_combinations(self):
+        valid=[("plan","plan"),("provision","plan"),("provision","apply"),("deploy-backend","plan"),("deploy-backend","apply"),("deploy-full","plan"),("deploy-full","apply")]
+        for operation, phase in valid:
+            op.validate_orchestration_inputs(oargs(operation=operation, phase=phase))
+        for operation, phase in [("plan","apply"),("bogus","plan"),("deploy-full","bogus")]:
+            with self.assertRaises(pp.ProvisioningError): op.validate_orchestration_inputs(oargs(operation=operation, phase=phase))
+
+    def test_confirmation_contract_only_required_in_apply(self):
         self.assertEqual(op.expected_confirmation("deploy-full","ledger"), "deploy-full:ledger:dev")
         for oper in ("provision","deploy-backend","deploy-full"):
-            with mock.patch.dict(os.environ, env_for(oper), clear=True), mock.patch.object(op, "provision") as prov:
-                prov.return_value={"status":"dry_run"}
-                op.orchestrate(oargs(operation=oper, confirmation=op.expected_confirmation(oper,"ledger")))
+            with mock.patch.dict(os.environ, env_for(oper,"plan"), clear=True), mock.patch.object(op, "provision", return_value={"status":"dry_run", "selected_destination":{"status":"found"}}):
+                op.orchestrate(oargs(operation=oper, phase="plan"))
+            with mock.patch.dict(os.environ, env_for(oper,"apply"), clear=True), mock.patch.object(op, "provision", return_value={"status":"dry_run"}):
+                op.orchestrate(oargs(operation=oper, phase="apply", confirmation=op.expected_confirmation(oper,"ledger")))
         for bad in (None, "Deploy-full:ledger:dev", "deploy-full:other:dev", "deploy-full:ledger:prod"):
-            with mock.patch.dict(os.environ, env_for("deploy-full"), clear=True), mock.patch.object(op, "provision") as prov:
-                with self.assertRaises(pp.ProvisioningError): op.orchestrate(oargs(operation="deploy-full", confirmation=bad))
+            with mock.patch.dict(os.environ, env_for("deploy-full","apply"), clear=True), mock.patch.object(op, "provision") as prov:
+                with self.assertRaises(pp.ProvisioningError): op.orchestrate(oargs(operation="deploy-full", phase="apply", confirmation=bad))
                 prov.assert_not_called()
 
-    def test_gate_matrix_fail_closed_before_requests(self):
+    def test_gate_matrix_plan_and_apply_fail_before_requests(self):
         for oper in op.OPERATIONS:
-            with mock.patch.dict(os.environ, env_for(oper), clear=True):
-                op.validate_operation_gates(oper)
+            with mock.patch.dict(os.environ, env_for(oper,"plan"), clear=True):
+                op.validate_operation_gates(oper,"plan")
+        for oper in op.MUTATING_OPERATIONS:
+            with mock.patch.dict(os.environ, env_for(oper,"apply"), clear=True):
+                op.validate_operation_gates(oper,"apply")
         with mock.patch.dict(os.environ, {"COOLIFY_ALLOW_RESOURCE_WRITES":"true"}, clear=True), mock.patch.object(op, "provision") as prov:
-            with self.assertRaises(pp.ProvisioningError): op.orchestrate(oargs(operation="plan"))
+            with self.assertRaises(pp.ProvisioningError): op.orchestrate(oargs(operation="deploy-backend", phase="plan"))
             prov.assert_not_called()
-        bad=env_for("provision"); bad["COOLIFY_ALLOW_FRONTEND_DEPLOYMENT"]="true"
+        bad=env_for("provision","apply"); bad["COOLIFY_ALLOW_FRONTEND_DEPLOYMENT"]="true"
         with mock.patch.dict(os.environ, bad, clear=True), mock.patch.object(op, "provision") as prov:
-            with self.assertRaises(pp.ProvisioningError): op.orchestrate(oargs(operation="provision", confirmation="provision:ledger:dev"))
+            with self.assertRaises(pp.ProvisioningError): op.orchestrate(oargs(operation="provision", phase="apply", confirmation="provision:ledger:dev"))
+            prov.assert_not_called()
+        bad=env_for("deploy-full","apply"); bad["COOLIFY_ALLOW_BACKEND_DEPLOYMENT"]="false"
+        with mock.patch.dict(os.environ, bad, clear=True), mock.patch.object(op, "provision") as prov:
+            with self.assertRaises(pp.ProvisioningError): op.orchestrate(oargs(operation="deploy-full", phase="apply", confirmation="deploy-full:ledger:dev"))
             prov.assert_not_called()
 
-    def test_argv_operations_names_order_destination_and_no_secret(self):
-        cases={"plan":[], "provision":[], "deploy-backend":["--deploy-backend"], "deploy-full":["--deploy-backend","--deploy-frontend"]}
-        for oper, flags in cases.items():
-            a=oargs(operation=oper, destination_uuid="dest-1", confirmation=op.expected_confirmation(oper,"ledger"))
-            argv=op.build_provisioner_argv(a)
-            self.assertIn("--destination-uuid", argv)
-            self.assertIn("goodmorning-mx/ledger", argv)
-            self.assertIn("dev", argv)
+    def test_argv_by_operation_phase_destination_and_no_secret(self):
+        plan_cases={
+            "plan": [],
+            "provision": [],
+            "deploy-backend": ["--deploy-backend"],
+            "deploy-full": ["--deploy-backend", "--deploy-frontend"],
+        }
+        for oper, flags in plan_cases.items():
+            argv=op.build_provisioner_argv(oargs(operation=oper, phase="plan", destination_uuid="dest-1"))
+            self.assertIn("--dry-run", argv); self.assertNotIn("--apply", argv)
             for flag in flags: self.assertIn(flag, argv)
-            joined=" ".join(argv)
-            self.assertNotIn("COOLIFY_API_TOKEN", joined)
-            if oper == "deploy-full":
-                self.assertLess(argv.index("--deploy-backend"), argv.index("--deploy-frontend"))
+            if oper != "deploy-full": self.assertNotIn("--deploy-frontend", argv)
+            self.assertIn("goodmorning-mx/ledger", argv); self.assertIn("--destination-uuid", argv)
+            self.assertNotIn("COOLIFY_API_TOKEN", " ".join(argv))
+        for oper in ("provision","deploy-backend","deploy-full"):
+            argv=op.build_provisioner_argv(oargs(operation=oper, phase="apply", confirmation=op.expected_confirmation(oper,"ledger")))
+            self.assertIn("--apply", argv); self.assertNotIn("--dry-run", argv)
+            self.assertIn("--confirm-product", argv)
+            if oper == "deploy-full": self.assertLess(argv.index("--deploy-backend"), argv.index("--deploy-frontend"))
 
-    def test_plan_classification_safe_and_unsafe_nested_redacted(self):
-        safe={"status":"dry_run","resources":[{"status":"absent"},{"action":"would_create"}],"blockers":[]}
+    def test_plan_classification_safe_and_fail_closed_fixtures(self):
+        safe={"status":"dry_run","selected_destination":{"status":"found"},"resources":[{"status":"absent"},{"status":"would_create"}],"blockers":[]}
         self.assertTrue(op.classify_plan_safety(safe)[0])
-        for status in ["duplicate","incompatible","out_of_scope","scope_unverified","legacy_compose_migration_required","write_outcome_unknown"]:
-            ok, blockers=op.classify_plan_safety({"status":"dry_run","nested":{"status":status}})
-            self.assertFalse(ok); self.assertTrue(blockers)
+        safe_backend={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"would_deploy"},"blockers":[]}
+        self.assertTrue(op.classify_plan_safety(safe_backend)[0])
+        safe_full={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"would_deploy"},"frontend_deployment":{"status":"would_verify_backend_then_deploy"},"blockers":[]}
+        self.assertTrue(op.classify_plan_safety(safe_full)[0])
+        bad_fixtures=[
+            {"status":"dry_run","selected_destination":{"status":"found"},"blockers":[{"reason":"new_reason"}]},
+            {"status":"dry_run","selected_destination":{"status":"found"},"nested":{"blockers":[{"reason":"new_nested"}]}},
+            {"status":"blocked","selected_destination":{"status":"found"}},
+            {"status":"partial","selected_destination":{"status":"found"}},
+            {"status":"error","selected_destination":{"status":"found"}},
+            {"status":"dry_run","selected_destination":None},
+            {"status":"dry_run","selected_destination":{"status":"duplicate"}},
+            {"status":"dry_run","selected_destination":{"status":"found"},"github_app":{"status":"ambiguous"}},
+            {"status":"dry_run","selected_destination":{"status":"found"},"legacy_compose":{"status":"legacy_compose_migration_required"}},
+            {"status":"dry_run","selected_destination":{"status":"found"},"actions":[{"status":"write_outcome_unknown","write_outcome_unknown":True}]},
+            {"status":"dry_run","selected_destination":{"status":"found"},"frontend_deployment":{"status":"blocked","blockers":[{"reason":"preflight_new"}]}},
+            {"status":"dry_run","selected_destination":{"status":"found"},"resources":[{"status":"mystery"}]},
+        ]
+        for fixture in bad_fixtures:
+            ok, blockers=op.classify_plan_safety(fixture)
+            self.assertFalse(ok, fixture); self.assertTrue(blockers)
+            self.assertNotIn("postgres://", repr(blockers)); self.assertNotIn("token", repr(blockers).lower())
 
-    def test_execution_injects_client_factory_propagates_exit_and_partial_fails(self):
-        calls=[]
-        def fake(pargs, client_factory=None):
-            calls.append((pargs, client_factory)); return {"status":"dry_run"}
-        with mock.patch.dict(os.environ, env_for("plan"), clear=True), mock.patch.object(op,"provision",side_effect=fake):
-            code,res=op.orchestrate(oargs(), client_factory=lambda: object())
-        self.assertEqual(code,0); self.assertEqual(len(calls),1); self.assertEqual(res["orchestration"]["phase"],"plan")
-        with mock.patch.dict(os.environ, env_for("deploy-backend"), clear=True), mock.patch.object(op,"provision",return_value={"status":"partial"}):
-            code,_=op.orchestrate(oargs(operation="deploy-backend", confirmation="deploy-backend:ledger:dev"))
-        self.assertEqual(code,2)
+    def test_execution_metadata_and_exit_codes(self):
+        with mock.patch.dict(os.environ, env_for("deploy-backend","plan"), clear=True), mock.patch.object(op,"provision",return_value={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"would_deploy"}}):
+            code,res=op.orchestrate(oargs(operation="deploy-backend", phase="plan"), client_factory=lambda: object())
+        self.assertEqual(code,0); self.assertTrue(res["orchestration"]["plan_safe"]); self.assertEqual(res["orchestration"]["next_action"],"apply")
+        with mock.patch.dict(os.environ, env_for("deploy-backend","apply"), clear=True), mock.patch.object(op,"provision",return_value={"status":"partial"}):
+            code,res=op.orchestrate(oargs(operation="deploy-backend", phase="apply", confirmation="deploy-backend:ledger:dev"))
+        self.assertEqual(code,2); self.assertEqual(res["orchestration"]["next_action"],"inspect_failure"); self.assertNotEqual(res["orchestration"]["next_action"],"complete")
 
     def test_observed_variable_metadata_visible_values_redacted(self):
         observed={"observed_variable_names":["DATABASE_URL","VITE_API_URL"],"observed_variable_name_counts":{"DATABASE_URL":1},"DATABASE_URL":"postgres://u:p@h/db"}
@@ -91,34 +130,36 @@ class Stage9OrchestratorTests(unittest.TestCase):
         self.assertEqual(red["observed_variable_name_counts"], {"DATABASE_URL":1})
         self.assertEqual(red["DATABASE_URL"], "[REDACTED]")
 
-    def test_no_process_execution_apis(self):
+    def test_no_process_execution_apis_and_no_duplicate_top_level_functions(self):
         tree=ast.parse(Path("scripts/orchestrate_product_development.py").read_text())
-        forbidden=[]
+        forbidden=[]; names=[]
         for node in ast.walk(tree):
             if isinstance(node, ast.Attribute) and node.attr in {"system","popen","run","Popen","call","check_call","check_output"}: forbidden.append(node.attr)
             if isinstance(node, ast.Name) and node.id in {"exec","eval"}: forbidden.append(node.id)
+        for node in tree.body:
+            if isinstance(node, ast.FunctionDef): names.append(node.name)
         self.assertEqual(forbidden, [])
+        self.assertEqual(len(names), len(set(names)))
 
-    def test_workflow_contract(self):
+    def test_workflow_contract_operation_phase_branch_checkout_summary_and_secrets(self):
         text=Path(".github/workflows/product-development.yml").read_text()
         self.assertIn("workflow_dispatch:", text)
-        forbidden_triggers=["\npush:", "pull_request", "pull_request_target", "schedule:", "repository_dispatch"]
-        for marker in forbidden_triggers:
-            self.assertNotIn(marker, text)
+        for marker in ["\npush:", "pull_request", "pull_request_target", "schedule:", "repository_dispatch", "continue-on-error", "ssh ", "rsync", "scp ", "docker "]:
+            self.assertNotIn(marker, text.lower())
         self.assertIn("permissions:" + "\n" + "  contents: read", text)
-        self.assertIn("environment: dev", text)
-        self.assertIn("timeout-minutes: 60", text)
-        self.assertIn("group: goodmorning-factory-dev-${{ inputs.product }}", text)
-        self.assertIn("cancel-in-progress: false", text)
-        self.assertIn("github.ref_name != 'dev'", text)
-        for choice in op.OPERATIONS:
-            self.assertIn(f"          - {choice}", text)
+        self.assertIn("environment: dev", text); self.assertIn("timeout-minutes: 60", text)
+        self.assertIn("group: goodmorning-factory-dev-${{ inputs.product }}", text); self.assertIn("cancel-in-progress: false", text)
+        self.assertIn("github.ref != 'refs/heads/dev'", text); self.assertNotIn("github.ref_name != 'dev'", text); self.assertNotIn("refs/tags/dev", text)
+        self.assertIn("ref: ${{ github.sha }}", text); self.assertNotIn("ref: dev", text)
+        self.assertIn('"--operation", os.environ["INPUT_OPERATION"]', text)
+        self.assertIn('"--phase", "plan"', text); self.assertIn('"--phase", "apply"', text)
+        self.assertLess(text.index('"--phase", "plan"'), text.index('"--phase", "apply"'))
+        self.assertIn('COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}', text)
+        self.assertIn('COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}', text)
         self.assertNotIn("COOLIFY_API_TOKEN:" + "\n" + "        required", text)
-        self.assertNotIn("COOLIFY_BASE_URL:" + "\n" + "        required", text)
-        self.assertLess(text.index("Run Stage 9 plan"), text.index("Run Stage 9 apply"))
-        for bad in ["continue-on-error", "ssh ", "rsync", "scp ", "docker "]:
-            self.assertNotIn(bad, text.lower())
-
+        self.assertIn('product = product_raw if re.fullmatch', text)
+        self.assertIn('else "<invalid>"', text)
+        self.assertNotIn("INPUT_CONFIRMATION", text[text.index("Write safe operation summary"):])
 
 if __name__ == "__main__":
     unittest.main()
