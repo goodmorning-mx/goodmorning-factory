@@ -46,6 +46,27 @@ class FakeClient:
             raise value
         return value
 
+    def create_backend_application(self, payload):
+        self.calls.append(("POST", "/applications/private-github-app", payload))
+        value = self.payloads.get("POST /applications/private-github-app", pp.Response(201, {"uuid":"api-1", "name":"ledger-api-dev"}, {}))
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def create_backend_env(self, uuid, payload):
+        self.calls.append(("POST", f"/applications/{uuid}/envs", payload))
+        value = self.payloads.get(f"POST /applications/{uuid}/envs", pp.Response(201, {"key": payload.get("key")}, {}))
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def update_backend_env(self, uuid, payload):
+        self.calls.append(("PATCH", f"/applications/{uuid}/envs", payload))
+        value = self.payloads.get(f"PATCH /applications/{uuid}/envs", pp.Response(200, {"key": payload.get("key")}, {}))
+        if isinstance(value, Exception):
+            raise value
+        return value
+
     def start_postgresql(self, uuid):
         self.calls.append(("POST", f"/databases/{uuid}/start"))
         value = self.payloads.get(f"POST /databases/{uuid}/start", pp.Response(200, {"message": "Database starting."}, {}))
@@ -63,7 +84,7 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
                 "name": "ledger",
                 "environments": [{"uuid": "env-1", "name": "dev"}],
             },
-            "/servers": [{"uuid": "server-1", "name": "development"}],
+            "/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"dest-1", "name":"docker"}]}],
             "/github-apps": {
                 "github_apps": [
                     {"uuid": "app-1", "name": "goodmorning-mx-coolify", "token": "hidden"}
@@ -96,27 +117,16 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
         self.assertEqual(postgres["desired_state"]["version"], "16")
         self.assertFalse(postgres["desired_state"]["is_public"])
         self.assertIsNone(postgres["desired_state"]["domain"])
-        self.assertEqual(
-            backend["create_payload_preview"],
-            {
-                "name": "ledger-api-dev",
-                "git_repository": "goodmorning-mx/ledger",
-                "git_branch": "dev",
-                "build_pack": "dockerfile",
-                "base_directory": "/backend",
-                "dockerfile_location": "/Dockerfile",
-                "ports_exposes": "8000",
-                "domains": "https://api.dev.ledger.goodmorning.mx",
-                "instant_deploy": False,
-                "project_uuid": "project-1",
-                "server_uuid": "server-1",
-                "environment_name": "dev",
-                "github_app_uuid": "app-1",
-            },
-        )
+        self.assertEqual(backend["create_payload_preview"]["name"], "ledger-api-dev")
+        self.assertEqual(backend["create_payload_preview"]["git_repository"], "goodmorning-mx/ledger")
+        self.assertEqual(backend["create_payload_preview"]["destination_uuid"], "dest-1")
+        self.assertFalse(backend["create_payload_preview"]["instant_deploy"])
+        self.assertFalse(backend["create_payload_preview"]["is_auto_deploy_enabled"])
+        self.assertFalse(backend["create_payload_preview"]["autogenerate_domain"])
+        self.assertEqual(backend["create_payload_preview"]["health_check_path"], "/health")
         self.assertEqual(frontend["create_payload_preview"]["ports_exposes"], "80")
         self.assertEqual(frontend["create_payload_preview"]["domains"], "https://dev.ledger.goodmorning.mx")
-        self.assertNotIn("auto_deploy", backend["create_payload_preview"])
+        self.assertIn("is_auto_deploy_enabled", backend["create_payload_preview"])
         self.assertFalse(backend["desired_state"]["deployment_policy"]["auto_deploy_enabled"])
         self.assertEqual(result["discovery"]["github_app"], {"name": "goodmorning-mx-coolify", "uuid": "app-1"})
 
@@ -483,7 +493,7 @@ class Stage3ProvisioningTests(unittest.TestCase):
     def missing_project_payloads(self, **overrides):
         payloads = {
             "/projects": [],
-            "/servers": [{"uuid": "server-1", "name": "development"}],
+            "/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"dest-1", "name":"docker"}]}],
             "/github-apps": {"github_apps": [{"uuid": "app-1", "name": "goodmorning-mx-coolify"}]},
             "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": []},
             "/projects/project-1/environments": [],
@@ -691,7 +701,7 @@ class Stage3ProvisioningTests(unittest.TestCase):
 class Stage3FinalCorrectionsTests(unittest.TestCase):
     def client_for_dry_run(self, **overrides):
         payloads = {
-            "/servers": [{"uuid": "server-1", "name": "development"}],
+            "/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"dest-1", "name":"docker"}]}],
             "/github-apps": {"github_apps": [{"uuid": "app-1", "name": "goodmorning-mx-coolify"}]},
             "/projects": [{"uuid": "project-1", "name": "ledger"}],
             "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": [{"uuid": "env-1", "name": "dev"}]},
@@ -1013,7 +1023,8 @@ class Stage4PostgresqlReadinessTests(unittest.TestCase):
         client=self.client("running:healthy")
         result=pp.provision(args(), client_factory=lambda: client)
         apps=[r for r in result["resources"] if r["kind"]=="application"]
-        self.assertTrue(all(r["status"]=="planned_later" for r in apps))
+        self.assertIn(apps[0]["status"], {"would_create", "compatibility_unverified", "exists"})
+        self.assertEqual(apps[1]["status"], "planned_later")
         real=pp.CoolifyClient("https://coolify.example","token")
         for method,path in [("POST","/applications"),("POST","/applications/a/start"),("POST","/databases/db-1/restart"),("POST","/databases/db-1/stop"),("PATCH","/databases/db-1")]:
             with self.assertRaises(pp.ProvisioningError):
@@ -1164,3 +1175,100 @@ class Stage4ReviewCorrectionTests(unittest.TestCase):
                 pp.prepare_psycopg_database_url(bad)
             self.assertNotIn(bad, raised.exception.message)
         self.assertEqual(pp.verify_internal_db_url_flags({"internal_db_url":"   "}), {"internal_db_url_available": False, "database_url_driver_ready": False})
+
+class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
+    def healthy_client(self, **overrides):
+        app = {"uuid":"api-1","name":"ledger-api-dev","type":"application","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1","git_repository":"https://github.com/goodmorning-mx/ledger.git","git_branch":"dev","build_pack":"dockerfile","base_directory":"/backend","dockerfile_location":"/Dockerfile","ports_exposes":"8000","domains":"https://api.dev.ledger.goodmorning.mx","instant_deploy":False,"is_auto_deploy_enabled":False,"autogenerate_domain":False,"health_check_enabled":True,"health_check_path":"/health","health_check_port":"8000","health_check_method":"GET","health_check_scheme":"http","health_check_return_code":200}
+        base={"/applications":[app],"/applications/api-1":app,"/applications/api-1/envs":[] ,"/databases/db-1":{"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"healthy","internal_db_url":"postgresql://user:p%40ss@host:5432/db"},"/databases":[{"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"healthy"}]}
+        base.update(overrides)
+        return self.client(**base)
+
+    def test_stage5_dry_run_get_only_and_frontend_planned_later(self):
+        c=self.healthy_client(**{"/applications":[]})
+        r=pp.provision(args(), client_factory=lambda:c)
+        self.assertEqual(r["backend_application"]["status"], "would_create")
+        self.assertFalse(any(call[0] != "GET" for call in c.calls))
+        self.assertEqual(r["resources"][2]["status"], "planned_later")
+
+    def test_stage5_existing_backend_compatible_exists(self):
+        c=self.healthy_client()
+        r=pp.provision(args(), client_factory=lambda:c)
+        self.assertEqual(r["backend_application"]["status"], "exists")
+        self.assertEqual(r["backend_environment"]["status"], "planned")
+
+    def test_stage5_backend_incompatibilities(self):
+        for field,value in [("git_repository","bad/repo"),("git_branch","main"),("github_app_uuid","wrong"),("base_directory","/api"),("dockerfile_location","/Dockerfile.api"),("ports_exposes","8001"),("domains","https://api.dev.ledger.goodmorning.mx:8000"),("is_auto_deploy_enabled",True),("health_check_path","/bad")]:
+            app=self.healthy_client().payloads["/applications/api-1"].copy(); app[field]=value
+            c=self.healthy_client(**{"/applications":[app],"/applications/api-1":app})
+            r=pp.provision(args(), client_factory=lambda:c)
+            self.assertIn(r["backend_application"]["status"], {"recreate_required","incompatible"})
+
+    def test_stage5_duplicate_and_out_of_scope(self):
+        app=self.healthy_client().payloads["/applications/api-1"].copy()
+        c=self.healthy_client(**{"/applications":[app, {**app,"uuid":"api-2"}],"/applications/api-2":{**app,"uuid":"api-2"}})
+        self.assertEqual(pp.provision(args(), client_factory=lambda:c)["backend_application"]["status"], "duplicate")
+        out={**app,"project_uuid":"other"}
+        c=self.healthy_client(**{"/applications":[out],"/applications/api-1":out})
+        self.assertEqual(pp.provision(args(), client_factory=lambda:c)["backend_application"]["status"], "out_of_scope")
+
+    def test_stage5_postgres_preconditions_block_apply(self):
+        for db in [{"status":"unhealthy","internal_db_url":"postgresql://u:p@h/db"},{"status":"healthy"},{"status":"healthy","internal_db_url":"mysql://x"}]:
+            full={"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,**db}
+            c=self.healthy_client(**{"/applications":[],"/databases/db-1":full})
+            with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true"}, clear=False):
+                r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev"), client_factory=lambda:c)
+            self.assertEqual(r["backend_application"]["status"], "blocked")
+            self.assertFalse(any(call[0]=="POST" and call[1]=="/applications/private-github-app" for call in c.calls))
+
+    def test_stage5_application_gate_allows_single_private_github_app_post(self):
+        app=self.healthy_client().payloads["/applications/api-1"]
+        c=self.healthy_client(**{"/applications":[[], [{**app}]],"/applications/api-1":app,"POST /applications/private-github-app":pp.Response(201,{"uuid":"api-1","name":"ledger-api-dev"},{})})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev"), client_factory=lambda:c)
+        self.assertEqual([call[1] for call in c.calls if call[0]=="POST"].count("/applications/private-github-app"),1)
+        self.assertFalse(c.calls[-1][0] in {"PUT","DELETE"})
+
+    def test_stage5_env_desired_payloads_and_secret_redaction(self):
+        desired=pp.desired_backend_env("ledger","postgresql+psycopg://user:pass@host/db")
+        self.assertEqual([d["key"] for d in desired],["DATABASE_URL","APP_ENV","CORS_ORIGINS"])
+        self.assertEqual(desired[1]["value"],"dev")
+        self.assertEqual(desired[2]["value"],"https://dev.ledger.goodmorning.mx")
+        payload=pp.env_payload(desired[0])
+        self.assertTrue(payload["is_runtime"]); self.assertFalse(payload["is_buildtime"]); self.assertTrue(payload["is_literal"])
+        self.assertNotIn("postgresql+psycopg://user:pass", json.dumps(pp.redact(payload)))
+
+    def test_stage5_env_secret_hidden_blocks_without_overwrite(self):
+        c=self.healthy_client(**{"/applications/api-1/envs":[{"key":"DATABASE_URL","is_preview":False,"is_runtime":True,"is_buildtime":False,"is_literal":True,"is_multiline":False}]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev",confirm_backend_environment="ledger-api-dev"), client_factory=lambda:c)
+        self.assertEqual(r["backend_environment"]["status"],"secret_value_unverified")
+        self.assertFalse(any(call[0] in {"POST","PATCH"} and call[1].endswith("/envs") and call[2]["key"]=="DATABASE_URL" for call in c.calls))
+
+    def test_stage5_env_create_and_patch_gates(self):
+        c=self.healthy_client()
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}, clear=False):
+            pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev",confirm_backend_environment="ledger-api-dev"), client_factory=lambda:c)
+        env_posts=[call for call in c.calls if call[0]=="POST" and call[1].endswith("/envs")]
+        self.assertEqual({p[2]["key"] for p in env_posts}, {"DATABASE_URL","APP_ENV","CORS_ORIGINS"})
+        c=self.healthy_client(**{"/applications/api-1/envs":[{"key":"APP_ENV","value":"prod","is_preview":False,"is_runtime":True,"is_buildtime":False,"is_literal":True,"is_multiline":False}]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev"), client_factory=lambda:c)
+        self.assertTrue(any(b.get("reason")=="backend_env_gates_incomplete" for b in r["blockers"]))
+
+    def test_stage5_client_allowlist_blocks_application_patch_bulk_and_lifecycle(self):
+        mode=pp.ExecutionMode("apply","ledger","ledger",True,False,None,True,"ledger-api-dev",True,"ledger-api-dev")
+        client=pp.CoolifyClient("https://coolify.example","token",mode=mode)
+        for method,path,kind in [("PATCH","/applications/api-1","backend_env_update"),("POST","/applications/api-1/envs/bulk","backend_env_create"),("POST","/applications/api-1/restart",None),("DELETE","/applications/api-1",None)]:
+            with self.assertRaises(pp.ProvisioningError): client.request(method,path,json_body={"key":"APP_ENV"},post_kind=kind)
+
+    def test_stage5_destination_selection(self):
+        blockers=[]; server={"uuid":"s","destinations":[]}
+        self.assertIsNone(pp.select_destination(server,args(),blockers)); self.assertTrue(blockers)
+        blockers=[]; server={"uuid":"s","destinations":[{"uuid":"a"},{"uuid":"b"}]}
+        self.assertIsNone(pp.select_destination(server,args(),blockers))
+        blockers=[]; self.assertEqual(pp.select_destination(server,args(destination_uuid="b"),blockers)["uuid"],"b")
+
+    def test_stage5_no_remote_process_terms_in_source(self):
+        source=open("scripts/provision_product_development.py").read()
+        for term in ("ssh ","rsync","scp ","docker -H"):
+            self.assertNotIn(term, source)
