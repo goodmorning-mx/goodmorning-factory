@@ -144,7 +144,7 @@ jobs:
           print('No credential-like files, private keys, or GitHub token-like values found.')
           PY
 
-      - name: Verify stage-4 provisioner has no process execution imports or calls
+      - name: Verify stage-5 provisioner has no process execution imports or calls
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -175,15 +175,15 @@ jobs:
                       failures.append(f'forbidden process call: {owner.id}.{node.func.attr}')
           if failures:
               raise SystemExit('\n'.join(failures))
-          print('No forbidden process execution imports or calls found in stage-4 provisioner.')
+          print('No forbidden process execution imports or calls found in stage-5 provisioner.')
           PY
 
-      - name: Verify stage-4 deployment endpoints remain forbidden
+      - name: Verify stage-5 deployment endpoints remain forbidden
         run: |
           set -euo pipefail
           python - <<'PY'
           import scripts.provision_product_development as pp
-          mode = pp.ExecutionMode('apply', 'ledger', 'ledger', True, True, 'ledger-postgres-dev')
+          mode = pp.ExecutionMode('apply', 'ledger', 'ledger', True, True, 'ledger-postgres-dev', True, 'ledger-api-dev', True, 'ledger-api-dev')
           client = pp.CoolifyClient('https://coolify.example', 'unit-test-token', mode=mode)
           for method, path, kind in (
               ('POST', '/applications/app/start', 'postgresql_start'),
@@ -211,16 +211,27 @@ jobs:
           PY
 
 
-      - name: Verify stage-4 allowlist and documentation contract
+      - name: Verify stage-5 allowlist and documentation contract
         run: |
           set -euo pipefail
           python - <<'PY'
           import scripts.provision_product_development as pp
-          expected = {'project_create', 'environment_create', 'postgresql_create', 'postgresql_start'}
+          expected = {'project_create', 'environment_create', 'postgresql_create', 'postgresql_start', 'backend_application_create', 'backend_env_create'}
           if pp.ALLOWED_POST_KINDS != expected:
               raise SystemExit(f'unexpected POST allowlist: {pp.ALLOWED_POST_KINDS}')
-          mode = pp.ExecutionMode('apply', 'ledger', 'ledger', True, True, 'ledger-postgres-dev')
+          if pp.WRITE_METHODS != {'POST', 'PATCH'}:
+              raise SystemExit(f'WRITE_METHODS must classify POST and PATCH as mutations: {pp.WRITE_METHODS}')
+          if pp.BACKEND_ENV_KEYS != {'DATABASE_URL', 'APP_ENV', 'CORS_ORIGINS'}:
+              raise SystemExit(f'Unexpected backend env keys: {pp.BACKEND_ENV_KEYS}')
+          required_app_fields = {'name', 'project_uuid', 'environment_uuid', 'environment_name', 'server_uuid', 'destination_uuid', 'github_app_uuid', 'git_repository', 'git_branch', 'build_pack', 'base_directory', 'dockerfile_location', 'ports_exposes', 'domains', 'instant_deploy', 'is_auto_deploy_enabled', 'autogenerate_domain', 'health_check_enabled', 'health_check_path', 'health_check_port', 'health_check_method', 'health_check_scheme', 'health_check_return_code'}
+          if pp.APPROVED_BACKEND_APPLICATION_FIELDS != required_app_fields:
+              raise SystemExit('Backend Application payload fields changed without updating CI contract')
+          if pp.APPROVED_BACKEND_ENV_FIELDS != {'key', 'value', 'is_runtime', 'is_buildtime', 'is_preview', 'is_literal', 'is_multiline', 'is_shown_once'}:
+              raise SystemExit('Backend env payload fields changed without updating CI contract')
+          mode = pp.ExecutionMode('apply', 'ledger', 'ledger', True, True, 'ledger-postgres-dev', True, 'ledger-api-dev', True, 'ledger-api-dev')
           client = pp.CoolifyClient('https://coolify.example', 'unit-test-token', mode=mode)
+          client.bind_backend_application_uuid('api-1', {'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','destination_uuid':'dest-1','github_app_uuid':'app-1','git_repository':'goodmorning-mx/ledger'})
+          client.bind_backend_env_contract(pp.desired_backend_env('ledger', 'postgresql+psycopg://user:pass@host/db'))
           client._check_request('POST', '/databases/db-1/start', post_kind='postgresql_start')
           for bad in ['/databases/db-1/restart', '/databases/db-1/stop', '/databases/db-1/start/extra']:
               try:
@@ -229,18 +240,39 @@ jobs:
                   pass
               else:
                   raise SystemExit(f'forbidden database lifecycle path was allowed: {bad}')
+          client.bind_backend_application_bindings({'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','destination_uuid':'dest-1','github_app_uuid':'app-1','git_repository':'goodmorning-mx/ledger'})
+          app_payload = pp.backend_create_payload(type('Args', (), {'product':'ledger', 'repository':'goodmorning-mx/ledger'})(), client.backend_application_bindings)
+          client._check_request('POST', '/applications/private-github-app', post_kind='backend_application_create', json_body=app_payload)
+          client._check_request('POST', '/applications/api-1/envs', post_kind='backend_env_create', json_body={'key':'APP_ENV','value':'dev','is_runtime':True,'is_buildtime':False,'is_preview':False,'is_literal':True,'is_multiline':False})
+          client._check_request('PATCH', '/applications/api-1/envs', post_kind='backend_env_update', json_body={'key':'APP_ENV','value':'dev','is_runtime':True,'is_buildtime':False,'is_preview':False,'is_literal':True,'is_multiline':False})
+          try:
+              client._check_request('POST', '/applications/other/envs', post_kind='backend_env_create', json_body={'key':'APP_ENV','value':'dev','is_runtime':True,'is_buildtime':False,'is_preview':False,'is_literal':True,'is_multiline':False})
+          except pp.ProvisioningError:
+              pass
+          else:
+              raise SystemExit('env write for non-bound backend UUID was allowed')
+          for method, path in [('PATCH','/applications/api-1'), ('POST','/applications/api-1/envs/bulk'), ('POST','/applications/api-1/restart')]:
+              try:
+                  client._check_request(method, path, post_kind='backend_env_update' if method == 'PATCH' else 'backend_env_create', json_body={'key':'APP_ENV'})
+              except pp.ProvisioningError:
+                  pass
+              else:
+                  raise SystemExit(f'forbidden stage-5 path was allowed: {method} {path}')
           import re
           doc = __import__('pathlib').Path('docs/coolify-development-provisioning.md').read_text()
           normalized = re.sub(r'[`*]+', '', doc).lower()
           normalized = re.sub(r'\s+', ' ', normalized)
           checks = {
-              'Stage 4 heading': 'stage 4: postgresql readiness only' in normalized,
-              'start endpoint': 'post /api/v1/databases/{uuid}/start' in normalized,
-              'internal_db_url secret handling': re.search(r'internal_db_url.{0,120}secret|secret.{0,120}internal_db_url', normalized) is not None,
-              'applications planned later': ('backend and frontend' in normalized and 'planned_later' in normalized),
+              'Stage 5 canonical': 'stage 5 is the current canonical development provisioning architecture' in normalized,
+              'backend endpoint': 'post /api/v1/applications/private-github-app' in normalized,
+              'env endpoints': 'patch /api/v1/applications/{uuid}/envs' in normalized,
+              'internal_db_url secret handling': re.search(r'internal_db_url.{0,160}never|never.{0,160}internal_db_url', normalized) is not None,
+              'frontend planned stage 6': 'frontend dockerfile application provisioning remains planned for stage 6' in normalized,
+              'backend uuid binding': 'binds a single verified backend application uuid' in normalized,
+              'independent env reconciliation': 'app_env/cors' in normalized or 'app_env and cors_origins' in normalized,
           }
           failures = [name for name, ok in checks.items() if not ok]
           if failures:
               raise SystemExit('missing canonical documentation semantics: ' + ', '.join(failures))
-          print('Stage-4 allowlist and canonical documentation markers verified.')
+          print('Stage-5 allowlist and canonical documentation markers verified.')
           PY

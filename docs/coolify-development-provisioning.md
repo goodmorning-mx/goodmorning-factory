@@ -1,114 +1,138 @@
-# Coolify product development provisioning
+# Coolify development provisioning
 
-This is the canonical GoodMorning Factory development provisioning architecture for new products.
+Stage 5 is the current canonical development provisioning architecture for GoodMorning product repositories. Each product uses three independent Coolify resources:
 
-## Canonical architecture
+1. a private native PostgreSQL 16 database named `<product>-postgres-dev`;
+2. a Backend Dockerfile Application named `<product>-api-dev`;
+3. a Frontend Dockerfile Application named `<product>-frontend-dev` planned for Stage 6.
 
-Each product development environment is modeled as independent Coolify resources:
+Legacy Compose provisioning is deprecated for new products and documented separately in `docs/legacy-coolify-compose-provisioning.md`. The legacy Compose Application named `<product>-dev` remains migration context only. Stage 5 does not create, patch, deploy, stop, restart, delete, or otherwise modify the legacy Compose Application.
 
-1. A Coolify Project for the product.
-2. The exact Project environment `dev`.
-3. A private native PostgreSQL resource named `<product>-postgres-dev`.
-4. A Backend Dockerfile Application named `<product>-api-dev`.
-5. A Frontend Dockerfile Application named `<product>-frontend-dev`.
+## Confirmed Coolify API contract
 
-The source repository is accessed through the private GoodMorning GitHub App, uses branch `dev`, and uses clean public domains for public applications. Backend and Frontend are independent Dockerfile Applications in the target architecture; legacy Compose is not the source of new product deployments.
+The Stage 5 implementation is pinned to the upstream Coolify v4.x API surface verified from the official `coollabsio/coolify` `openapi.yaml`, upstream `ApplicationsController.php`, official Coolify documentation, and `coollabsio/coolify-cli` command metadata:
 
-No stage of this provisioner uses SSH, rsync, SCP, remote Docker, or manual server file copying. `compose.yaml` remains useful for local development and CI validation only.
+- `POST /api/v1/applications/private-github-app` creates the Backend Private GitHub App Application.
+- `GET /api/v1/applications/{uuid}` reads Application detail.
+- `GET /api/v1/applications/{uuid}/envs` lists Application environment variables.
+- `POST /api/v1/applications/{uuid}/envs` creates one Application environment variable.
+- `PATCH /api/v1/applications/{uuid}/envs` updates one Application environment variable.
 
-## Stage 2: discovery and read-only plan
+If a future upstream contract contradicts these endpoints or the approved field names, Stage 5 must fail closed for the affected write path and keep dry-run/discovery read-only.
 
-Stage 2 discovers Coolify resources with GET requests only and builds the complete three-resource plan:
+## Backend Application contract
 
-- `<product>-postgres-dev` native PostgreSQL resource;
-- `<product>-api-dev` Backend Dockerfile Application using `/backend` and `/Dockerfile`;
-- `<product>-frontend-dev` Frontend Dockerfile Application using `/frontend` and `/Dockerfile`.
+The Backend Application is a Coolify Private GitHub App Dockerfile Application. Coolify clones the private GitHub repository directly through the selected GitHub App; the provisioner never uses SSH, rsync, SCP, Docker remote commands, or server-local paths.
 
-The Stage 2 plan preserves exact Project, environment, server, and GitHub App selection by name; hydration GETs for candidate resources; scope classification; Application compatibility; legacy Compose detection; repository/domain/port normalization; and recursive redaction.
+Approved redacted creation payload shape:
 
-## Stage 3: controlled creation of primitives
+```json
+{
+  "name": "<product>-api-dev",
+  "project_uuid": "<selected project>",
+  "environment_uuid": "<selected dev environment>",
+  "environment_name": "dev",
+  "server_uuid": "<selected server>",
+  "destination_uuid": "<selected destination>",
+  "github_app_uuid": "<selected GitHub App>",
+  "git_repository": "goodmorning-mx/<product>",
+  "git_branch": "dev",
+  "build_pack": "dockerfile",
+  "base_directory": "/backend",
+  "dockerfile_location": "/Dockerfile",
+  "ports_exposes": "8000",
+  "domains": "https://api.dev.<product>.goodmorning.mx",
+  "instant_deploy": false,
+  "is_auto_deploy_enabled": false,
+  "autogenerate_domain": false,
+  "health_check_enabled": true,
+  "health_check_path": "/health",
+  "health_check_port": "8000",
+  "health_check_method": "GET",
+  "health_check_scheme": "http",
+  "health_check_return_code": 200
+}
+```
 
-Stage 3 extends the Stage 2 planner with tightly gated writes for only these resources:
+The public URL is always clean: `https://api.dev.<product>.goodmorning.mx`. It must never include `:8000`. Port `8000` is only the internal port exposed to Coolify/Traefik through `ports_exposes` and the health check port.
 
-- `POST /api/v1/projects` to create the exact product Project.
-- `POST /api/v1/projects/{project_uuid}/environments` to create only environment `dev`.
-- `POST /api/v1/databases/postgresql` to create a private native PostgreSQL record with `instant_deploy=false`.
+Stage 5 sets `instant_deploy=false`, `is_auto_deploy_enabled=false`, and `autogenerate_domain=false`; it never deploys the Backend and never invokes Application start, restart, stop, or deployment endpoints.
 
-Apply requires all gates before any POST:
+## Destination selection
 
-- `--apply` must be selected instead of `--dry-run`.
-- `COOLIFY_ALLOW_RESOURCE_WRITES=true` must be present.
-- `--confirm-product` must exactly match `--product`.
+Destination selection is conservative:
 
-Dry-run remains GET-only and never generates a real PostgreSQL password. Apply may generate a PostgreSQL password only in memory and only when the PostgreSQL record will actually be created. The JSON output reports only non-secret state such as resource names, UUIDs, action status, and `internal_db_url_available: true|false`.
+- zero destinations on the selected server is a blocker;
+- exactly one destination is selected automatically;
+- multiple destinations require `--destination-uuid <uuid>`;
+- an explicit destination must belong to the selected server.
 
-Stage 3 still forbids:
+## PostgreSQL precondition
 
-- Backend Application creation;
-- Frontend Application creation;
-- Application variables;
-- deployments;
-- start, restart, or stop lifecycle calls;
-- PATCH, PUT, and DELETE;
-- public health checks or smoke tests;
-- legacy Compose migration or deletion.
+The Backend Application can be created or configured only when PostgreSQL is verified as:
 
-## PostgreSQL payload contract
+- exact resource `<product>-postgres-dev`;
+- in the selected project, `dev` environment, and server;
+- PostgreSQL 16 and private;
+- readiness `healthy` or `already_healthy`;
+- `internal_db_url` present;
+- `internal_db_url` safely convertible in memory to `postgresql+psycopg://` with `prepare_psycopg_database_url()`.
 
-The PostgreSQL payload builder is isolated in `scripts/provision_product_development.py`. It currently sends:
+`internal_db_url` and the derived `DATABASE_URL` are never printed, returned, persisted, added to action details, or included in payload previews.
 
-- `server_uuid`;
-- `project_uuid`;
-- `environment_name="dev"`;
-- `name="<product>-postgres-dev"`;
-- `image="postgres:16-alpine"`;
-- `postgres_user`;
-- `postgres_password`;
-- `postgres_db`;
-- `is_public=false`;
-- `instant_deploy=false`.
+## Runtime environment variables
 
-The `image` field is used for the PostgreSQL version, matching the upstream Coolify API/CLI database creation contract for an image argument and the official Coolify database documentation that treats PostgreSQL as a native database resource. If upstream `coollabsio/coolify` route validation or generated OpenAPI changes this field, only the isolated builder should change.
+Stage 5 reconciles exactly these Backend runtime variables:
 
-Primary contract sources are official Coolify documentation and upstream Coolify repositories. Third-party mirrors are not schema authority.
+| Key | Value | Secret | Flags |
+| --- | --- | --- | --- |
+| `DATABASE_URL` | in-memory `postgresql+psycopg://...` derived from private PostgreSQL | yes | `is_runtime=true`, `is_buildtime=false`, `is_preview=false`, `is_literal=true`, `is_multiline=false` |
+| `APP_ENV` | `dev` | no | `is_runtime=true`, `is_buildtime=false`, `is_preview=false`, `is_literal=true`, `is_multiline=false` |
+| `CORS_ORIGINS` | `https://dev.<product>.goodmorning.mx` | no | `is_runtime=true`, `is_buildtime=false`, `is_preview=false`, `is_literal=true`, `is_multiline=false` |
 
-## Stage 4: PostgreSQL readiness only
+The `DATABASE_URL` value remains secret. If Coolify hides an existing secret value, Stage 5 reports `secret_value_unverified` and does not overwrite it blindly.
 
-Stage 4 materializes and verifies only the native private PostgreSQL resource. Backend and Frontend Dockerfile Applications remain `planned_later`; Application creation, Application environment variables, deployments, database restart/stop, PATCH, PUT, DELETE, and legacy Compose migration remain blocked. No real deployment, real start, or real Coolify call is run by tests.
+## Safety gates
 
-The upstream contract was confirmed from primary sources: the generated Coolify OpenAPI in `coollabsio/coolify` documents `POST /api/v1/databases/{uuid}/start` with a JSON message response and `GET /api/v1/databases/{uuid}` including fields such as `uuid`, `name`, `type`, `status`, `project_uuid`, `environment_uuid`, `server_uuid`, `is_public`, `public_port`, and `internal_db_url`; upstream `coollabsio/coolify` route/controller code uses the same database start route; official Coolify API docs are generated from that OpenAPI; and upstream `coollabsio/coolify-cli` exposes `coolify database start <uuid>` without a follow-up job identifier. Start therefore returns an acknowledgement/message, not a durable operation id that this provisioner can query.
-
-Stage 4 adds exactly one write operation to the allowlist: `postgresql_start` for `POST /api/v1/databases/{uuid}/start`, where `{uuid}` is the exact UUID selected by discovery. It is never authorized by a broad `/databases/*` prefix. Requesting start requires all gates simultaneously:
+Base writes still require:
 
 - `--apply`;
 - `COOLIFY_ALLOW_RESOURCE_WRITES=true`;
-- `--confirm-product` exactly equal to `--product`;
-- `COOLIFY_ALLOW_DATABASE_START=true`;
-- `--confirm-database-start` exactly equal to `<product>-postgres-dev`.
+- `--confirm-product <product>`.
 
-Dry-run remains GET-only. It reports `would_start` only for an existing, compatible, correctly scoped PostgreSQL resource that is not healthy, and `already_healthy` for an explicitly healthy resource. It does not generate a new database secret for an existing PostgreSQL resource.
+Backend Application creation additionally requires:
 
-Readiness polling uses GET `/api/v1/databases/{uuid}` with configurable interval and timeout (`--postgres-readiness-interval`, default 5 seconds; `--postgres-readiness-timeout`, default 300 seconds). Tests inject fake clients and zero-second timings, so they never sleep or contact Coolify. State classification is exact and conservative: `queued` and `starting` are treated as starting; `running:healthy` and `healthy` are healthy; `exited` and `stopped` can be started; `running:unhealthy`, `exited:unhealthy`, `unhealthy`, and `failed` are unhealthy. Ambiguous strings such as `nothealthy`, `unhealthy-running`, `running-but-unverified`, and `exited-something-unknown` are `readiness_unverified`. `exited:unhealthy` is handled as an exact unhealthy terminal state because upstream issue `coollabsio/coolify#9235` documents it as the API status shown after an accepted database start does not materialize a usable container. If Coolify reports only `running` without a health marker, Stage 4 does not claim health.
+- `COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES=true`;
+- `--confirm-backend-application <product>-api-dev`;
+- healthy driver-ready PostgreSQL;
+- unambiguous project, environment, server, destination, and GitHub App bindings.
 
-In apply mode, readiness `blocked`, `readiness_unverified`, `unhealthy`, `timeout`, `partial`, or any `write_outcome_unknown` produces a non-success global status and non-zero exit code. A start POST with HTTP 5xx, timeout, URL error, malformed JSON, or any other situation where Coolify may have received the write but the outcome cannot be proven is marked `request_attempted=true`, `write_performed=false`, `write_outcome_unknown=true`, and `partial`. The provisioner does not retry, roll back, restart, stop, or delete; it recommends a later GET-only discovery run. For 409/422 conflicts, it uses only structured HTTP status, rediscoveries by exact UUID, and never parses message text or sends a second POST.
+Backend environment variable writes additionally require:
 
-`internal_db_url` is secret. The provisioner never prints, logs, stores, writes, or returns it; output includes only `internal_db_url_available` and `database_url_driver_ready`. The future Backend `DATABASE_URL` is prepared only in memory by replacing an initial `postgresql://` or `postgres://` scheme with `postgresql+psycopg://` while preserving URL-encoded credentials, host, port, database name, query string, and SSL parameters. Unsupported or malformed schemes are rejected without echoing the input.
+- all Backend Application gates;
+- `COOLIFY_ALLOW_BACKEND_ENV_WRITES=true`;
+- `--confirm-backend-environment <product>-api-dev`;
+- a verified compatible Backend Application;
+- PostgreSQL still healthy and driver-ready.
 
-Upstream issue `coollabsio/coolify#9235` is tracked only as operational risk evidence that a database API request can be accepted without producing a usable container; it is not schema authority.
+## Idempotency and partial failures
 
-## Stage 5 and later
+Stage 5 discovery distinguishes `absent`, `found`, `duplicate`, `incompatible`, `compatibility_unverified`, `scope_unverified`, `out_of_scope`, `created`, `created_unverified`, `write_outcome_unknown`, `partial`, `blocked`, `recreate_required`, `would_create`, and `exists`.
 
-Future stages must handle Applications separately after PostgreSQL readiness is verified:
+Creation is idempotent: compatible existing resources are reused, absent resources are planned in dry-run, apply uses a single POST, 409/422 responses trigger exact rediscovery without parsing message text, and no second POST or rollback is attempted. Any 5xx, timeout, network failure, invalid JSON, or invalid 2xx response after a write is reported conservatively as `write_outcome_unknown`/`partial` and dependent env writes are skipped.
 
-1. Create Backend and Frontend Applications.
-2. Configure Application variables.
-3. Deploy only after explicit deployment gates.
-4. Fail before creating or deploying Backend if PostgreSQL is not healthy.
+## Stage boundaries
 
-Stage 3 creates only the Coolify database record with `instant_deploy=false`; Stage 4 can request exactly one native PostgreSQL start after separate gates, but it still does not create Applications or deploy anything.
+Stage 5 does not create Frontend, deploy Frontend, deploy Backend, create Compose Applications, modify Compose Applications, delete resources, or run remote commands. Frontend Dockerfile Application provisioning remains planned for Stage 6.
 
-## Legacy Compose provisioning — deprecated for new products
+## Backend UUID binding and env mutation verification
 
-The previous single Application Docker Compose provisioner remains in `scripts/provision_coolify_development.py` for legacy environments only. Its behavior is intentionally not changed in this PR.
+Stage 5 binds a single verified Backend Application UUID before any env mutation is allowlisted. The client starts with no authorized Backend UUID, binds only after a compatible existing Backend is verified or after a newly-created Backend is re-read through `GET /api/v1/applications/{uuid}` and passes compatibility checks, and refuses to silently rebind to another UUID. `POST` and `PATCH` env requests are valid only for `/api/v1/applications/{bound_backend_uuid}/envs`; env writes without a binding or with another Application UUID fail before the HTTP request is built.
 
-Detailed legacy documentation was moved to `docs/legacy-coolify-compose-provisioning.md`. New products should use the canonical three-resource architecture described above.
+`PATCH` is therefore conditionally allowed, not globally allowed: `PUT` and `DELETE` remain always forbidden, while `PATCH` is scoped only to env vars on the bound Backend UUID after env gates are complete.
+
+A successful `POST` or `PATCH` response only means Coolify accepted a write attempt. Stage 5 does not mark env writes verified until it performs a fresh `GET /api/v1/applications/{bound_backend_uuid}/envs`, locates the exact key with `is_preview=false`, detects duplicates, verifies flags, and verifies the value when Coolify exposes it. If the follow-up GET fails, the variable is missing, flags are wrong, or values are not verifiable, the result is `created_unverified`, `updated_unverified`, `partial`, `duplicate`, or `secret_value_unverified` as appropriate.
+
+For `DATABASE_URL`, a hidden value remains `secret_value_unverified`; Stage 5 does not overwrite hidden secrets blindly. `POST`/`PATCH` 409 or 422 conflicts trigger one exact env rediscovery and compatibility check, never a retry, rollback, or delete. PATCH failures after the request is sent, including 5xx, timeouts, URL errors, malformed JSON, or unexpected 2xx statuses, are treated as mutation `write_outcome_unknown` just like POST failures.
+
+Operationally, an unverified hidden `DATABASE_URL` is a deployment dependency blocker, not a reconciliation dependency for independent non-secret variables: `APP_ENV` and `CORS_ORIGINS` should still be created or updated and verified through the post-write GET loop whenever their own writes are safe.

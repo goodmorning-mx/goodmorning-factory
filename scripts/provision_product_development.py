@@ -3,8 +3,7 @@
 
 Dry-run is GET-only and produces the complete three-resource plan. Apply can
 create only the Coolify Project, exact ``dev`` Environment, and private native
-PostgreSQL record after explicit gates. Applications, deployments, and lifecycle
-actions remain forbidden in this stage.
+PostgreSQL record after explicit gates. Backend Dockerfile Applications and their runtime environment variables can be created/reconciled only after Stage 5 gates. Deployments and lifecycle actions remain forbidden.
 """
 
 from __future__ import annotations
@@ -31,9 +30,16 @@ SECRET_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL|DATAB
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 READ_ONLY_METHODS = {"GET"}
+WRITE_METHODS = {"POST", "PATCH"}
 POST_PROJECT_CREATE = "/projects"
 POST_POSTGRES_CREATE = "/databases/postgresql"
-ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start"}
+POST_BACKEND_APPLICATION_CREATE = "/applications/private-github-app"
+BACKEND_ENV_KEYS = {"DATABASE_URL", "APP_ENV", "CORS_ORIGINS"}
+APPROVED_BACKEND_APPLICATION_FIELDS = {"name", "project_uuid", "environment_uuid", "environment_name", "server_uuid", "destination_uuid", "github_app_uuid", "git_repository", "git_branch", "build_pack", "base_directory", "dockerfile_location", "ports_exposes", "domains", "instant_deploy", "is_auto_deploy_enabled", "autogenerate_domain", "health_check_enabled", "health_check_path", "health_check_port", "health_check_method", "health_check_scheme", "health_check_return_code"}
+APPROVED_BACKEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline", "is_shown_once"}
+ENV_PAYLOAD_FIELDS = APPROVED_BACKEND_ENV_FIELDS
+ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start", "backend_application_create", "backend_env_create"}
+ALLOWED_PATCH_KINDS = {"backend_env_update"}
 FORBIDDEN_ENDPOINT_RE = re.compile(r"/(deploy|deployments|restart|stop)(?:/|$)", re.I)
 NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
 
@@ -52,6 +58,7 @@ class ProvisioningError(Exception):
         path: str | None = None,
         write_performed: bool = False,
         write_outcome_unknown: bool = False,
+        request_attempted: bool = False,
     ):
         super().__init__(redact(message))
         self.message = redact(message)
@@ -62,9 +69,10 @@ class ProvisioningError(Exception):
         self.path = path
         self.write_performed = write_performed
         self.write_outcome_unknown = write_outcome_unknown
+        self.request_attempted = request_attempted
 
     def to_dict(self) -> dict[str, Any]:
-        error = {"type": self.error_type, "message": self.message, "write_performed": self.write_performed, "write_outcome_unknown": self.write_outcome_unknown}
+        error = {"type": self.error_type, "message": self.message, "request_attempted": self.request_attempted, "write_performed": self.write_performed, "write_outcome_unknown": self.write_outcome_unknown}
         if self.http_status is not None:
             error["http_status"] = self.http_status
         if self.method:
@@ -89,6 +97,10 @@ class ExecutionMode:
     allow_resource_writes: bool
     allow_database_start: bool = False
     confirm_database_start: str | None = None
+    allow_backend_application_writes: bool = False
+    confirm_backend_application: str | None = None
+    allow_backend_env_writes: bool = False
+    confirm_backend_environment: str | None = None
 
     @property
     def is_apply(self) -> bool:
@@ -104,6 +116,18 @@ class ExecutionMode:
             and self.confirm_database_start == f"{self.product}-postgres-dev"
         )
 
+    @property
+    def backend_application_name(self) -> str:
+        return f"{self.product}-api-dev"
+
+    @property
+    def backend_application_writes_enabled(self) -> bool:
+        return (self.is_apply and self.allow_resource_writes and self.confirm_product == self.product and self.allow_backend_application_writes and self.confirm_backend_application == self.backend_application_name)
+
+    @property
+    def backend_env_writes_enabled(self) -> bool:
+        return self.backend_application_writes_enabled and self.allow_backend_env_writes and self.confirm_backend_environment == self.backend_application_name
+
     def gates(self) -> dict[str, Any]:
         return {
             "apply_requested": self.is_apply,
@@ -113,9 +137,18 @@ class ExecutionMode:
             "database_start_env": self.allow_database_start,
             "confirm_database_start_matches": self.confirm_database_start == f"{self.product}-postgres-dev" if self.confirm_database_start is not None else False,
             "database_start_enabled": self.database_start_enabled,
-            "forbidden_methods": ["PATCH", "PUT", "DELETE"],
+            "always_forbidden_methods": ["PUT", "DELETE"],
+            "conditionally_allowed_methods": ["PATCH"],
+            "allowed_patch_operations": ["backend_env_update"] if self.backend_env_writes_enabled else [],
+            "patch_scope": "backend_application_envs_bound_uuid" if self.backend_env_writes_enabled else None,
             "deployments_forbidden": True,
-            "application_creation_forbidden": True,
+            "backend_application_env": self.allow_backend_application_writes,
+            "confirm_backend_application_matches": self.confirm_backend_application == self.backend_application_name if self.confirm_backend_application is not None else False,
+            "backend_application_writes_enabled": self.backend_application_writes_enabled,
+            "backend_env_env": self.allow_backend_env_writes,
+            "confirm_backend_environment_matches": self.confirm_backend_environment == self.backend_application_name if self.confirm_backend_environment is not None else False,
+            "backend_env_writes_enabled": self.backend_env_writes_enabled,
+            "backend_application_creation_enabled": self.backend_application_writes_enabled,
         }
 
     def assert_write_gates(self) -> None:
@@ -163,6 +196,7 @@ def sanitize_string(text: str) -> str:
             text = text.replace(secret, "[REDACTED]")
     text = re.sub(r"Bearer\s+[A-Za-z0-9._~+/-]+=*", "Bearer [REDACTED]", text, flags=re.I)
     text = re.sub(r"(https?://)([^:/\s]+):([^@/\s]+)@", r"\1[REDACTED]@", text)
+    text = re.sub(r"postgresql\+psycopg://[^\s'\"]+", "postgresql+psycopg://[REDACTED]", text, flags=re.I)
     text = re.sub(r"postgres(?:ql)?://[^\s'\"]+", "postgresql://[REDACTED]", text, flags=re.I)
     text = re.sub(r"DATABASE_URL\s*[=:]\s*[^\s,&}]+", "DATABASE_URL=[REDACTED]", text, flags=re.I)
     text = re.sub(r"(internal_db_url|postgres_password|password|token|secret|authorization)([=:]\s*)([^\s,&}]+)", r"\1\2[REDACTED]", text, flags=re.I)
@@ -206,37 +240,157 @@ class CoolifyClient:
         self.api_token = api_token
         self.timeout = timeout
         self.mode = mode or ExecutionMode("dry_run", "", None, False)
+        self.expected_backend_application_uuid: str | None = None
+        self.backend_application_bindings: dict[str, Any] = {}
+        self.expected_backend_env_contract: dict[str, dict[str, Any]] | None = None
+
+
+    def bind_backend_application_bindings(self, bindings: dict[str, Any]) -> None:
+        sanitized = dict(bindings or {})
+        if self.backend_application_bindings and self.backend_application_bindings != sanitized:
+            raise ProvisioningError("Refusing to change selected Backend Application bindings during this execution.", error_type="safety")
+        self.backend_application_bindings = sanitized
+
+    def bind_backend_env_contract(self, desired_env: list[dict[str, Any]]) -> None:
+        contract = {item["key"]: env_payload(item) for item in desired_env}
+        if set(contract) != BACKEND_ENV_KEYS:
+            raise ProvisioningError("Backend env desired contract must include exactly the approved keys.", error_type="safety")
+        if self.expected_backend_env_contract is not None and self.expected_backend_env_contract != contract:
+            raise ProvisioningError("Refusing to change the bound Backend env desired contract during this execution.", error_type="safety")
+        self.expected_backend_env_contract = contract
+
+    def bind_backend_application_uuid(self, uuid: Any, bindings: dict[str, Any] | None = None) -> None:
+        text = str(uuid or "")
+        if not text:
+            raise ProvisioningError("Cannot bind an empty Backend Application UUID.", error_type="safety")
+        if self.expected_backend_application_uuid is not None and self.expected_backend_application_uuid != text:
+            raise ProvisioningError("Refusing to change the verified Backend Application UUID binding.", error_type="safety")
+        self.expected_backend_application_uuid = text
+        self.bind_backend_application_bindings(dict(bindings or {}))
+
+    def _backend_env_path_matches_binding(self, path: str) -> bool:
+        if self.expected_backend_application_uuid is None:
+            return False
+        encoded = urllib.parse.quote(self.expected_backend_application_uuid, safe="")
+        return path == f"/applications/{encoded}/envs"
+
+    def _validate_backend_application_payload(self, json_body: dict[str, Any] | None) -> None:
+        if not isinstance(json_body, dict):
+            raise ProvisioningError("Backend Application creation requires an approved JSON object payload.", error_type="safety")
+        if set(json_body) != APPROVED_BACKEND_APPLICATION_FIELDS:
+            raise ProvisioningError("Backend Application payload fields do not exactly match the approved contract.", error_type="safety")
+        expected_name = self.mode.backend_application_name
+        expected_domain = f"https://api.dev.{self.mode.product}.goodmorning.mx"
+        checks = {
+            "name": expected_name,
+            "git_branch": "dev",
+            "build_pack": "dockerfile",
+            "base_directory": "/backend",
+            "dockerfile_location": "/Dockerfile",
+            "ports_exposes": "8000",
+            "domains": expected_domain,
+            "instant_deploy": False,
+            "is_auto_deploy_enabled": False,
+            "autogenerate_domain": False,
+            "health_check_enabled": True,
+            "health_check_path": "/health",
+            "health_check_port": "8000",
+            "health_check_method": "GET",
+            "health_check_scheme": "http",
+            "health_check_return_code": 200,
+        }
+        for key, expected in checks.items():
+            if json_body.get(key) != expected:
+                raise ProvisioningError(f"Backend Application payload field {key} does not match the approved Stage 5 contract.", error_type="safety")
+        if ":8000" in str(json_body.get("domains") or ""):
+            raise ProvisioningError("Backend Application public domain must not include the internal port.", error_type="safety")
+        for key in ("project_uuid", "environment_uuid", "server_uuid", "destination_uuid", "github_app_uuid"):
+            expected = self.backend_application_bindings.get(key)
+            if expected not in (None, "") and str(json_body.get(key)) != str(expected):
+                raise ProvisioningError(f"Backend Application payload binding {key} does not match the selected binding.", error_type="safety")
+        if json_body.get("environment_name") != "dev":
+            raise ProvisioningError("Backend Application payload must target environment_name=dev.", error_type="safety")
+        expected_repository = self.backend_application_bindings.get("git_repository") or self.backend_application_bindings.get("repository")
+        if not expected_repository or not normalize_repository(json_body.get("git_repository")) or normalize_repository(json_body.get("git_repository")) != normalize_repository(expected_repository):
+            raise ProvisioningError("Backend Application payload repository does not match the selected repository binding.", error_type="safety")
+
+    def _validate_backend_env_payload(self, json_body: dict[str, Any] | None) -> None:
+        if not isinstance(json_body, dict):
+            raise ProvisioningError("Backend env write requires an approved JSON object payload.", error_type="safety")
+        if self.expected_backend_env_contract is None:
+            raise ProvisioningError("Backend env writes require a bound desired env contract.", error_type="safety")
+        if set(json_body) - APPROVED_BACKEND_ENV_FIELDS:
+            raise ProvisioningError("Backend env payload contains fields outside the approved contract.", error_type="safety")
+        key = json_body.get("key")
+        if key not in BACKEND_ENV_KEYS:
+            raise ProvisioningError("Backend env payload key is not allowlisted.", error_type="safety")
+        required = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline"}
+        if key == "DATABASE_URL":
+            if set(json_body) != required | {"is_shown_once"}:
+                raise ProvisioningError("Backend env payload fields do not exactly match the approved secret contract.", error_type="safety")
+            if json_body.get("is_shown_once") is not True:
+                raise ProvisioningError("Backend env payload secret marker does not match the approved contract.", error_type="safety")
+            if not str(json_body.get("value") or "").startswith("postgresql+psycopg://"):
+                raise ProvisioningError("Backend env value does not match the bound desired contract.", error_type="safety")
+        else:
+            if set(json_body) != required:
+                raise ProvisioningError("Backend env payload fields do not exactly match the approved runtime contract.", error_type="safety")
+        expected_flags = {"is_runtime": True, "is_buildtime": False, "is_preview": False, "is_literal": True, "is_multiline": False}
+        for flag, expected in expected_flags.items():
+            if json_body.get(flag) is not expected:
+                raise ProvisioningError(f"Backend env payload flag {flag} does not match the approved contract.", error_type="safety")
+        expected_payload = self.expected_backend_env_contract.get(str(key))
+        if expected_payload is None or json_body != expected_payload:
+            raise ProvisioningError("Backend env value does not match the bound desired contract.", error_type="safety")
 
     @classmethod
     def from_env(cls, mode: ExecutionMode | None = None) -> "CoolifyClient":
         return cls(os.environ.get("COOLIFY_BASE_URL", ""), os.environ.get("COOLIFY_API_TOKEN", ""), mode=mode)
 
-    def _check_request(self, method: str, path: str, *, post_kind: str | None = None) -> None:
+    def _check_request(self, method: str, path: str, *, post_kind: str | None = None, json_body: dict[str, Any] | None = None) -> None:
         method = method.upper()
         if not path.startswith("/"):
             raise ProvisioningError("Coolify API path must start with '/'.")
         if FORBIDDEN_ENDPOINT_RE.search(path) or ("/start" in path and not (method == "POST" and post_kind == "postgresql_start" and re.fullmatch(r"/databases/[^/]+/start", path))):
             raise ProvisioningError(f"Lifecycle/deployment endpoint is forbidden in this stage: {path}", error_type="safety", method=method, path=path)
-        if method in {"PATCH", "PUT", "DELETE"}:
+        if method in {"PUT", "DELETE"}:
             raise ProvisioningError(f"Refusing non-read-only Coolify method {method}. Method {method} is always forbidden in this stage.", error_type="safety", method=method, path=path)
+        if method == "PATCH":
+            if post_kind != "backend_env_update" or not getattr(self.mode, "backend_env_writes_enabled", False):
+                raise ProvisioningError("Refusing non-read-only Coolify method PATCH. PATCH is allowed only for verified Backend Application env variables after env gates.", error_type="safety", method=method, path=path)
+            if not self._backend_env_path_matches_binding(path):
+                raise ProvisioningError("PATCH endpoint is limited to env vars for the verified Backend Application UUID binding.", error_type="safety", method=method, path=path)
+            self._validate_backend_env_payload(json_body)
         if method == "POST":
             self.mode.assert_write_gates()
-            if path.startswith("/applications"):
-                raise ProvisioningError("Application creation is forbidden in this stage.", error_type="safety", method=method, path=path)
+            if path.startswith("/applications") and post_kind not in {"backend_application_create", "backend_env_create"}:
+                raise ProvisioningError("Only Backend Application creation/env writes are allowlisted for applications in Stage 5.", error_type="safety", method=method, path=path)
+            if post_kind == "backend_application_create" and not getattr(self.mode, "backend_application_writes_enabled", False):
+                raise ProvisioningError("Backend Application creation requires COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES=true and exact --confirm-backend-application.", error_type="safety", method=method, path=path)
+            if post_kind == "backend_env_create" and not getattr(self.mode, "backend_env_writes_enabled", False):
+                raise ProvisioningError("Backend env writes require COOLIFY_ALLOW_BACKEND_ENV_WRITES=true and exact --confirm-backend-environment.", error_type="safety", method=method, path=path)
             if post_kind not in ALLOWED_POST_KINDS:
-                raise ProvisioningError("POST requires a stage-3 allowlisted operation kind.", error_type="safety", method=method, path=path)
+                raise ProvisioningError("POST requires a stage allowlisted operation kind.", error_type="safety", method=method, path=path)
             if post_kind == "project_create" and path != POST_PROJECT_CREATE:
                 raise ProvisioningError("Project creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
             if post_kind == "environment_create" and not re.fullmatch(r"/projects/[^/]+/environments", path):
                 raise ProvisioningError("Environment creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
             if post_kind == "postgresql_create" and path != POST_POSTGRES_CREATE:
                 raise ProvisioningError("PostgreSQL creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
+            if post_kind == "backend_application_create":
+                if path != POST_BACKEND_APPLICATION_CREATE:
+                    raise ProvisioningError("Backend Application creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
+                self._validate_backend_application_payload(json_body)
+            if post_kind == "backend_env_create":
+                if not self._backend_env_path_matches_binding(path):
+                    raise ProvisioningError("Backend env create endpoint is limited to the verified Backend Application UUID binding.", error_type="safety", method=method, path=path)
+                self._validate_backend_env_payload(json_body)
             if post_kind == "postgresql_start":
                 if not self.mode.database_start_enabled:
                     raise ProvisioningError("PostgreSQL start requires COOLIFY_ALLOW_DATABASE_START=true and exact --confirm-database-start before POST.", error_type="safety", method=method, path=path)
                 if not re.fullmatch(r"/databases/[^/]+/start", path):
                     raise ProvisioningError("PostgreSQL start POST endpoint must include the exact selected database UUID.", error_type="safety", method=method, path=path)
-        elif method not in READ_ONLY_METHODS:
+        elif method not in READ_ONLY_METHODS and method != "PATCH":
             raise ProvisioningError(f"Refusing non-read-only Coolify method {method}.", error_type="safety", method=method, path=path)
 
     def request(
@@ -249,7 +403,7 @@ class CoolifyClient:
         post_kind: str | None = None,
     ) -> Response:
         method = method.upper()
-        self._check_request(method, path, post_kind=post_kind)
+        self._check_request(method, path, post_kind=post_kind, json_body=json_body)
         headers = {
             "Accept": "application/json",
             "Authorization": f"Bearer {self.api_token}",
@@ -277,8 +431,9 @@ class CoolifyClient:
                         http_status=response.status,
                         method=method,
                         path=path,
-                        write_performed=method == "POST",
-                        write_outcome_unknown=False,
+                        write_performed=False,
+                        write_outcome_unknown=method in WRITE_METHODS,
+                        request_attempted=True,
                     )
                 return Response(response.status, data, dict(response.headers))
         except urllib.error.HTTPError as exc:
@@ -291,7 +446,8 @@ class CoolifyClient:
                 method=method,
                 path=path,
                 write_performed=False,
-                write_outcome_unknown=(method == "POST" and exc.code >= 500),
+                write_outcome_unknown=(method in WRITE_METHODS and exc.code >= 500),
+                request_attempted=True,
             ) from exc
         except (urllib.error.URLError, TimeoutError) as exc:
             raise ProvisioningError(
@@ -301,7 +457,8 @@ class CoolifyClient:
                 method=method,
                 path=path,
                 write_performed=False,
-                write_outcome_unknown=(method == "POST"),
+                write_outcome_unknown=(method in WRITE_METHODS),
+                request_attempted=True,
             ) from exc
         except json.JSONDecodeError as exc:
             raise ProvisioningError(
@@ -311,7 +468,8 @@ class CoolifyClient:
                 method=method,
                 path=path,
                 write_performed=False,
-                write_outcome_unknown=(method == "POST"),
+                write_outcome_unknown=(method in WRITE_METHODS),
+                request_attempted=True,
             ) from exc
 
     def get(self, path: str) -> Any:
@@ -330,6 +488,15 @@ class CoolifyClient:
     def start_postgresql(self, uuid: str) -> Response:
         path = f"/databases/{urllib.parse.quote(str(uuid), safe='')}/start"
         return self.request("POST", path, allowed_statuses={200, 201, 202}, post_kind="postgresql_start")
+
+    def create_backend_application(self, payload: dict[str, Any]) -> Response:
+        return self.request("POST", POST_BACKEND_APPLICATION_CREATE, json_body=payload, allowed_statuses={200, 201, 202}, post_kind="backend_application_create")
+
+    def create_backend_env(self, uuid: str, payload: dict[str, Any]) -> Response:
+        return self.request("POST", f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="backend_env_create")
+
+    def update_backend_env(self, uuid: str, payload: dict[str, Any]) -> Response:
+        return self.request("PATCH", f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="backend_env_update")
 
 
 def validate_base_url(value: str) -> str:
@@ -892,6 +1059,10 @@ def mode_from_args(args: argparse.Namespace) -> ExecutionMode:
         os.environ.get("COOLIFY_ALLOW_RESOURCE_WRITES") == "true",
         os.environ.get("COOLIFY_ALLOW_DATABASE_START") == "true",
         getattr(args, "confirm_database_start", None),
+        os.environ.get("COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES") == "true",
+        getattr(args, "confirm_backend_application", None),
+        os.environ.get("COOLIFY_ALLOW_BACKEND_ENV_WRITES") == "true",
+        getattr(args, "confirm_backend_environment", None),
     )
 
 
@@ -1390,10 +1561,377 @@ def ensure_postgresql_ready(client: CoolifyClient, args: argparse.Namespace, pos
         return {**polled, "start_requested": True, "request_attempted": True, "write_performed": True}
     return readiness_result("readiness_unverified", uuid, **flags)
 
+
+def backend_application_name(product: str) -> str:
+    return f"{product}-api-dev"
+
+
+def api_domain(product: str) -> str:
+    return f"https://api.dev.{product}.goodmorning.mx"
+
+
+def frontend_domain(product: str) -> str:
+    return f"https://dev.{product}.goodmorning.mx"
+
+
+def select_destination(server: dict[str, Any], args: argparse.Namespace, blockers: list[Any]) -> dict[str, Any] | None:
+    destinations = item_list(server.get("destinations") if isinstance(server, dict) else [])
+    selected = getattr(args, "destination_uuid", None)
+    if not destinations:
+        blockers.append({"resource": "destination", "status": "blocked", "reason": "no_destination_for_selected_server"})
+        return None
+    if selected:
+        matches = [d for d in destinations if str(field(d, "uuid", "id") or "") == str(selected)]
+        if len(matches) != 1:
+            blockers.append({"resource": "destination", "status": "blocked", "reason": "destination_not_on_selected_server"})
+            return None
+        return summary(matches[0], "name", "uuid", "id", "network")
+    if len(destinations) > 1:
+        blockers.append({"resource": "destination", "status": "blocked", "reason": "multiple_destinations_require_destination_uuid"})
+        return None
+    return summary(destinations[0], "name", "uuid", "id", "network")
+
+
+def backend_create_payload(args: argparse.Namespace, bindings: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "name": backend_application_name(args.product),
+        "project_uuid": bindings.get("project_uuid"),
+        "environment_uuid": bindings.get("environment_uuid"),
+        "environment_name": "dev",
+        "server_uuid": bindings.get("server_uuid"),
+        "destination_uuid": bindings.get("destination_uuid"),
+        "github_app_uuid": bindings.get("github_app_uuid"),
+        "git_repository": normalize_repository(args.repository),
+        "git_branch": "dev",
+        "build_pack": "dockerfile",
+        "base_directory": "/backend",
+        "dockerfile_location": "/Dockerfile",
+        "ports_exposes": "8000",
+        "domains": api_domain(args.product),
+        "instant_deploy": False,
+        "is_auto_deploy_enabled": False,
+        "autogenerate_domain": False,
+        "health_check_enabled": True,
+        "health_check_path": "/health",
+        "health_check_port": "8000",
+        "health_check_method": "GET",
+        "health_check_scheme": "http",
+        "health_check_return_code": 200,
+    }
+
+
+def backend_payload_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    return redact({k: v for k, v in payload.items() if k != "value"})
+
+
+def backend_application_differences(item: dict[str, Any], args: argparse.Namespace, context: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    expected = backend_create_payload(args, {**context, "destination_uuid": context.get("destination_uuid")})
+    paths = {
+        "name": ("name",), "git_repository": ("git_repository", "repository"), "git_branch": ("git_branch", "branch"),
+        "build_pack": ("build_pack", "buildpack"), "base_directory": ("base_directory",), "dockerfile_location": ("dockerfile_location", "dockerfile"),
+        "ports_exposes": ("ports_exposes",), "domains": ("domains", "domain"), "github_app_uuid": ("github_app_uuid", "source.uuid", "github_app.uuid"),
+        "destination_uuid": ("destination_uuid", "destination.uuid", "destination.id"),
+    }
+    diffs=[]; unver=[]
+    for key, ps in paths.items():
+        actual = nested_field(item, *ps); exp = expected.get(key)
+        if actual in (None, ""):
+            unver.append({"field": key, "expected": exp})
+        elif key == "domains" and ":8000" in normalize_domain(actual):
+            diffs.append({"field": key, "expected": exp, "actual": "contains_port"})
+        elif not normalized_equal(key, actual, exp):
+            diffs.append({"field": key, "expected": exp, "actual": actual})
+    for key in ("instant_deploy", "is_auto_deploy_enabled", "autogenerate_domain"):
+        actual = nested_field(item, key)
+        if actual in (None, ""):
+            continue
+        if bool_value(actual) is not False:
+            diffs.append({"field": key, "expected": False, "actual": actual})
+    hc = {"health_check_enabled": True, "health_check_path": "/health", "health_check_port": "8000", "health_check_method": "GET", "health_check_scheme": "http", "health_check_return_code": 200}
+    for key, exp in hc.items():
+        actual = nested_field(item, key)
+        if actual in (None, ""):
+            unver.append({"field": key, "expected": exp})
+        elif str(actual).lower() != str(exp).lower():
+            diffs.append({"field": key, "expected": exp, "actual": actual})
+    return diffs, unver
+
+
+def classify_backend_application(matches: list[dict[str, Any]], args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    name = backend_application_name(args.product)
+    if not matches: return {"name": name, "status": "absent"}
+    scoped=[]; reports=[]
+    for item in matches:
+        scope, details = resource_scope(item, context)
+        reports.append({"resource": operational_summary(item), "scope": scope, "scope_details": details})
+        if scope == "in_scope": scoped.append(item)
+    if not scoped:
+        return {"name": name, "status": "out_of_scope" if all(r["scope"]=="out_of_scope" for r in reports) else "scope_unverified", "matches": reports}
+    if len(scoped)>1: return {"name": name, "status": "duplicate", "matches": [operational_summary(i) for i in scoped]}
+    item=scoped[0]
+    diffs, unver = backend_application_differences(item,args,context)
+    if diffs: return {"name": name, "status": "incompatible", "uuid": field(item,"uuid","id"), "differences": diffs, "matches": reports}
+    if unver: return {"name": name, "status": "compatibility_unverified", "uuid": field(item,"uuid","id"), "unverified_fields": unver, "matches": reports}
+    return {"name": name, "status": "exists", "uuid": field(item,"uuid","id"), "matches": reports}
+
+
+def exact_backend_matches(client: CoolifyClient, args: argparse.Namespace) -> list[dict[str, Any]]:
+    name=backend_application_name(args.product)
+    return [i for i in item_list(client.get("/applications")) if str(field(i,"name") or "") == name]
+
+
+def hydrate_application_by_uuid(client: CoolifyClient, uuid: Any, fallback: dict[str, Any]) -> dict[str, Any]:
+    detail=client.get(f"/applications/{uuid}")
+    item=detail.get("data") if isinstance(detail,dict) and isinstance(detail.get("data"),dict) else detail
+    if not isinstance(item,dict): raise ProvisioningError("Application detail endpoint returned an unsupported shape.", error_type="coolify_api", code=2)
+    return {**fallback, **item, "_discovery_source":"applications", "_detail_hydrated": True}
+
+
+def postgres_driver_url(client: CoolifyClient, postgres: dict[str, Any]) -> str | None:
+    uuid=postgres.get("uuid")
+    if not uuid: return None
+    detail=hydrate_database_by_uuid(client, uuid, postgres)
+    raw=nested_field(detail,"internal_db_url")
+    if not isinstance(raw,str): return None
+    return prepare_psycopg_database_url(raw)
+
+
+def postgres_backend_precondition(client: CoolifyClient, args: argparse.Namespace, postgres: dict[str, Any], readiness: dict[str, Any]) -> tuple[bool, list[dict[str, Any]], str | None]:
+    blockers=[]; url=None
+    if postgres.get("name") != f"{args.product}-postgres-dev" or postgres.get("status") not in {"exists","created"}:
+        blockers.append({"resource":"postgresql","reason":"identity_or_compatibility_unverified"})
+    if readiness.get("status") not in {"healthy","already_healthy"}:
+        blockers.append({"resource":"postgresql","reason":"not_healthy"})
+    if not readiness.get("internal_db_url_available"):
+        blockers.append({"resource":"postgresql","reason":"internal_db_url_unavailable"})
+    if not readiness.get("database_url_driver_ready"):
+        blockers.append({"resource":"postgresql","reason":"database_url_driver_not_ready"})
+    if not blockers:
+        try: url=postgres_driver_url(client, postgres)
+        except ProvisioningError: blockers.append({"resource":"postgresql","reason":"database_url_driver_not_ready"})
+    return (not blockers), blockers, url
+
+
+def ensure_backend_application(client: CoolifyClient, args: argparse.Namespace, context: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]], precondition_ok: bool) -> dict[str, Any]:
+    if hasattr(client, "bind_backend_application_bindings"):
+        client.bind_backend_application_bindings(dict(context))
+    matches=[]
+    for m in exact_backend_matches(client,args):
+        uuid=field(m,"uuid","id")
+        if uuid:
+            try: m=hydrate_application_by_uuid(client,uuid,m)
+            except ProvisioningError: pass
+        matches.append(m)
+    classified=classify_backend_application(matches,args,context)
+    st=classified["status"]
+    if st == "exists":
+        if hasattr(client, "bind_backend_application_uuid"):
+            client.bind_backend_application_uuid(classified.get("uuid"), context)
+        actions.append(ActionRecord("backend_application","reuse","exists",verified=True).to_dict()); return classified
+    if st in {"duplicate","incompatible","compatibility_unverified","scope_unverified","out_of_scope"}:
+        return {**classified, "status": "recreate_required" if st=="incompatible" else st}
+    if not precondition_ok:
+        return {"name": backend_application_name(args.product), "status":"blocked"}
+    if not mode.is_apply:
+        actions.append(ActionRecord("backend_application","plan_create","would_create").to_dict())
+        return {"name": backend_application_name(args.product), "status":"would_create", "create_payload_preview": backend_payload_preview(backend_create_payload(args,context))}
+    if not mode.backend_application_writes_enabled:
+        return {"name": backend_application_name(args.product), "status":"blocked", "reason":"backend_application_gates_incomplete"}
+    payload=backend_create_payload(args,context); actions.append(ActionRecord("backend_application","attempt_create","attempted").to_dict())
+    try:
+        resp=client.create_backend_application(payload)
+    except ProvisioningError as exc:
+        if exc.write_outcome_unknown:
+            actions.append(ActionRecord("backend_application","create","write_outcome_unknown",request_attempted=True,write_outcome_unknown=True).to_dict())
+            return {"name":backend_application_name(args.product),"status":"write_outcome_unknown","request_attempted":True,"write_outcome_unknown":True}
+        if exc.http_status in {409,422}:
+            rematches=[hydrate_application_by_uuid(client, field(m,"uuid","id"), m) if field(m,"uuid","id") else m for m in exact_backend_matches(client,args)]
+            recovered=classify_backend_application(rematches,args,context)
+            if recovered.get("status")=="exists":
+                if hasattr(client, "bind_backend_application_uuid"):
+                    client.bind_backend_application_uuid(recovered.get("uuid"), context)
+                actions.append(ActionRecord("backend_application","recover_after_conflict","exists",request_attempted=True,verified=True,recovered_after_conflict=True).to_dict())
+                return {**recovered,"recovered_after_conflict":True}
+        raise
+    item=resp.data.get("data") if isinstance(resp.data,dict) and isinstance(resp.data.get("data"),dict) else resp.data
+    uuid=field(item,"uuid","id") if isinstance(item,dict) else None
+    if not uuid:
+        actions.append(ActionRecord("backend_application","create","created_unverified",request_attempted=True,write_performed=True).to_dict())
+        return {"name":backend_application_name(args.product),"status":"created_unverified","write_performed":True}
+    try: detail=hydrate_application_by_uuid(client,uuid,item)
+    except ProvisioningError:
+        actions.append(ActionRecord("backend_application","create","created_unverified",request_attempted=True,write_performed=True).to_dict()); return {"name":backend_application_name(args.product),"uuid":uuid,"status":"created_unverified","write_performed":True}
+    verified=classify_backend_application([detail],args,context)
+    if verified.get("status")=="exists":
+        if hasattr(client, "bind_backend_application_uuid"):
+            client.bind_backend_application_uuid(verified.get("uuid"), context)
+        actions.append(ActionRecord("backend_application","create","created",request_attempted=True,write_performed=True,verified=True).to_dict())
+        return {**verified,"status":"created"}
+    return {**verified,"status":"created_unverified","write_performed":True}
+
+
+def desired_backend_env(product: str, database_url: str | None) -> list[dict[str, Any]]:
+    base={"is_runtime":True,"is_buildtime":False,"is_preview":False,"is_literal":True,"is_multiline":False}
+    return [
+        {"key":"DATABASE_URL","value":database_url,"secret":True, **base},
+        {"key":"APP_ENV","value":"dev","secret":False, **base},
+        {"key":"CORS_ORIGINS","value":frontend_domain(product),"secret":False, **base},
+    ]
+
+
+def env_payload(desired: dict[str, Any]) -> dict[str, Any]:
+    payload={k:desired[k] for k in ("key","value","is_runtime","is_buildtime","is_preview","is_literal","is_multiline")}
+    if desired.get("secret"): payload["is_shown_once"]=True
+    return payload
+
+
+def env_value(item: dict[str, Any]) -> tuple[bool, Any]:
+    for k in ("value","real_value"):
+        if k in item and item[k] not in (None, "********", "*****"):
+            return True,item[k]
+    return False,None
+
+
+def env_flags_compatible(item: dict[str, Any], desired: dict[str, Any]) -> bool:
+    for key in ("is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline"):
+        if bool_value(item.get(key)) != desired[key]:
+            return False
+    return True
+
+
+def locate_env_variable(envs: list[dict[str, Any]], desired: dict[str, Any]) -> dict[str, Any]:
+    key = desired["key"]
+    matches = [item for item in envs if item.get("key") == key and bool_value(item.get("is_preview")) is False]
+    row = {"key": key, "desired_flags": {k: desired[k] for k in ("is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline")}, "driver_ready": bool(desired.get("value")) if key == "DATABASE_URL" else None, "value_available": False, "value_verified": False}
+    if len(matches) > 1:
+        return {**row, "status": "duplicate", "compatible": False}
+    if not matches:
+        return {**row, "status": "absent", "compatible": False}
+    found = matches[0]
+    available, value = env_value(found)
+    row["value_available"] = available
+    flags_ok = env_flags_compatible(found, desired)
+    if key == "DATABASE_URL" and not available:
+        return {**row, "status": "secret_value_unverified", "compatible": "unverified"}
+    value_ok = available and value == desired.get("value")
+    row["value_verified"] = value_ok
+    if flags_ok and value_ok:
+        return {**row, "status": "exists", "compatible": True}
+    return {**row, "status": "incompatible", "compatible": False}
+
+
+def rediscover_envs_after_write(client: CoolifyClient, uuid: str, desired: dict[str, Any], operation: str) -> tuple[list[dict[str, Any]] | None, dict[str, Any]]:
+    try:
+        envs = item_list(client.get(f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs"))
+    except ProvisioningError:
+        suffix = "created_unverified" if operation == "create" else "updated_unverified"
+        return None, {"key": desired["key"], "status": suffix, "verified": False, "value_available": False, "value_verified": False}
+    row = locate_env_variable(envs, desired)
+    if row["status"] == "exists":
+        return envs, {**row, "status": "created" if operation == "create" else "patched", "verified": True}
+    if row["status"] == "secret_value_unverified":
+        return envs, {**row, "verified": False}
+    if row["status"] == "duplicate":
+        return envs, {**row, "verified": False}
+    suffix = "created_unverified" if operation == "create" else "updated_unverified"
+    return envs, {**row, "status": suffix, "verified": False}
+
+
+def env_write_action(resource_key: str, operation: str, status: str, *, request_attempted: bool, write_performed: bool = False, write_outcome_unknown: bool = False, verified: bool = False, recovered_after_conflict: bool = False) -> dict[str, Any]:
+    return ActionRecord(
+        "backend_environment",
+        f"{operation}_{resource_key}",
+        status,
+        request_attempted=request_attempted,
+        write_performed=write_performed,
+        write_outcome_unknown=write_outcome_unknown,
+        verified=verified,
+        recovered_after_conflict=recovered_after_conflict,
+        details={"key": resource_key, "operation": operation},
+    ).to_dict()
+
+
+def reconcile_env_conflict(client: CoolifyClient, uuid: str, desired: dict[str, Any], operation: str) -> tuple[list[dict[str, Any]] | None, dict[str, Any], dict[str, Any]]:
+    envs, row = rediscover_envs_after_write(client, uuid, desired, operation)
+    if row.get("status") in {"created", "patched"}:
+        row["recovered_after_conflict"] = True
+        action = env_write_action(desired["key"], operation, row["status"], request_attempted=True, write_performed=False, verified=True, recovered_after_conflict=True)
+        return envs, row, action
+    action = env_write_action(desired["key"], operation, row.get("status", "blocked"), request_attempted=True, write_performed=False, verified=False)
+    return envs, row, action
+
+
+def reconcile_backend_environment(client: CoolifyClient, args: argparse.Namespace, backend: dict[str, Any], db_url: str | None, mode: ExecutionMode, actions: list[dict[str, Any]]) -> dict[str, Any]:
+    uuid=backend.get("uuid")
+    results=[]; blockers=[]
+    if backend.get("status") not in {"exists","created"} or not uuid:
+        return {"status":"blocked","variables":[],"blockers":[{"reason":"backend_application_not_verified"}]}
+    desired_env = desired_backend_env(args.product, db_url)
+    if hasattr(client, "bind_backend_env_contract"):
+        client.bind_backend_env_contract(desired_env)
+    envs=item_list(client.get(f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs"))
+    for desired in desired_env:
+        key=desired["key"]
+        row=locate_env_variable(envs, desired)
+        if row["status"] == "duplicate":
+            blockers.append({"resource":"backend_environment","key":key,"reason":"duplicate"}); results.append(row); break
+        if row["status"] == "exists":
+            results.append(row); continue
+        if row["status"] == "secret_value_unverified":
+            blockers.append({"resource":"backend_environment","key":key,"reason":"secret_value_unverified"}); results.append(row); continue
+        operation = "create" if row["status"] == "absent" else "update"
+        row["action"] = "would_create" if operation == "create" and not mode.is_apply else ("would_patch" if not mode.is_apply else operation)
+        if not mode.is_apply:
+            results.append(row); continue
+        if not mode.backend_env_writes_enabled:
+            row["status"]="blocked"; blockers.append({"resource":"backend_environment","key":key,"reason":"backend_env_gates_incomplete"}); results.append(row); break
+        try:
+            if operation == "create":
+                client.create_backend_env(str(uuid), env_payload(desired))
+            else:
+                client.update_backend_env(str(uuid), env_payload(desired))
+        except ProvisioningError as exc:
+            if exc.write_outcome_unknown:
+                row.update({"status":"write_outcome_unknown", "write_outcome_unknown": True})
+                actions.append(env_write_action(key, operation, "write_outcome_unknown", request_attempted=True, write_outcome_unknown=True))
+                blockers.append({"resource":"backend_environment","key":key,"reason":"write_outcome_unknown"}); results.append(row); break
+            if exc.http_status in {409, 422}:
+                envs, row, action = reconcile_env_conflict(client, str(uuid), desired, operation)
+                actions.append(action); results.append(row)
+                if row.get("status") == "secret_value_unverified":
+                    blockers.append({"resource":"backend_environment","key":key,"reason":"secret_value_unverified"}); continue
+                if row.get("status") not in {"created", "patched"}:
+                    blockers.append({"resource":"backend_environment","key":key,"reason":row.get("status")}); break
+                continue
+            raise
+        envs, verified_row = rediscover_envs_after_write(client, str(uuid), desired, operation)
+        results.append(verified_row)
+        actions.append(env_write_action(key, operation, verified_row["status"], request_attempted=True, write_performed=True, verified=bool(verified_row.get("verified"))))
+        if verified_row.get("status") == "secret_value_unverified":
+            blockers.append({"resource":"backend_environment","key":key,"reason":"secret_value_unverified"}); continue
+        if verified_row.get("status") not in {"created", "patched"}:
+            blockers.append({"resource":"backend_environment","key":key,"reason":verified_row.get("status")}); break
+    if not mode.is_apply:
+        status="planned"
+    elif blockers:
+        if any(r.get("status") == "secret_value_unverified" for r in results):
+            status="secret_value_unverified"
+        elif any(r.get("status") == "duplicate" for r in results):
+            status="partial"
+        elif any(r.get("status") in {"created_unverified", "updated_unverified", "write_outcome_unknown"} for r in results):
+            status="partial"
+        else:
+            status="blocked"
+    else:
+        status="exists"
+    return {"status":status,"variables":results,"blockers":blockers}
+
 def global_status(mode: ExecutionMode, resources: list[dict[str, Any]], blockers: list[Any], actions: list[dict[str, Any]], readiness: dict[str, Any] | None = None) -> str:
     statuses = {resource.get("status") for resource in resources}
     write_performed = any(action.get("write_performed") for action in actions) or any(resource.get("write_performed") for resource in resources)
     write_outcome_unknown = any(action.get("write_outcome_unknown") for action in actions) or any(resource.get("write_outcome_unknown") for resource in resources)
+    if not mode.is_apply:
+        return "dry_run"
     if mode.is_apply and readiness and (readiness.get("write_outcome_unknown") or readiness.get("status") in READINESS_FAILURE_STATUSES):
         return "partial" if readiness.get("write_outcome_unknown") else readiness.get("status")
     if "incompatible" in statuses:
@@ -1416,6 +1954,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
     warnings: list[Any] = []
     blockers: list[Any] = []
     server = select_unique_by_name(item_list(client.get("/servers")), args.server, "server")
+    destination = select_destination(server, args, blockers)
     github_app = select_unique_by_name(item_list(client.get("/github-apps")), args.github_app, "GitHub App")
     server_summary = summary(server, "name", "uuid", "id")
     github_app_summary = summary(github_app, "name", "uuid", "id")
@@ -1447,6 +1986,8 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         "environment_name": "dev",
         "server_uuid": server_uuid,
         "github_app_uuid": github_app_summary.get("uuid") or github_app_summary.get("id"),
+        "destination_uuid": (destination or {}).get("uuid") or (destination or {}).get("id"),
+        "git_repository": args.repository,
     }
     discovery = {
         "project": {"name": args.coolify_project, "uuid": project.get("uuid")},
@@ -1456,39 +1997,59 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         "bindings": context,
         "existing_resources": discover_existing_resources(client, args.product, context, args),
     }
+    precondition_ok, pg_blockers, database_url = postgres_backend_precondition(client, args, postgres, postgresql_readiness)
+    blockers.extend(pg_blockers if mode.is_apply else [])
+    if destination is None:
+        precondition_ok = False
+    backend = ensure_backend_application(client, args, context, mode, actions, precondition_ok)
+    if backend.get("status") in {"duplicate", "compatibility_unverified", "scope_unverified", "recreate_required", "blocked", "created_unverified", "write_outcome_unknown"}:
+        blockers.append({"resource": "backend_application", "status": backend.get("status")})
+    backend_env = reconcile_backend_environment(client, args, backend, database_url, mode, actions) if backend.get("status") in {"exists", "created"} and precondition_ok else {"status": "blocked" if mode.is_apply else "planned", "variables": [], "blockers": []}
+    blockers.extend(backend_env.get("blockers", []))
     plan = build_plan(args, discovery)
     plan["mode"] = mode.name
+    allowed_posts = [] if not mode.is_apply else sorted({"project_create", "environment_create", "postgresql_create"} | ({"postgresql_start"} if mode.database_start_enabled else set()) | ({"backend_application_create"} if mode.backend_application_writes_enabled else set()) | ({"backend_env_create"} if mode.backend_env_writes_enabled else set()))
     plan["safety"] = {
         "writes_enabled": mode.is_apply and mode.allow_resource_writes and mode.confirm_product == mode.product,
-        "allowed_post_operations": sorted(ALLOWED_POST_KINDS if mode.database_start_enabled else (ALLOWED_POST_KINDS - {"postgresql_start"})) if mode.is_apply else [],
+        "allowed_post_operations": allowed_posts,
+        "allowed_patch_operations": ["backend_env_update"] if mode.is_apply and mode.backend_env_writes_enabled else [],
         "database_start_enabled": mode.database_start_enabled,
-        "forbidden_methods": ["PATCH", "PUT", "DELETE"],
+        "forbidden_methods": ["PUT", "DELETE"],
         "deploy_actions_enabled": False,
-        "application_creation_enabled": False,
+        "application_creation_enabled": mode.backend_application_writes_enabled,
     }
     for resource in plan["resources"]:
         if resource["name"] == f"{args.product}-postgres-dev":
             resource.update({"status": postgres.get("status"), "provisioning": postgres})
+        elif resource["name"] == backend_application_name(args.product):
+            resource.update({"status": backend.get("status"), "provisioning": backend})
+            resource["create_payload_preview"] = backend_payload_preview(backend_create_payload(args, context))
         else:
             resource["status"] = "planned_later"
-    status = global_status(mode, [project, environment, postgres], blockers, actions, postgresql_readiness)
+    status = global_status(mode, [project, environment, postgres, backend, backend_env], blockers, actions, postgresql_readiness)
     return redact({
         **plan,
         "status": status,
         "mode": mode.name,
         "safety_gates": mode.gates(),
         "selected_server": server_summary,
+        "selected_destination": destination,
         "project": project,
         "environment_resource": environment,
         "postgresql": postgres,
         "postgresql_readiness": postgresql_readiness,
+        "backend_application": backend,
+        "backend_environment": backend_env,
         "actions": actions,
         "warnings": warnings,
         "blockers": blockers,
         "contract": {
-            "confirmed_endpoints": ["POST /api/v1/projects", "POST /api/v1/projects/{project_uuid}/environments", "POST /api/v1/databases/postgresql", "GET /api/v1/databases/{uuid}", "POST /api/v1/databases/{uuid}/start"],
+            "confirmed_endpoints": ["POST /api/v1/projects", "POST /api/v1/projects/{project_uuid}/environments", "POST /api/v1/databases/postgresql", "GET /api/v1/databases/{uuid}", "POST /api/v1/databases/{uuid}/start", "POST /api/v1/applications/private-github-app", "GET /api/v1/applications/{uuid}", "GET /api/v1/applications/{uuid}/envs", "POST /api/v1/applications/{uuid}/envs", "PATCH /api/v1/applications/{uuid}/envs"],
             "postgresql_payload_preview": redact(postgresql_create_payload(args, "${project.uuid}", "${server.uuid}", "${generated_secret}")),
             "postgresql_payload_source": "Coolify OpenAPI/API reference for create PostgreSQL database; version is represented by the image field in this isolated builder pending any upstream contract rename.",
+            "backend_application_payload_preview": backend_payload_preview(backend_create_payload(args, context)),
+            "backend_env_keys": sorted(BACKEND_ENV_KEYS),
+            "upstream_sources": ["coollabsio/coolify openapi.yaml v4.x", "coollabsio/coolify ApplicationsController.php v4.x", "coollabsio/coolify-cli v4.x", "coolify.io official docs", "goodmorning-mx/goodmorning-mvp-template backend/app/config.py dev"],
         },
     })
 
@@ -1519,6 +2080,9 @@ def build_parser() -> argparse.ArgumentParser:
     mode.add_argument("--apply", action="store_true")
     parser.add_argument("--confirm-product")
     parser.add_argument("--confirm-database-start")
+    parser.add_argument("--confirm-backend-application")
+    parser.add_argument("--confirm-backend-environment")
+    parser.add_argument("--destination-uuid")
     parser.add_argument("--postgres-readiness-interval", type=float, default=5.0)
     parser.add_argument("--postgres-readiness-timeout", type=float, default=300.0)
     return parser
