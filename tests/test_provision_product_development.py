@@ -46,6 +46,34 @@ class FakeClient:
             raise value
         return value
 
+    def create_frontend_application(self, payload):
+        self.calls.append(("POST", "/applications/private-github-app", payload))
+        value = self.payloads.get("POST frontend /applications/private-github-app", pp.Response(201, {"uuid":"front-1", "name":"ledger-frontend-dev"}, {}))
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    def create_frontend_env(self, uuid, payload):
+        self.calls.append(("POST", f"/applications/{uuid}/envs", payload))
+        value = self.payloads.get(f"POST frontend /applications/{uuid}/envs", pp.Response(201, {"key": payload.get("key")}, {}))
+        if isinstance(value, Exception):
+            raise value
+        if self.payloads.get("__mutate_envs__", True):
+            self.payloads.setdefault(f"/applications/{uuid}/envs", [])
+            self.payloads[f"/applications/{uuid}/envs"].append(dict(payload))
+        return value
+
+    def update_frontend_env(self, uuid, payload):
+        self.calls.append(("PATCH", f"/applications/{uuid}/envs", payload))
+        value = self.payloads.get(f"PATCH frontend /applications/{uuid}/envs", pp.Response(200, {"key": payload.get("key")}, {}))
+        if isinstance(value, Exception):
+            raise value
+        if self.payloads.get("__mutate_envs__", True):
+            envs = self.payloads.setdefault(f"/applications/{uuid}/envs", [])
+            envs[:] = [item for item in envs if item.get("key") != payload.get("key")]
+            envs.append(dict(payload))
+        return value
+
     def create_backend_application(self, payload):
         self.calls.append(("POST", "/applications/private-github-app", payload))
         value = self.payloads.get("POST /applications/private-github-app", pp.Response(201, {"uuid":"api-1", "name":"ledger-api-dev"}, {}))
@@ -1031,7 +1059,7 @@ class Stage4PostgresqlReadinessTests(unittest.TestCase):
         result=pp.provision(args(), client_factory=lambda: client)
         apps=[r for r in result["resources"] if r["kind"]=="application"]
         self.assertIn(apps[0]["status"], {"would_create", "compatibility_unverified", "exists"})
-        self.assertEqual(apps[1]["status"], "planned_later")
+        self.assertEqual(apps[1]["status"], "planned_after_backend")
         real=pp.CoolifyClient("https://coolify.example","token")
         for method,path in [("POST","/applications"),("POST","/applications/a/start"),("POST","/databases/db-1/restart"),("POST","/databases/db-1/stop"),("PATCH","/databases/db-1")]:
             with self.assertRaises(pp.ProvisioningError):
@@ -1195,7 +1223,7 @@ class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
         r=pp.provision(args(), client_factory=lambda:c)
         self.assertEqual(r["backend_application"]["status"], "would_create")
         self.assertFalse(any(call[0] != "GET" for call in c.calls))
-        self.assertEqual(r["resources"][2]["status"], "planned_later")
+        self.assertEqual(r["resources"][2]["status"], "planned_after_backend")
 
     def test_stage5_existing_backend_compatible_exists(self):
         c=self.healthy_client()
@@ -1484,3 +1512,96 @@ class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
             client._check_request("POST","/applications/private-github-app",post_kind="backend_application_create",json_body=bad)
         with self.assertRaises(pp.ProvisioningError):
             client.bind_backend_application_bindings({**bindings,"git_repository":"other/repo"})
+
+
+class Stage6FrontendApplicationTests(ProductDevelopmentProvisionerTests):
+    def frontend_app(self, **overrides):
+        data = {"uuid":"front-1", "name":"ledger-frontend-dev", "type":"application", "project_uuid":"project-1", "environment_uuid":"env-1", "server_uuid":"server-1", "destination_uuid":"dest-1", "github_app_uuid":"app-1", "git_repository":"goodmorning-mx/ledger", "git_branch":"dev", "build_pack":"dockerfile", "base_directory":"/frontend", "dockerfile_location":"/Dockerfile", "ports_exposes":"80", "domains":"https://dev.ledger.goodmorning.mx", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/", "health_check_port":"80", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
+        data.update(overrides)
+        return data
+
+    def test_stage6_dry_run_get_only_and_three_resources(self):
+        c=self.client(**{"/applications":[self.client().payloads["/applications"][0]]})
+        r=pp.provision(args(), client_factory=lambda:c)
+        self.assertEqual(len(r["resources"]),3)
+        self.assertFalse(any(call[0] in {"POST","PATCH"} for call in c.calls))
+        self.assertIn(r["frontend_application"]["status"], {"planned_after_backend","would_create"})
+
+    def test_stage6_frontend_compatible_duplicate_and_incompatible_cases(self):
+        context={"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1","git_repository":"goodmorning-mx/ledger"}
+        self.assertEqual(pp.classify_frontend_application([self.frontend_app()], args(), context)["status"], "exists")
+        self.assertEqual(pp.classify_frontend_application([self.frontend_app(), self.frontend_app(uuid="front-2")], args(), context)["status"], "duplicate")
+        for field,value in (("git_repository","bad/repo"),("git_branch","main"),("github_app_uuid","bad"),("destination_uuid","bad"),("base_directory","/web"),("dockerfile_location","Dockerfile"),("ports_exposes","3000"),("domains","https://dev.ledger.goodmorning.mx:80"),("is_auto_deploy_enabled",True),("health_check_path","/health")):
+            self.assertEqual(pp.classify_frontend_application([self.frontend_app(**{field:value})], args(), context)["status"], "incompatible", field)
+
+    def test_stage6_frontend_payload_and_domain_validation(self):
+        context={"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1","git_repository":"goodmorning-mx/ledger"}
+        payload=pp.frontend_create_payload(args(), context)
+        self.assertEqual(set(payload), pp.APPROVED_FRONTEND_APPLICATION_FIELDS)
+        self.assertEqual(payload["ports_exposes"], "80")
+        self.assertEqual(payload["domains"], "https://dev.ledger.goodmorning.mx")
+        mode=pp.ExecutionMode('apply','ledger','ledger',True,False,None,False,None,False,None,True,'ledger-frontend-dev')
+        client=pp.CoolifyClient('https://coolify.example','unit-test-token',mode=mode)
+        client.bind_frontend_application_bindings(context)
+        client._check_request('POST','/applications/private-github-app',post_kind='frontend_application_create',json_body=payload)
+        bad=dict(payload); bad['domains']='https://dev.ledger.goodmorning.mx:3000'
+        with self.assertRaises(pp.ProvisioningError): client._check_request('POST','/applications/private-github-app',post_kind='frontend_application_create',json_body=bad)
+        bad=dict(payload); bad['extra']=True
+        with self.assertRaises(pp.ProvisioningError): client._check_request('POST','/applications/private-github-app',post_kind='frontend_application_create',json_body=bad)
+
+    def test_stage6_apply_gates_and_post_then_verify(self):
+        front=self.frontend_app()
+        api={**self.client().payloads["/applications"][0], "destination_uuid":"dest-1", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/health", "health_check_port":"8000", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
+        c=self.client(**{"/applications":[api], "/applications/api-1":api, "/applications/front-1":front, "/applications/front-1/envs":[]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_FRONTEND_ENV_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False, apply=True, confirm_product="ledger", confirm_frontend_application="ledger-frontend-dev", confirm_frontend_environment="ledger-frontend-dev"), client_factory=lambda:c)
+        posts=[call for call in c.calls if call[0]=="POST" and call[1]=="/applications/private-github-app"]
+        self.assertEqual(len(posts),1)
+        self.assertEqual(posts[0][2], pp.frontend_create_payload(args(), {"project_uuid":"project-1","environment_uuid":"env-1","environment_name":"dev","server_uuid":"server-1","github_app_uuid":"app-1","destination_uuid":"dest-1","git_repository":"goodmorning-mx/ledger"}))
+        self.assertIn(("GET","/applications/front-1"), c.calls)
+
+    def test_stage6_vite_api_url_env_contract_and_writes(self):
+        desired=pp.desired_frontend_env("ledger", "https://api.dev.ledger.goodmorning.mx")[0]
+        self.assertEqual(pp.frontend_env_payload(desired), {"key":"VITE_API_URL","value":"https://api.dev.ledger.goodmorning.mx","is_runtime":False,"is_buildtime":True,"is_preview":False,"is_literal":True,"is_multiline":False})
+        for url in ("http://api.dev.ledger.goodmorning.mx","https://api.dev.ledger.goodmorning.mx:80","https://localhost","https://api.dev.ledger.goodmorning.mx/path"):
+            with self.assertRaises(pp.ProvisioningError): pp.desired_frontend_env("ledger", url)
+        mode=pp.ExecutionMode('apply','ledger','ledger',True,False,None,False,None,False,None,True,'ledger-frontend-dev',True,'ledger-frontend-dev')
+        client=pp.CoolifyClient('https://coolify.example','unit-test-token',mode=mode)
+        client.bind_backend_application_uuid('api-1', {})
+        client.bind_frontend_application_uuid('front-1', {})
+        client.bind_frontend_env_contract([desired])
+        client._check_request('POST','/applications/front-1/envs',post_kind='frontend_env_create',json_body=pp.frontend_env_payload(desired))
+        client._check_request('PATCH','/applications/front-1/envs',post_kind='frontend_env_update',json_body=pp.frontend_env_payload(desired))
+        with self.assertRaises(pp.ProvisioningError): client._check_request('POST','/applications/api-1/envs',post_kind='frontend_env_create',json_body=pp.frontend_env_payload(desired))
+        bad=pp.frontend_env_payload(desired); bad['key']='DATABASE_URL'
+        with self.assertRaises(pp.ProvisioningError): client._check_request('POST','/applications/front-1/envs',post_kind='frontend_env_create',json_body=bad)
+        bad=pp.frontend_env_payload(desired); bad['is_runtime']=True
+        with self.assertRaises(pp.ProvisioningError): client._check_request('POST','/applications/front-1/envs',post_kind='frontend_env_create',json_body=bad)
+        bad=pp.frontend_env_payload(desired); bad['is_shown_once']=True
+        with self.assertRaises(pp.ProvisioningError): client._check_request('POST','/applications/front-1/envs',post_kind='frontend_env_create',json_body=bad)
+
+    def test_stage6_env_reconcile_absent_exact_duplicate_and_patch(self):
+        front={"status":"exists","uuid":"front-1"}; back={"status":"exists","uuid":"api-1"}
+        c=self.client(**{"/applications/front-1/envs":[]})
+        res=pp.reconcile_frontend_environment(c,args(),front,back,pp.ExecutionMode('dry_run','ledger',None,False),[])
+        self.assertEqual(res["variables"][0]["action"], "would_create")
+        exact={"key":"VITE_API_URL","value":"https://api.dev.ledger.goodmorning.mx","is_runtime":False,"is_buildtime":True,"is_preview":False,"is_literal":True,"is_multiline":False}
+        c=self.client(**{"/applications/front-1/envs":[exact]})
+        self.assertEqual(pp.reconcile_frontend_environment(c,args(),front,back,pp.ExecutionMode('dry_run','ledger',None,False),[])["variables"][0]["status"], "exists")
+        c=self.client(**{"/applications/front-1/envs":[exact,dict(exact)]})
+        self.assertEqual(pp.reconcile_frontend_environment(c,args(),front,back,pp.ExecutionMode('dry_run','ledger',None,False),[])["status"], "planned")
+        mode=pp.ExecutionMode('apply','ledger','ledger',True,False,None,False,None,False,None,True,'ledger-frontend-dev',True,'ledger-frontend-dev')
+        c=self.client(**{"/applications/front-1/envs":[{**exact,"value":"https://api.dev.other.goodmorning.mx"}]})
+        actions=[]; res=pp.reconcile_frontend_environment(c,args(),front,back,mode,actions)
+        self.assertTrue(any(call[0]=="PATCH" for call in c.calls))
+        self.assertIn(res["variables"][-1]["status"], {"patched","updated_unverified"})
+
+    def test_stage6_allowlist_blocks_forbidden_endpoints_and_uuid_isolation(self):
+        mode=pp.ExecutionMode('apply','ledger','ledger',True,False,None,False,None,False,None,True,'ledger-frontend-dev',True,'ledger-frontend-dev')
+        client=pp.CoolifyClient('https://coolify.example','unit-test-token',mode=mode)
+        client.bind_frontend_application_uuid('front-1', {})
+        client.bind_frontend_env_contract(pp.desired_frontend_env('ledger','https://api.dev.ledger.goodmorning.mx'))
+        for method,path,kind in [('PATCH','/applications/front-1','frontend_env_update'),('POST','/applications/front-1/envs/bulk','frontend_env_create'),('POST','/applications/front-1/start','frontend_env_create'),('POST','/deployments','frontend_env_create'),('DELETE','/applications/front-1',None),('PUT','/applications/front-1',None)]:
+            with self.assertRaises(pp.ProvisioningError): client._check_request(method,path,post_kind=kind,json_body=pp.frontend_env_payload(pp.desired_frontend_env('ledger','https://api.dev.ledger.goodmorning.mx')[0]))
+        client.bind_backend_application_uuid('api-1', {})
+        with self.assertRaises(pp.ProvisioningError): client.bind_frontend_application_uuid('api-1', {})

@@ -263,16 +263,63 @@ jobs:
           normalized = re.sub(r'[`*]+', '', doc).lower()
           normalized = re.sub(r'\s+', ' ', normalized)
           checks = {
-              'Stage 5 canonical': 'stage 5 is the current canonical development provisioning architecture' in normalized,
+              'Stage 6 canonical': 'stage 6 is now the canonical development provisioning architecture' in normalized,
               'backend endpoint': 'post /api/v1/applications/private-github-app' in normalized,
               'env endpoints': 'patch /api/v1/applications/{uuid}/envs' in normalized,
               'internal_db_url secret handling': re.search(r'internal_db_url.{0,160}never|never.{0,160}internal_db_url', normalized) is not None,
-              'frontend planned stage 6': 'frontend dockerfile application provisioning remains planned for stage 6' in normalized,
+              'frontend stage 6 implemented': 'frontend dockerfile application' in normalized and 'vite_api_url' in normalized,
               'backend uuid binding': 'binds a single verified backend application uuid' in normalized,
               'independent env reconciliation': 'app_env/cors' in normalized or 'app_env and cors_origins' in normalized,
           }
           failures = [name for name, ok in checks.items() if not ok]
           if failures:
               raise SystemExit('missing canonical documentation semantics: ' + ', '.join(failures))
-          print('Stage-5 allowlist and canonical documentation markers verified.')
+          print('Stage-5 allowlist and Stage-6 canonical documentation markers verified.')
+          PY
+
+
+      - name: Verify stage-6 frontend application contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          import scripts.provision_product_development as pp
+          expected_app = {'name', 'project_uuid', 'environment_uuid', 'environment_name', 'server_uuid', 'destination_uuid', 'github_app_uuid', 'git_repository', 'git_branch', 'build_pack', 'base_directory', 'dockerfile_location', 'ports_exposes', 'domains', 'instant_deploy', 'is_auto_deploy_enabled', 'autogenerate_domain', 'health_check_enabled', 'health_check_path', 'health_check_port', 'health_check_method', 'health_check_scheme', 'health_check_return_code'}
+          if pp.APPROVED_FRONTEND_APPLICATION_FIELDS != expected_app:
+              raise SystemExit('Frontend Application payload field allowlist changed')
+          if pp.APPROVED_FRONTEND_ENV_FIELDS != {'key','value','is_runtime','is_buildtime','is_preview','is_literal','is_multiline'}:
+              raise SystemExit('Frontend env payload field allowlist changed')
+          if {'frontend_application_create','frontend_env_create'} - pp.ALLOWED_POST_KINDS or 'frontend_env_update' not in pp.ALLOWED_PATCH_KINDS:
+              raise SystemExit('Frontend write kinds missing from allowlist')
+          payload = pp.frontend_create_payload(type('A', (), {'product':'ledger','repository':'goodmorning-mx/ledger'})(), {'project_uuid':'p','environment_uuid':'e','server_uuid':'s','destination_uuid':'d','github_app_uuid':'g','git_repository':'goodmorning-mx/ledger'})
+          if payload['domains'] != 'https://dev.ledger.goodmorning.mx' or payload['ports_exposes'] != '80' or any(port in payload['domains'] for port in (':80',':3000',':8000')):
+              raise SystemExit('Frontend domain/port contract broken')
+          env = pp.desired_frontend_env('ledger','https://api.dev.ledger.goodmorning.mx')[0]
+          if env['key'] != 'VITE_API_URL' or env['is_buildtime'] is not True or env['is_runtime'] is not False:
+              raise SystemExit('VITE_API_URL build-time contract broken')
+          mode = pp.ExecutionMode('apply','ledger','ledger',True,False,None,False,None,False,None,True,'ledger-frontend-dev',True,'ledger-frontend-dev')
+          client = pp.CoolifyClient('https://coolify.example','unit-test-token',mode=mode)
+          client.bind_backend_application_uuid('api-1', {})
+          client.bind_frontend_application_uuid('front-1', {'git_repository':'goodmorning-mx/ledger','project_uuid':'p','environment_uuid':'e','server_uuid':'s','destination_uuid':'d','github_app_uuid':'g'})
+          client.bind_frontend_env_contract([env])
+          client._check_request('POST','/applications/private-github-app',post_kind='frontend_application_create',json_body=payload)
+          client._check_request('POST','/applications/front-1/envs',post_kind='frontend_env_create',json_body=pp.frontend_env_payload(env))
+          client._check_request('PATCH','/applications/front-1/envs',post_kind='frontend_env_update',json_body=pp.frontend_env_payload(env))
+          for method,path,kind in [('PATCH','/applications/front-1','frontend_env_update'),('POST','/applications/front-1/start','frontend_env_create'),('POST','/deployments','frontend_env_create'),('DELETE','/applications/front-1',None),('PUT','/applications/front-1',None)]:
+              try:
+                  client._check_request(method,path,post_kind=kind,json_body=pp.frontend_env_payload(env))
+              except pp.ProvisioningError:
+                  pass
+              else:
+                  raise SystemExit(f'forbidden endpoint was allowed: {method} {path}')
+          source = Path('scripts/provision_product_development.py').read_text()
+          tree = ast.parse(source)
+          names = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
+          if len(names) != len(set(names)):
+              raise SystemExit('duplicate top-level functions detected')
+          for forbidden in ('subprocess','paramiko','rsync','scp '):
+              if forbidden in source:
+                  raise SystemExit(f'forbidden remote execution marker: {forbidden}')
+          print('Stage 6 frontend allowlist, payload, env, UUID isolation, post-write GET helpers, and lifecycle blocks verified.')
           PY
