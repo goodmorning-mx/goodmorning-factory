@@ -263,7 +263,7 @@ jobs:
           normalized = re.sub(r'[`*]+', '', doc).lower()
           normalized = re.sub(r'\s+', ' ', normalized)
           checks = {
-              'Stage 7 canonical': 'stage 7 is the current canonical development provisioning architecture' in normalized,
+              'Stage 8 canonical': 'stage 8 is the current canonical development provisioning architecture' in normalized,
               'backend endpoint': 'post /api/v1/applications/private-github-app' in normalized,
               'env endpoints': 'patch /api/v1/applications/{uuid}/envs' in normalized,
               'internal_db_url secret handling': re.search(r'internal_db_url.{0,160}never|never.{0,160}internal_db_url', normalized) is not None,
@@ -338,8 +338,8 @@ jobs:
           import scripts.provision_product_development as pp
           stage6_posts = {'project_create', 'environment_create', 'postgresql_create', 'postgresql_start', 'backend_application_create', 'backend_env_create', 'frontend_application_create', 'frontend_env_create'}
           stage7_posts = stage6_posts | {'backend_deploy'}
-          if pp.ALLOWED_POST_KINDS != stage7_posts:
-              raise SystemExit(f'Stage 7 POST allowlist mismatch: {pp.ALLOWED_POST_KINDS}')
+          if not stage7_posts <= pp.ALLOWED_POST_KINDS:
+              raise SystemExit(f'Stage 7 POST allowlist subset mismatch: {pp.ALLOWED_POST_KINDS}')
           mode = pp.ExecutionMode('apply','ledger','ledger',True,deploy_backend=True,allow_deployments=True,allow_backend_deployment=True,confirm_backend_deployment='ledger-api-dev')
           client = pp.CoolifyClient('https://coolify.example','unit-test-token',mode=mode)
           client.bind_backend_application_uuid('api-1', {})
@@ -382,7 +382,7 @@ jobs:
               raise SystemExit('single backend recovery candidate was not accepted')
           if pp.recover_new_deployment_candidates(set(), [{'deployment_uuid':'dep','resource_uuid':'other'}], 'api-1'):
               raise SystemExit('contradictory recovery candidate was accepted')
-          class A: product='ledger'; backend_deployment_timeout=1.0; backend_deployment_interval=0.1; backend_deployment_max_poll_errors=1; backend_runtime_timeout=1.0; backend_runtime_interval=0.1; backend_runtime_max_poll_errors=1; backend_smoke_timeout=1.0; backend_smoke_interval=0.1; backend_smoke_request_timeout=0.5
+          class A: product='ledger'; backend_deployment_timeout=1.0; backend_deployment_interval=0.1; backend_deployment_max_poll_errors=1; backend_runtime_timeout=1.0; backend_runtime_interval=0.1; backend_runtime_max_poll_errors=1; backend_smoke_timeout=1.0; backend_smoke_interval=0.1; backend_smoke_request_timeout=0.5; frontend_deployment_timeout=1.0; frontend_deployment_interval=0.1; frontend_deployment_max_poll_errors=1; frontend_runtime_timeout=1.0; frontend_runtime_interval=0.1; frontend_runtime_max_poll_errors=1; frontend_smoke_timeout=1.0; frontend_smoke_interval=0.1; frontend_smoke_request_timeout=0.5
           pp.validate_stage7_timing_args(A)
           pp.validate_backend_smoke_url('https://api.dev.ledger.goodmorning.mx/health','ledger')
           runtime = pp.verify_backend_runtime(type('C', (), {'get': lambda self, path: {'uuid':'api-1','name':'ledger-api-dev','status':'running:healthy'}})(), A, 'api-1', sleeper=lambda seconds: None, clock=iter([0,0]).__next__)
@@ -405,4 +405,73 @@ jobs:
           if len(names) != len(set(names)):
               raise SystemExit('duplicate top-level functions detected')
           print('Stage 7 backend deploy allowlist, gates, status allowlists, polling/smoke contracts, lifecycle blocks, and remote execution ban verified.')
+          PY
+
+
+      - name: Verify Stage 8 frontend deployment semantic contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          import scripts.provision_product_development as pp
+          stage7_posts = {'project_create', 'environment_create', 'postgresql_create', 'postgresql_start', 'backend_application_create', 'backend_env_create', 'frontend_application_create', 'frontend_env_create', 'backend_deploy'}
+          stage8_posts = stage7_posts | {'frontend_deploy'}
+          if pp.ALLOWED_POST_KINDS != stage8_posts:
+              raise SystemExit(f'Stage 8 POST allowlist mismatch: {pp.ALLOWED_POST_KINDS}')
+          if pp.ALLOWED_PATCH_KINDS != {'backend_env_update','frontend_env_update'}:
+              raise SystemExit(f'Stage 8 PATCH allowlist mismatch: {pp.ALLOWED_PATCH_KINDS}')
+          mode = pp.ExecutionMode(name='apply', product='ledger', confirm_product='ledger', allow_resource_writes=True, deploy_frontend=True, allow_deployments=True, allow_frontend_deployment=True, confirm_frontend_deployment='ledger-frontend-dev')
+          client = pp.CoolifyClient('https://coolify.example','unit-test-token',mode=mode)
+          client.bind_backend_application_uuid('api-1', {})
+          client.bind_frontend_application_uuid('front-1', {})
+          client.bind_frontend_deployment_preconditions(True)
+          client._check_request('POST','/deploy',post_kind='frontend_deploy',json_body={'uuid':'front-1','force':False})
+          for body in ({'uuid':'api-1','force':False},{'uuid':'front-1','force':True},{'uuid':'front-1,other','force':False},{'uuid':'','force':False},{'uuid':'front-1','force':False,'docker_tag':'x'}):
+              try: client._check_request('POST','/deploy',post_kind='frontend_deploy',json_body=body)
+              except pp.ProvisioningError: pass
+              else: raise SystemExit(f'unsafe frontend deploy body allowed: {body}')
+          for method,path in [('GET','/deploy'),('POST','/applications/front-1/start'),('POST','/applications/front-1/restart'),('POST','/applications/front-1/stop'),('POST','/deployments/dep-1/cancel'),('POST','/applications/front-1/rollback')]:
+              try: client._check_request(method,path)
+              except pp.ProvisioningError: pass
+              else: raise SystemExit(f'forbidden lifecycle/deployment endpoint allowed: {method} {path}')
+          fflags={'is_runtime':False,'is_buildtime':True,'is_preview':False,'is_literal':True,'is_multiline':False}
+          bflags={'is_runtime':True,'is_buildtime':False,'is_preview':False,'is_literal':True,'is_multiline':False}
+          ok, blockers = pp.frontend_deployment_preflight(
+              type('Args', (), {'product':'ledger'})(),
+              {'name':'ledger-postgres-dev','status':'exists'}, {'status':'healthy','internal_db_url_available':True,'database_url_driver_ready':True},
+              {'name':'ledger-api-dev','status':'exists','uuid':'api-1'}, {'status':'exists','variables':[{'key':k,'status':'exists','value_verified':True,'desired_flags':bflags} for k in ('DATABASE_URL','APP_ENV','CORS_ORIGINS')]},
+              {'name':'ledger-frontend-dev','status':'exists','uuid':'front-1'}, {'status':'exists','variables':[{'key':'VITE_API_URL','status':'exists','value_verified':True,'desired_flags':fflags}]},
+              {'status':'healthy','healthy':True,'verified':True}, {'status':'passed','body_verified':True}, [])
+          if not ok or blockers:
+              raise SystemExit(f'valid frontend preflight blocked: {blockers}')
+          bad_ok, _ = pp.frontend_deployment_preflight(type('Args', (), {'product':'ledger'})(), {'name':'ledger-postgres-dev','status':'exists'}, {'status':'healthy','internal_db_url_available':True,'database_url_driver_ready':True}, {'name':'ledger-api-dev','status':'exists','uuid':'api-1'}, {'status':'exists','variables':[]}, {'name':'ledger-frontend-dev','status':'exists','uuid':'front-1'}, {'status':'exists','variables':[{'key':'DATABASE_URL','status':'exists','value_verified':True,'desired_flags':fflags}]}, {'status':'healthy','healthy':True,'verified':True}, {'status':'passed','body_verified':True}, [])
+          if bad_ok:
+              raise SystemExit('invalid frontend dependency/env preflight was allowed')
+          if pp.recover_new_deployment_candidates_for_application(set(), [{'deployment_uuid':'dep','resource_uuid':'front-1'}], 'front-1') != ['dep']:
+              raise SystemExit('frontend recovery candidate failed')
+          class A:
+              product='ledger'; frontend_deployment_timeout=1.0; frontend_deployment_interval=0.1; frontend_deployment_max_poll_errors=1; frontend_runtime_timeout=1.0; frontend_runtime_interval=0.1; frontend_runtime_max_poll_errors=1; frontend_smoke_timeout=1.0; frontend_smoke_interval=0.1; frontend_smoke_request_timeout=0.5
+              backend_deployment_timeout=1.0; backend_deployment_interval=0.1; backend_deployment_max_poll_errors=1; backend_runtime_timeout=1.0; backend_runtime_interval=0.1; backend_runtime_max_poll_errors=1; backend_smoke_timeout=1.0; backend_smoke_interval=0.1; backend_smoke_request_timeout=0.5
+          pp.validate_stage7_timing_args(A)
+          dep = pp.poll_frontend_deployment(type('C', (), {'get': lambda self, path: {'deployment_uuid':'d','resource_uuid':'front-1','application_name':'ledger-frontend-dev','status':'finished'}})(), A, 'd', 'front-1', sleeper=lambda seconds: None, clock=iter([0,0]).__next__)
+          if not dep.get('verified'):
+              raise SystemExit('frontend deployment polling did not verify finished')
+          runtime = pp.verify_frontend_runtime(type('C', (), {'get': lambda self, path: {'uuid':'front-1','name':'ledger-frontend-dev','status':'running:healthy'}})(), A, 'front-1', sleeper=lambda seconds: None, clock=iter([0,0]).__next__)
+          if not runtime.get('healthy'):
+              raise SystemExit('frontend runtime polling did not accept healthy')
+          pp.validate_frontend_smoke_url('https://dev.ledger.goodmorning.mx/','ledger')
+          for bad in ['http://dev.ledger.goodmorning.mx/','https://dev.ledger.goodmorning.mx:80/','https://dev.ledger.goodmorning.mx/path','https://dev.ledger.goodmorning.mx/?q=1','https://localhost/']:
+              try: pp.validate_frontend_smoke_url(bad,'ledger')
+              except pp.ProvisioningError: pass
+              else: raise SystemExit(f'bad frontend smoke URL allowed: {bad}')
+          source = Path('scripts/provision_product_development.py').read_text()
+          for marker in ('subprocess','paramiko','rsync','scp ','/applications/{uuid}/start','force": True'):
+              if marker in source:
+                  raise SystemExit(f'forbidden Stage 8 marker present: {marker}')
+          tree = ast.parse(source)
+          names = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
+          if len(names) != len(set(names)):
+              raise SystemExit('duplicate top-level functions detected')
+          print('Stage 8 frontend deployment gates, UUID binding, exact payload, preflight, history, recovery, polling, runtime, smoke, lifecycle blocks, and remote execution ban verified.')
           PY

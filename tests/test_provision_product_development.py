@@ -33,6 +33,17 @@ def args(**overrides):
         backend_smoke_timeout=0.05,
         backend_smoke_interval=0.01,
         backend_smoke_request_timeout=0.01,
+        deploy_frontend=False,
+        confirm_frontend_deployment=None,
+        frontend_deployment_timeout=0.05,
+        frontend_deployment_interval=0.01,
+        frontend_deployment_max_poll_errors=1,
+        frontend_runtime_timeout=0.05,
+        frontend_runtime_interval=0.01,
+        frontend_runtime_max_poll_errors=1,
+        frontend_smoke_timeout=0.05,
+        frontend_smoke_interval=0.01,
+        frontend_smoke_request_timeout=0.01,
     )
     base.update(overrides)
     return argparse.Namespace(**base)
@@ -133,6 +144,16 @@ class FakeClient:
 
     def bind_backend_deployment_preconditions(self, ok):
         self.backend_deployment_preconditions_ok = ok
+
+    def bind_frontend_deployment_preconditions(self, ok):
+        self.frontend_deployment_preconditions_ok = ok
+
+    def deploy_frontend(self, uuid):
+        self.calls.append(("POST", "/deploy", {"uuid": str(uuid), "force": False}))
+        value = self.payloads.get("POST frontend /deploy", pp.Response(200, {"deployments":[{"message":"queued","resource_uuid":str(uuid),"deployment_uuid":"front-dep-1"}]}, {}))
+        if isinstance(value, Exception):
+            raise value
+        return value
 
     def deploy_backend(self, uuid):
         self.calls.append(("POST", "/deploy", {"uuid": str(uuid), "force": False}))
@@ -1636,8 +1657,10 @@ class Stage6FrontendApplicationTests(ProductDevelopmentProvisionerTests):
         stage5_posts={"project_create","environment_create","postgresql_create","postgresql_start","backend_application_create","backend_env_create"}
         stage6_posts=stage5_posts | {"frontend_application_create","frontend_env_create"}
         stage7_posts=stage6_posts | {"backend_deploy"}
+        stage8_posts=stage7_posts | {"frontend_deploy"}
         self.assertTrue(stage6_posts <= pp.ALLOWED_POST_KINDS)
-        self.assertEqual(pp.ALLOWED_POST_KINDS, stage7_posts)
+        self.assertTrue(stage7_posts <= pp.ALLOWED_POST_KINDS)
+        self.assertEqual(pp.ALLOWED_POST_KINDS, stage8_posts)
         self.assertEqual(pp.ALLOWED_PATCH_KINDS, {"backend_env_update","frontend_env_update"})
 
     def test_stage6_dry_run_get_only_and_three_resources(self):
@@ -2118,3 +2141,106 @@ class Stage7AuditCorrectionTests(unittest.TestCase):
                 self.assertEqual(len(request_actions), 1)
                 self.assertFalse(request_actions[0]["write_performed"])
                 self.assertTrue(request_actions[0]["write_outcome_unknown"])
+
+class Stage8FrontendDeploymentTests(Stage6FrontendApplicationTests):
+    def healthy_db(self):
+        return {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"healthy","internal_db_url":"postgresql://user:p%40ss@host:5432/db"}
+
+    def backend_envs(self):
+        return [
+            {"key":"DATABASE_URL","value":"postgresql+psycopg://user:p%40ss@host:5432/db","is_runtime":True,"is_buildtime":False,"is_preview":False,"is_literal":True,"is_multiline":False,"is_shown_once":True},
+            {"key":"APP_ENV","value":"dev","is_runtime":True,"is_buildtime":False,"is_preview":False,"is_literal":True,"is_multiline":False},
+            {"key":"CORS_ORIGINS","value":"https://dev.ledger.goodmorning.mx","is_runtime":True,"is_buildtime":False,"is_preview":False,"is_literal":True,"is_multiline":False},
+        ]
+
+    def frontend_envs(self):
+        return [{"key":"VITE_API_URL","value":"https://api.dev.ledger.goodmorning.mx","is_runtime":False,"is_buildtime":True,"is_preview":False,"is_literal":True,"is_multiline":False}]
+
+    def deploy_client(self, **overrides):
+        api=self.backend_app(status="running:healthy"); front=self.frontend_app(status="running:healthy"); db=self.healthy_db()
+        payloads={
+            "/applications":[api,front], "/applications/api-1":api, "/applications/front-1":front,
+            "/applications/api-1/envs":self.backend_envs(), "/applications/front-1/envs":self.frontend_envs(),
+            "/databases":[db], "/databases/db-1":db,
+            "/deployments/applications/api-1?skip=0&take=10":{"deployments":[],"count":0},
+            "/deployments/applications/front-1?skip=0&take=10":{"deployments":[],"count":0},
+            "/deployments/dep-1":{"deployment_uuid":"dep-1","resource_uuid":"api-1","application_name":"ledger-api-dev","status":"finished"},
+            "/deployments/front-dep-1":{"deployment_uuid":"front-dep-1","resource_uuid":"front-1","application_name":"ledger-frontend-dev","status":"finished"},
+        }
+        payloads.update(overrides)
+        return self.client(**payloads)
+
+    def deploy_args(self, **overrides):
+        base=dict(dry_run=False, apply=True, confirm_product="ledger", deploy_frontend=True, confirm_frontend_deployment="ledger-frontend-dev")
+        base.update(overrides)
+        return args(**base)
+
+    def gate_env(self):
+        return {"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_DEPLOYMENTS":"true","COOLIFY_ALLOW_FRONTEND_DEPLOYMENT":"true"}
+
+    def test_stage8_allowlist_payload_binding_and_forbidden_shapes(self):
+        mode=pp.ExecutionMode(name="apply", product="ledger", confirm_product="ledger", allow_resource_writes=True, deploy_frontend=True, allow_deployments=True, allow_frontend_deployment=True, confirm_frontend_deployment="ledger-frontend-dev")
+        client=pp.CoolifyClient("https://coolify.example","token",mode=mode)
+        client.bind_backend_application_uuid("api-1", {})
+        client.bind_frontend_application_uuid("front-1", {})
+        client.bind_frontend_deployment_preconditions(True)
+        client._check_request("POST","/deploy",post_kind="frontend_deploy",json_body={"uuid":"front-1","force":False})
+        for payload in ({"uuid":"api-1","force":False},{"uuid":"","force":False},{"uuid":"front-1,other","force":False},{"uuid":"front-1","force":True},{"uuid":"front-1","force":False,"tag":"x"}):
+            with self.subTest(payload=payload):
+                with self.assertRaises(pp.ProvisioningError): client._check_request("POST","/deploy",post_kind="frontend_deploy",json_body=payload)
+        with self.assertRaises(pp.ProvisioningError): client._check_request("GET","/deploy")
+        with self.assertRaises(pp.ProvisioningError): client._check_request("POST","/applications/front-1/start")
+
+    def test_stage8_frontend_only_deploys_once_with_backend_dependency_verified(self):
+        c=self.deploy_client()
+        with mock.patch.dict(os.environ,self.gate_env(),clear=False), mock.patch.object(pp,"run_backend_smoke",return_value=pp.smoke_check_result("ledger","passed",http_status=200,body_verified=True,attempts=1)), mock.patch.object(pp,"run_frontend_smoke",return_value=pp.frontend_smoke_check_result("ledger","passed",http_status=200,html_verified=True,root_element_verified=True,attempts=1)):
+            r=pp.provision(self.deploy_args(), client_factory=lambda:c)
+        self.assertEqual(r["frontend_deployment"]["status"],"finished")
+        self.assertTrue(r["frontend_runtime_readiness"]["healthy"])
+        self.assertTrue(r["frontend_smoke_check"]["root_element_verified"])
+        self.assertEqual([call for call in c.calls if call[0]=="POST" and call[1]=="/deploy"], [("POST","/deploy",{"uuid":"front-1","force":False})])
+
+    def test_stage8_both_flags_backend_posts_before_frontend_and_backend_failures_block(self):
+        env={**self.gate_env(),"COOLIFY_ALLOW_BACKEND_DEPLOYMENT":"true"}
+        c=self.deploy_client()
+        with mock.patch.dict(os.environ,env,clear=False), mock.patch.object(pp,"run_backend_smoke",return_value=pp.smoke_check_result("ledger","passed",http_status=200,body_verified=True,attempts=1)), mock.patch.object(pp,"run_frontend_smoke",return_value=pp.frontend_smoke_check_result("ledger","passed",http_status=200,html_verified=True,root_element_verified=True,attempts=1)):
+            pp.provision(self.deploy_args(deploy_backend=True,confirm_backend_deployment="ledger-api-dev"), client_factory=lambda:c)
+        posts=[call[2]["uuid"] for call in c.calls if call[0]=="POST" and call[1]=="/deploy"]
+        self.assertEqual(posts,["api-1","front-1"])
+        c2=self.deploy_client(**{"/deployments/dep-1":{"deployment_uuid":"dep-1","resource_uuid":"api-1","application_name":"ledger-api-dev","status":"failed"}})
+        with mock.patch.dict(os.environ,env,clear=False), mock.patch.object(pp,"run_backend_smoke",return_value=pp.smoke_check_result("ledger","passed",http_status=200,body_verified=True,attempts=1)):
+            r=pp.provision(self.deploy_args(deploy_backend=True,confirm_backend_deployment="ledger-api-dev"), client_factory=lambda:c2)
+        self.assertEqual([call[2]["uuid"] for call in c2.calls if call[0]=="POST" and call[1]=="/deploy"],["api-1"])
+        self.assertEqual(r["frontend_deployment"]["status"],"blocked_by_preconditions")
+
+    def test_stage8_history_recovery_poll_runtime_smoke_fail_closed_cases(self):
+        with self.subTest("active adoption"):
+            c=self.deploy_client(**{"/deployments/applications/front-1?skip=0&take=10":{"deployments":[{"deployment_uuid":"active-1","resource_uuid":"front-1","status":"queued"}],"count":1}, "/deployments/active-1":{"deployment_uuid":"active-1","resource_uuid":"front-1","application_name":"ledger-frontend-dev","status":"finished"}})
+            with mock.patch.dict(os.environ,self.gate_env(),clear=False), mock.patch.object(pp,"run_backend_smoke",return_value=pp.smoke_check_result("ledger","passed",http_status=200,body_verified=True,attempts=1)), mock.patch.object(pp,"run_frontend_smoke",return_value=pp.frontend_smoke_check_result("ledger","passed",http_status=200,html_verified=True,root_element_verified=True,attempts=1)):
+                r=pp.provision(self.deploy_args(), client_factory=lambda:c)
+            self.assertTrue(r["frontend_deployment"]["adopted_active"])
+            self.assertFalse(any(call[0]=="POST" and call[1]=="/deploy" for call in c.calls))
+        for status, expected in [("failed","failed"),("cancelled-by-user","cancelled-by-user"),("bogus","deployment_status_unverified")]:
+            with self.subTest(status=status):
+                c=self.deploy_client(**{"/deployments/front-dep-1":{"deployment_uuid":"front-dep-1","resource_uuid":"front-1","application_name":"ledger-frontend-dev","status":status}})
+                with mock.patch.dict(os.environ,self.gate_env(),clear=False), mock.patch.object(pp,"run_backend_smoke",return_value=pp.smoke_check_result("ledger","passed",http_status=200,body_verified=True,attempts=1)):
+                    r=pp.provision(self.deploy_args(), client_factory=lambda:c)
+                self.assertEqual(r["frontend_deployment"]["status"], expected)
+
+    def test_stage8_frontend_smoke_html_root_and_redirect_guards(self):
+        class Resp:
+            def __init__(self, status=200, ctype="text/html", body=b'<!doctype html><div id="root"></div>', url="https://dev.ledger.goodmorning.mx/"):
+                self.status=status; self.headers={"Content-Type":ctype}; self._body=body; self.url=url
+            def __enter__(self): return self
+            def __exit__(self,*a): return False
+            def getcode(self): return self.status
+            def read(self,n=-1): return self._body
+        cases=[(Resp(), True), (Resp(status=500), False), (Resp(ctype="application/json"), False), (Resp(body=b""), False), (Resp(body=b"<html></html>"), False), (Resp(url="https://evil.example/"), False), (Resp(url="http://dev.ledger.goodmorning.mx/"), False), (Resp(url="https://dev.ledger.goodmorning.mx:80/"), False), (Resp(url="https://dev.ledger.goodmorning.mx/path"), False), (Resp(url="https://dev.ledger.goodmorning.mx/?q=1"), False)]
+        for resp, ok in cases:
+            with self.subTest(url=resp.url,status=resp.status,ctype=resp.headers["Content-Type"]):
+                tick = {"v": 0}
+                def clock():
+                    tick["v"] += 0.001
+                    return tick["v"]
+                r=pp.run_frontend_smoke(args(), opener=lambda req, timeout: resp, sleeper=lambda s: None, clock=clock)
+                self.assertEqual(r["root_element_verified"], ok)
