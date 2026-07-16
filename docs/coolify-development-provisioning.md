@@ -1,12 +1,18 @@
 # Coolify development provisioning
 
-Stage 8 is the current canonical development provisioning architecture for GoodMorning product repositories. Each product uses three independent Coolify resources:
+Stage 9 is the current operational interface, and Stage 8 remains the canonical development provisioning architecture for GoodMorning product repositories. Each product uses three independent Coolify resources:
 
 1. a private native PostgreSQL 16 database named `<product>-postgres-dev`;
 2. a Backend Dockerfile Application named `<product>-api-dev`;
 3. a Frontend Dockerfile Application named `<product>-frontend-dev`.
 
 Legacy Compose provisioning is deprecated for new products and documented separately in `docs/legacy-coolify-compose-provisioning.md`. The legacy Compose Application named `<product>-dev` remains migration context only. Stage 6 does not create, patch, deploy, stop, restart, delete, or otherwise modify the legacy Compose Application.
+
+
+
+## Stage 9 orchestration
+
+Stage 9 adds the controlled `scripts/orchestrate_product_development.py` interface and the manual `.github/workflows/product-development.yml` workflow. Operators use `plan`, `provision`, `deploy-backend`, or `deploy-full`; mutating operations require an exact `<operation>:<product>:dev` confirmation and a separate safe dry-run plan before apply. The workflow is `workflow_dispatch` only, runs from factory branch `dev`, uses GitHub Environment `dev`, and does not add automatic deployment on push. See `docs/product-development-runbook.md` for the runbook.
 
 ## Confirmed Coolify API contract
 
@@ -261,7 +267,7 @@ Stage 7 still performs zero SSH, rsync, SCP, Docker remote commands, server proc
 
 ## Stage 8: controlled Frontend deployment
 
-Stage 8 is the current canonical development provisioning architecture. It keeps three independent Coolify resources per product: `<product>-postgres-dev` as private native PostgreSQL 16 without public domain, `<product>-api-dev` as a Backend Dockerfile Application from `/backend` with internal port `8000` and public domain `https://api.dev.<product>.goodmorning.mx`, and `<product>-frontend-dev` as a Frontend Dockerfile Application from `/frontend` with internal port `80` and public domain `https://dev.<product>.goodmorning.mx` without `:80`. GitHub private repository access through the Coolify GitHub App on branch `dev` remains the only remote source. `compose.yaml` remains local/CI-only and is not a remote deployment source; do not add Traefik labels, `docker_compose_domains`, server-local paths, SSH, rsync, SCP, or remote Docker workflows to product deployment automation.
+Stage 9 is the current operational interface, and Stage 8 remains the canonical development provisioning architecture. It keeps three independent Coolify resources per product: `<product>-postgres-dev` as private native PostgreSQL 16 without public domain, `<product>-api-dev` as a Backend Dockerfile Application from `/backend` with internal port `8000` and public domain `https://api.dev.<product>.goodmorning.mx`, and `<product>-frontend-dev` as a Frontend Dockerfile Application from `/frontend` with internal port `80` and public domain `https://dev.<product>.goodmorning.mx` without `:80`. GitHub private repository access through the Coolify GitHub App on branch `dev` remains the only remote source. `compose.yaml` remains local/CI-only and is not a remote deployment source; do not add Traefik labels, `docker_compose_domains`, server-local paths, SSH, rsync, SCP, or remote Docker workflows to product deployment automation.
 
 The verified Frontend template contract is Dockerfile build stage `node:22-alpine`, `npm ci`, `ARG/ENV VITE_API_URL`, `npm run build`, Nginx `1.27-alpine` runtime, `EXPOSE 80`, internal healthcheck `wget -qO- http://127.0.0.1/`, Nginx `listen 80`, SPA `try_files $uri $uri/ /index.html`, and an HTML React mount element with `id="root"`. `VITE_API_URL` is build-time only and must be exactly `https://api.dev.<product>.goodmorning.mx` for dev. Changing it requires rebuilding/deploying the Frontend image. `DATABASE_URL` must never be present in the Frontend build or runtime environment.
 

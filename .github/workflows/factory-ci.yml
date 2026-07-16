@@ -28,10 +28,12 @@ jobs:
           python-version: '3.12'
 
       - name: Validate Python syntax
-        run: python -m py_compile scripts/create_product.py scripts/provision_coolify_development.py scripts/provision_product_development.py tests/test_create_product.py tests/test_provision_coolify_development.py tests/test_provision_product_development.py tests/test_verify_coolify_workflow.py
+        run: python -m py_compile scripts/*.py tests/*.py
 
       - name: Run dependency-free unit tests
-        run: python -m unittest discover -s tests -v
+        run: |
+          python -m unittest tests.test_orchestrate_product_development -v
+          python -m unittest discover -s tests -v
 
       - name: Verify expected provisioning files exist
         run: |
@@ -443,8 +445,8 @@ jobs:
               'status':'exists',
               'variables':[{'key':'VITE_API_URL','status':'exists','value_verified':True,'desired_flags':fflags}],
               'observed': {
-                  'observed_key_counts': {'VITE_API_URL': 1},
-                  'observed_keys': ['VITE_API_URL'],
+                  'observed_variable_name_counts': {'VITE_API_URL': 1},
+                  'observed_variable_names': ['VITE_API_URL'],
                   'vite_api_url_value_available': True,
                   'vite_api_url_value': 'https://api.dev.ledger.goodmorning.mx',
                   'vite_api_url_value_matches': True,
@@ -462,12 +464,12 @@ jobs:
               {
                   'status':'exists',
                   'variables':[{'key':'VITE_API_URL','status':'exists','value_verified':True,'desired_flags':fflags}],
-                  'observed': {'observed_key_counts': {'VITE_API_URL': 1, 'APP_ENV': 1}, 'observed_keys': ['APP_ENV','VITE_API_URL'], 'vite_api_url_value_available': True, 'vite_api_url_value': 'https://api.dev.ledger.goodmorning.mx', 'vite_api_url_value_matches': True},
+                  'observed': {'observed_variable_name_counts': {'VITE_API_URL': 1, 'APP_ENV': 1}, 'observed_variable_names': ['APP_ENV','VITE_API_URL'], 'vite_api_url_value_available': True, 'vite_api_url_value': 'https://api.dev.ledger.goodmorning.mx', 'vite_api_url_value_matches': True},
               },
               {
                   'status':'exists',
                   'variables':[{'key':'VITE_API_URL','status':'exists','value_verified':True,'desired_flags':fflags}],
-                  'observed': {'observed_key_counts': {'VITE_API_URL': 1}, 'observed_keys': ['VITE_API_URL'], 'vite_api_url_value_available': True, 'vite_api_url_value': 'https://other.example', 'vite_api_url_value_matches': False},
+                  'observed': {'observed_variable_name_counts': {'VITE_API_URL': 1}, 'observed_variable_names': ['VITE_API_URL'], 'vite_api_url_value_available': True, 'vite_api_url_value': 'https://other.example', 'vite_api_url_value_matches': False},
               },
           ):
               bad_ok, _ = pp.frontend_deployment_preflight(type('Args', (), {'product':'ledger'})(), {'name':'ledger-postgres-dev','status':'exists'}, {'status':'healthy','internal_db_url_available':True,'database_url_driver_ready':True}, {'name':'ledger-api-dev','status':'exists','uuid':'api-1'}, {'status':'exists','variables':[]}, {'name':'ledger-frontend-dev','status':'exists','uuid':'front-1'}, bad_env, {'status':'healthy','healthy':True,'verified':True}, {'status':'passed','body_verified':True}, [])
@@ -542,4 +544,53 @@ jobs:
           if len(names) != len(set(names)):
               raise SystemExit('duplicate top-level functions detected')
           print('Stage 8 frontend deployment gates, UUID binding, exact payload, preflight, history, recovery, polling, runtime, smoke, lifecycle blocks, and remote execution ban verified.')
+          PY
+
+
+      - name: Verify Stage 9 orchestration semantic contract
+        run: |
+          set -euo pipefail
+          python -m unittest tests.test_orchestrate_product_development -v
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          import scripts.orchestrate_product_development as op
+          if tuple(op.OPERATIONS) != ('plan','provision','deploy-backend','deploy-full'):
+              raise SystemExit('Stage 9 operations changed')
+          if op.expected_confirmation('deploy-full','ledger') != 'deploy-full:ledger:dev':
+              raise SystemExit('confirmation contract changed')
+          if op.ALLOWED_TRUE_GATES['plan']:
+              raise SystemExit('plan must not allow write gates')
+          if 'COOLIFY_ALLOW_FRONTEND_DEPLOYMENT' in op.ALLOWED_TRUE_GATES['deploy-backend']:
+              raise SystemExit('deploy-backend must not allow frontend deployment')
+          ok, _ = op.classify_plan_safety({'status':'dry_run','resources':[{'status':'absent'}]})
+          bad, _ = op.classify_plan_safety({'status':'dry_run','resources':[{'status':'duplicate'}]})
+          if not ok or bad:
+              raise SystemExit('plan classifier contract changed')
+          tree = ast.parse(Path('scripts/orchestrate_product_development.py').read_text())
+          names = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
+          required = {'validate_orchestration_inputs','expected_confirmation','validate_operation_gates','build_provisioner_argv','classify_plan_safety','orchestrate','main'}
+          if not required <= set(names) or len(names) != len(set(names)):
+              raise SystemExit('Stage 9 top-level function contract changed')
+          forbidden_imports = {'subprocess','paramiko'}
+          for node in ast.walk(tree):
+              if isinstance(node, ast.Import):
+                  for alias in node.names:
+                      if alias.name.split('.')[0] in forbidden_imports: raise SystemExit('forbidden import')
+              if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in {'exec','eval'}:
+                  raise SystemExit('forbidden dynamic execution')
+          wf = Path('.github/workflows/product-development.yml').read_text()
+          for marker in ['pull_request','schedule','repository_dispatch','continue-on-error','set -x']:
+              if marker in wf:
+                  raise SystemExit(f'forbidden workflow marker: {marker}')
+          for marker in ['environment: dev','contents: read','cancel-in-progress: false',"github.ref_name != 'dev'"]:
+              if marker not in wf:
+                  raise SystemExit(f'missing workflow marker: {marker}')
+          if 'COOLIFY_API_TOKEN' in wf and '${{ secrets.COOLIFY_API_TOKEN }}' not in wf:
+              raise SystemExit('token must only come from secrets')
+          stage8_posts = {'project_create','environment_create','postgresql_create','postgresql_start','backend_application_create','backend_env_create','frontend_application_create','frontend_env_create','backend_deploy','frontend_deploy'}
+          import scripts.provision_product_development as pp
+          if pp.ALLOWED_POST_KINDS != stage8_posts:
+              raise SystemExit('Stage 2-8 allowlist regression')
+          print('Stage 9 orchestration contract verified.')
           PY
