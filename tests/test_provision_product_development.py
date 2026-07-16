@@ -1520,6 +1520,86 @@ class Stage6FrontendApplicationTests(ProductDevelopmentProvisionerTests):
         data.update(overrides)
         return data
 
+
+
+    def backend_app(self, **overrides):
+        data = {"uuid":"api-1", "name":"ledger-api-dev", "type":"application", "project_uuid":"project-1", "environment_uuid":"env-1", "server_uuid":"server-1", "destination_uuid":"dest-1", "github_app_uuid":"app-1", "git_repository":"goodmorning-mx/ledger", "git_branch":"dev", "build_pack":"dockerfile", "base_directory":"/backend", "dockerfile_location":"/Dockerfile", "ports_exposes":"8000", "domains":"https://api.dev.ledger.goodmorning.mx", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/health", "health_check_port":"8000", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
+        data.update(overrides)
+        return data
+
+    def apply_frontend_env_mode(self):
+        return pp.ExecutionMode('apply','ledger','ledger',True,False,None,False,None,False,None,True,'ledger-frontend-dev',True,'ledger-frontend-dev')
+
+    def test_stage6_existing_frontend_blocks_env_when_backend_not_verified_statuses(self):
+        front={"status":"exists","uuid":"front-1"}
+        bad_backends = [
+            {"status":"absent"}, {"status":"incompatible","uuid":"api-1"}, {"status":"duplicate","uuid":"api-1"},
+            {"status":"out_of_scope","uuid":"api-1"}, {"status":"scope_unverified","uuid":"api-1"},
+            {"status":"compatibility_unverified","uuid":"api-1"}, {"status":"created_unverified","uuid":"api-1"},
+            {"status":"write_outcome_unknown","uuid":"api-1"}, {"status":"exists"},
+        ]
+        for backend in bad_backends:
+            c=self.client(**{"/applications/front-1/envs":[]})
+            actions=[]
+            result=pp.reconcile_frontend_environment(c,args(),front,backend,self.apply_frontend_env_mode(),actions)
+            self.assertEqual(result["status"], "blocked", backend)
+            self.assertTrue(any(b.get("reason")=="backend_application_not_verified" for b in result["blockers"]), backend)
+            self.assertFalse(any(call[0] in {"POST","PATCH"} and call[1].endswith("/envs") for call in c.calls), backend)
+            self.assertEqual(actions, [])
+
+    def test_stage6_existing_frontend_dry_run_env_plans_after_backend_without_writes(self):
+        c=self.client(**{"/applications/front-1/envs":[]})
+        result=pp.reconcile_frontend_environment(c,args(),{"status":"exists","uuid":"front-1"},{"status":"absent"},pp.ExecutionMode('dry_run','ledger',None,False),[])
+        self.assertEqual(result["status"], "planned_after_backend")
+        self.assertFalse(any(call[0] in {"POST","PATCH"} for call in c.calls))
+
+    def test_stage6_existing_frontend_env_writes_require_backend_precondition_despite_gates(self):
+        front=self.frontend_app(); api=self.backend_app(base_directory="/wrong")
+        c=self.client(**{"/applications":[front,api], "/applications/front-1":front, "/applications/api-1":api, "/applications/front-1/envs":[]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true","COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_FRONTEND_ENV_WRITES":"true"}, clear=False):
+            result=pp.provision(args(dry_run=False, apply=True, confirm_product="ledger", confirm_backend_application="ledger-api-dev", confirm_backend_environment="ledger-api-dev", confirm_frontend_application="ledger-frontend-dev", confirm_frontend_environment="ledger-frontend-dev"), client_factory=lambda:c)
+        self.assertEqual(result["frontend_application"]["status"], "exists")
+        self.assertEqual(result["backend_application"]["status"], "recreate_required")
+        self.assertEqual(result["frontend_environment"]["status"], "blocked")
+        self.assertFalse(any(call[0] in {"POST","PATCH"} and call[1].endswith("/envs") and call[2].get("key")=="VITE_API_URL" for call in c.calls))
+        self.assertNotIn("frontend_env_create", result["safety"]["allowed_post_operations"])
+        self.assertNotIn("frontend_env_update", result["safety"]["allowed_patch_operations"])
+
+    def test_stage6_existing_frontend_backend_exists_allows_vite_reconcile(self):
+        exact={"key":"VITE_API_URL","value":"https://api.dev.ledger.goodmorning.mx","is_runtime":False,"is_buildtime":True,"is_preview":False,"is_literal":True,"is_multiline":False}
+        c=self.client(**{"/applications/front-1/envs":[exact]})
+        result=pp.reconcile_frontend_environment(c,args(),{"status":"exists","uuid":"front-1"},{"status":"exists","uuid":"api-1"},self.apply_frontend_env_mode(),[])
+        self.assertEqual(result["status"], "exists")
+        self.assertEqual(result["variables"][0]["status"], "exists")
+
+    def test_stage6_secret_value_unverified_backend_env_does_not_block_frontend_env(self):
+        front=self.frontend_app(); api=self.backend_app()
+        hidden_db={"key":"DATABASE_URL","is_preview":False,"is_runtime":True,"is_buildtime":False,"is_literal":True,"is_multiline":False}
+        db={"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"healthy","internal_db_url":"postgresql://user:p%40ss@host:5432/db"}
+        c=self.client(**{"/applications":[api,front], "/applications/api-1":api, "/applications/front-1":front, "/applications/api-1/envs":[hidden_db], "/applications/front-1/envs":[], "/databases":[db], "/databases/db-1":db})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true","COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_FRONTEND_ENV_WRITES":"true"}, clear=False):
+            result=pp.provision(args(dry_run=False, apply=True, confirm_product="ledger", confirm_backend_application="ledger-api-dev", confirm_backend_environment="ledger-api-dev", confirm_frontend_application="ledger-frontend-dev", confirm_frontend_environment="ledger-frontend-dev"), client_factory=lambda:c)
+        self.assertEqual(result["frontend_application"]["status"], "exists")
+        self.assertTrue(any(call[0]=="POST" and call[1]=="/applications/front-1/envs" and call[2]["key"]=="VITE_API_URL" for call in c.calls))
+        self.assertTrue(any(b.get("reason")=="secret_value_unverified" for b in result["blockers"]))
+
+    def test_stage6_allowed_operations_reflect_backend_preconditions(self):
+        front=self.frontend_app(); api_bad=self.backend_app(git_branch="main")
+        c=self.client(**{"/applications":[front,api_bad], "/applications/front-1":front, "/applications/api-1":api_bad, "/applications/front-1/envs":[]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_FRONTEND_ENV_WRITES":"true"}, clear=False):
+            result=pp.provision(args(dry_run=False, apply=True, confirm_product="ledger", confirm_frontend_application="ledger-frontend-dev", confirm_frontend_environment="ledger-frontend-dev"), client_factory=lambda:c)
+        self.assertNotIn("frontend_application_create", result["safety"]["allowed_post_operations"])
+        self.assertNotIn("frontend_env_create", result["safety"]["allowed_post_operations"])
+        self.assertNotIn("frontend_env_update", result["safety"]["allowed_patch_operations"])
+        self.assertFalse(result["safety"]["frontend_backend_precondition_met"])
+
+    def test_stage6_allowlist_contracts_stage5_subset_and_stage6_exact(self):
+        stage5_posts={"project_create","environment_create","postgresql_create","postgresql_start","backend_application_create","backend_env_create"}
+        stage6_posts=stage5_posts | {"frontend_application_create","frontend_env_create"}
+        self.assertTrue(stage5_posts <= pp.ALLOWED_POST_KINDS)
+        self.assertEqual(pp.ALLOWED_POST_KINDS, stage6_posts)
+        self.assertEqual(pp.ALLOWED_PATCH_KINDS, {"backend_env_update","frontend_env_update"})
+
     def test_stage6_dry_run_get_only_and_three_resources(self):
         c=self.client(**{"/applications":[self.client().payloads["/applications"][0]]})
         r=pp.provision(args(), client_factory=lambda:c)

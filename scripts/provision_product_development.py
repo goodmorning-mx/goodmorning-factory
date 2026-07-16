@@ -2011,6 +2011,14 @@ def exact_frontend_matches(client: CoolifyClient, args: argparse.Namespace) -> l
 
 
 def backend_allows_frontend(backend: dict[str, Any]) -> bool:
+    """Return True only for a verified compatible Backend Application.
+
+    This is the single Stage 6 precondition for both Frontend Application
+    creation and Frontend VITE_API_URL reconciliation. Backend env status is
+    intentionally not part of this check: a hidden DATABASE_URL remains a
+    deployment blocker, not a Frontend provisioning blocker.
+    """
+
     return backend.get("status") in {"exists", "created"} and bool(backend.get("uuid"))
 
 
@@ -2092,6 +2100,9 @@ def frontend_env_write_action(resource_key: str, operation: str, status: str, *,
 
 def reconcile_frontend_environment(client: CoolifyClient, args: argparse.Namespace, frontend: dict[str, Any], backend: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]]) -> dict[str, Any]:
     uuid=frontend.get("uuid"); results=[]; blockers=[]
+    if not backend_allows_frontend(backend):
+        status = "blocked" if mode.is_apply else "planned_after_backend"
+        return {"status": status, "variables": [], "blockers": [{"resource":"frontend_environment", "key":"VITE_API_URL", "reason":"backend_application_not_verified", "backend_status": backend.get("status")}] if mode.is_apply else []}
     if frontend.get("status") not in {"exists","created"} or not uuid:
         return {"status":"blocked" if mode.is_apply else "planned", "variables":[], "blockers":[{"reason":"frontend_application_not_verified"}] if mode.is_apply else []}
     if str(uuid) == str(backend.get("uuid")):
@@ -2378,16 +2389,23 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
     blockers.extend(frontend_env.get("blockers", []))
     plan = build_plan(args, discovery)
     plan["mode"] = mode.name
-    allowed_posts = [] if not mode.is_apply else sorted({"project_create", "environment_create", "postgresql_create"} | ({"postgresql_start"} if mode.database_start_enabled else set()) | ({"backend_application_create"} if mode.backend_application_writes_enabled else set()) | ({"backend_env_create"} if mode.backend_env_writes_enabled else set()) | ({"frontend_application_create"} if mode.frontend_application_writes_enabled else set()) | ({"frontend_env_create"} if mode.frontend_env_writes_enabled else set()))
+    frontend_backend_ok = backend_allows_frontend(backend)
+    frontend_verified = frontend.get("status") in {"exists", "created"} and bool(frontend.get("uuid"))
+    frontend_application_operation_enabled = mode.frontend_application_writes_enabled and frontend_backend_ok
+    frontend_env_operation_enabled = mode.frontend_env_writes_enabled and frontend_backend_ok and frontend_verified
+    allowed_posts = [] if not mode.is_apply else sorted({"project_create", "environment_create", "postgresql_create"} | ({"postgresql_start"} if mode.database_start_enabled else set()) | ({"backend_application_create"} if mode.backend_application_writes_enabled else set()) | ({"backend_env_create"} if mode.backend_env_writes_enabled else set()) | ({"frontend_application_create"} if frontend_application_operation_enabled else set()) | ({"frontend_env_create"} if frontend_env_operation_enabled else set()))
     plan["safety"] = {
         "writes_enabled": mode.is_apply and mode.allow_resource_writes and mode.confirm_product == mode.product,
         "allowed_post_operations": allowed_posts,
-        "allowed_patch_operations": sorted((["backend_env_update"] if mode.is_apply and mode.backend_env_writes_enabled else []) + (["frontend_env_update"] if mode.is_apply and mode.frontend_env_writes_enabled else [])),
+        "allowed_patch_operations": sorted((["backend_env_update"] if mode.is_apply and mode.backend_env_writes_enabled else []) + (["frontend_env_update"] if mode.is_apply and frontend_env_operation_enabled else [])),
         "database_start_enabled": mode.database_start_enabled,
         "forbidden_methods": ["PUT", "DELETE"],
         "deploy_actions_enabled": False,
         "application_creation_enabled": mode.backend_application_writes_enabled or mode.frontend_application_writes_enabled,
-        "frontend_application_creation_enabled": mode.frontend_application_writes_enabled,
+        "frontend_application_creation_enabled": frontend_application_operation_enabled,
+        "frontend_application_gates_enabled": mode.frontend_application_writes_enabled,
+        "frontend_backend_precondition_met": frontend_backend_ok,
+        "frontend_env_operation_enabled": frontend_env_operation_enabled,
     }
     for resource in plan["resources"]:
         if resource["name"] == f"{args.product}-postgres-dev":

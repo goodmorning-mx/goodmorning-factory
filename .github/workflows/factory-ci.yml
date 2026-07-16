@@ -211,14 +211,14 @@ jobs:
           PY
 
 
-      - name: Verify stage-5 allowlist and documentation contract
+      - name: Verify Stage 2-5 regression contract and documentation markers
         run: |
           set -euo pipefail
           python - <<'PY'
           import scripts.provision_product_development as pp
-          expected = {'project_create', 'environment_create', 'postgresql_create', 'postgresql_start', 'backend_application_create', 'backend_env_create'}
-          if pp.ALLOWED_POST_KINDS != expected:
-              raise SystemExit(f'unexpected POST allowlist: {pp.ALLOWED_POST_KINDS}')
+          stage5_posts = {'project_create', 'environment_create', 'postgresql_create', 'postgresql_start', 'backend_application_create', 'backend_env_create'}
+          if not stage5_posts <= pp.ALLOWED_POST_KINDS:
+              raise SystemExit(f'Stage 2-5 POST operations missing from allowlist: {stage5_posts - pp.ALLOWED_POST_KINDS}')
           if pp.WRITE_METHODS != {'POST', 'PATCH'}:
               raise SystemExit(f'WRITE_METHODS must classify POST and PATCH as mutations: {pp.WRITE_METHODS}')
           if pp.BACKEND_ENV_KEYS != {'DATABASE_URL', 'APP_ENV', 'CORS_ORIGINS'}:
@@ -274,24 +274,28 @@ jobs:
           failures = [name for name, ok in checks.items() if not ok]
           if failures:
               raise SystemExit('missing canonical documentation semantics: ' + ', '.join(failures))
-          print('Stage-5 allowlist and Stage-6 canonical documentation markers verified.')
+          print('Stage 2-5 regression contract and documentation markers verified.')
           PY
 
 
-      - name: Verify stage-6 frontend application contract
+      - name: Verify Stage 6 canonical allowlist and frontend contract
         run: |
           set -euo pipefail
           python - <<'PY'
           import ast
           from pathlib import Path
           import scripts.provision_product_development as pp
+          expected_stage6_posts = {'project_create', 'environment_create', 'postgresql_create', 'postgresql_start', 'backend_application_create', 'backend_env_create', 'frontend_application_create', 'frontend_env_create'}
+          expected_stage6_patches = {'backend_env_update', 'frontend_env_update'}
+          if pp.ALLOWED_POST_KINDS != expected_stage6_posts:
+              raise SystemExit(f'Stage 6 canonical POST allowlist mismatch: {pp.ALLOWED_POST_KINDS}')
+          if pp.ALLOWED_PATCH_KINDS != expected_stage6_patches:
+              raise SystemExit(f'Stage 6 canonical PATCH allowlist mismatch: {pp.ALLOWED_PATCH_KINDS}')
           expected_app = {'name', 'project_uuid', 'environment_uuid', 'environment_name', 'server_uuid', 'destination_uuid', 'github_app_uuid', 'git_repository', 'git_branch', 'build_pack', 'base_directory', 'dockerfile_location', 'ports_exposes', 'domains', 'instant_deploy', 'is_auto_deploy_enabled', 'autogenerate_domain', 'health_check_enabled', 'health_check_path', 'health_check_port', 'health_check_method', 'health_check_scheme', 'health_check_return_code'}
           if pp.APPROVED_FRONTEND_APPLICATION_FIELDS != expected_app:
               raise SystemExit('Frontend Application payload field allowlist changed')
           if pp.APPROVED_FRONTEND_ENV_FIELDS != {'key','value','is_runtime','is_buildtime','is_preview','is_literal','is_multiline'}:
               raise SystemExit('Frontend env payload field allowlist changed')
-          if {'frontend_application_create','frontend_env_create'} - pp.ALLOWED_POST_KINDS or 'frontend_env_update' not in pp.ALLOWED_PATCH_KINDS:
-              raise SystemExit('Frontend write kinds missing from allowlist')
           payload = pp.frontend_create_payload(type('A', (), {'product':'ledger','repository':'goodmorning-mx/ledger'})(), {'project_uuid':'p','environment_uuid':'e','server_uuid':'s','destination_uuid':'d','github_app_uuid':'g','git_repository':'goodmorning-mx/ledger'})
           if payload['domains'] != 'https://dev.ledger.goodmorning.mx' or payload['ports_exposes'] != '80' or any(port in payload['domains'] for port in (':80',':3000',':8000')):
               raise SystemExit('Frontend domain/port contract broken')
