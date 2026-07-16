@@ -172,14 +172,17 @@ def _is_decision_path(path: tuple[str, ...]) -> bool:
     return any(part in DECISION_KEYS for part in path)
 
 
+BACKEND_PLAN_SAFE_STATUSES = {"absent", "would_create", "planned", "exists", "found", "created"}
+
+
 def _backend_plan_safe_for_frontend(result: dict[str, Any]) -> bool:
     backend = result.get("backend_application")
     if isinstance(backend, dict):
-        return backend.get("status") in {"absent", "would_create", "planned", "exists", "created"} and not backend.get("blockers")
+        return backend.get("status") in BACKEND_PLAN_SAFE_STATUSES and not backend.get("blockers")
     for resource in result.get("resources", []) if isinstance(result.get("resources"), list) else []:
         if isinstance(resource, dict) and str(resource.get("name", "")).endswith("-api-dev"):
-            return resource.get("status") in {"absent", "would_create", "planned", "exists", "created"} and not resource.get("blockers")
-    return True
+            return resource.get("status") in BACKEND_PLAN_SAFE_STATUSES and not resource.get("blockers")
+    return False
 
 
 def classify_plan_safety(result: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
@@ -194,8 +197,8 @@ def classify_plan_safety(result: dict[str, Any]) -> tuple[bool, list[dict[str, A
         if isinstance(node.get("blockers"), list) and node.get("blockers"):
             blockers.append(_safe_blocker(path + ("blockers",), node, "blockers_present"))
         if status == "planned_after_backend":
-            dependency_reason = str(node.get("reason", "backend_dependency_planned"))
-            if "backend" not in dependency_reason:
+            dependency_reason = str(node.get("reason") or "")
+            if not dependency_reason or "backend" not in dependency_reason.lower():
                 blockers.append(_safe_blocker(path, node, "planned_after_backend_reason_unverified"))
             if node.get("blockers") or not _backend_plan_safe_for_frontend(result):
                 blockers.append(_safe_blocker(path, node, "planned_after_backend_backend_not_safe"))

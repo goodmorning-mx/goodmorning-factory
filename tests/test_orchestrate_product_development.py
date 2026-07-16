@@ -122,6 +122,25 @@ class Stage9OrchestratorTests(unittest.TestCase):
             self.assertFalse(ok, fixture); self.assertTrue(blockers)
             self.assertNotIn("postgres://", repr(blockers)); self.assertNotIn("token", repr(blockers).lower())
 
+
+    def test_planned_after_backend_requires_explicit_safe_backend_evidence(self):
+        positive={"status":"dry_run","selected_destination":{"status":"found"},"backend_application":{"status":"would_create"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"},"blockers":[]}
+        self.assertTrue(op.classify_plan_safety(positive)[0])
+        negative_cases=[
+            {"status":"dry_run","selected_destination":{"status":"found"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"}},
+            {"status":"dry_run","selected_destination":{"status":"found"},"backend_application":{"status":"would_create"},"frontend_application":{"status":"planned_after_backend"}},
+            {"status":"dry_run","selected_destination":{"status":"found"},"backend_application":{"status":"would_create"},"frontend_application":{"status":"planned_after_backend","reason":""}},
+            {"status":"dry_run","selected_destination":{"status":"found"},"backend_application":{"status":"would_create"},"frontend_application":{"status":"planned_after_backend","reason":"application_dependency_planned"}},
+            {"status":"dry_run","selected_destination":{"status":"found"},"backend_application":{"status":"future_backend_status"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"}},
+            {"status":"dry_run","selected_destination":{"status":"found"},"backend_application":{"status":"would_create","blockers":[{"reason":"backend_blocked"}]},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"}},
+        ]
+        for fixture in negative_cases:
+            ok, blockers=op.classify_plan_safety(fixture)
+            self.assertFalse(ok, fixture)
+            self.assertTrue(blockers)
+            self.assertNotIn("postgres://", repr(blockers))
+            self.assertNotIn("secret-value", repr(blockers).lower())
+
     def test_execution_metadata_and_exit_codes(self):
         with mock.patch.dict(os.environ, env_for("deploy-backend","plan"), clear=True), mock.patch.object(op,"provision",return_value={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"would_deploy"}}):
             code,res=op.orchestrate(oargs(operation="deploy-backend", phase="plan"), client_factory=lambda: object())
