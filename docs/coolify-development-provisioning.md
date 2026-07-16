@@ -1,24 +1,24 @@
 # Coolify development provisioning
 
-Stage 5 is the current canonical development provisioning architecture for GoodMorning product repositories. Each product uses three independent Coolify resources:
+Stage 6 is the current canonical development provisioning architecture for GoodMorning product repositories. Each product uses three independent Coolify resources:
 
 1. a private native PostgreSQL 16 database named `<product>-postgres-dev`;
 2. a Backend Dockerfile Application named `<product>-api-dev`;
-3. a Frontend Dockerfile Application named `<product>-frontend-dev` planned for Stage 6.
+3. a Frontend Dockerfile Application named `<product>-frontend-dev`.
 
-Legacy Compose provisioning is deprecated for new products and documented separately in `docs/legacy-coolify-compose-provisioning.md`. The legacy Compose Application named `<product>-dev` remains migration context only. Stage 5 does not create, patch, deploy, stop, restart, delete, or otherwise modify the legacy Compose Application.
+Legacy Compose provisioning is deprecated for new products and documented separately in `docs/legacy-coolify-compose-provisioning.md`. The legacy Compose Application named `<product>-dev` remains migration context only. Stage 6 does not create, patch, deploy, stop, restart, delete, or otherwise modify the legacy Compose Application.
 
 ## Confirmed Coolify API contract
 
-The Stage 5 implementation is pinned to the upstream Coolify v4.x API surface verified from the official `coollabsio/coolify` `openapi.yaml`, upstream `ApplicationsController.php`, official Coolify documentation, and `coollabsio/coolify-cli` command metadata:
+The Stage 6 implementation is pinned to the upstream Coolify v4.x API surface verified from the official `coollabsio/coolify` `openapi.yaml`, upstream `ApplicationsController.php`, official Coolify documentation, and `coollabsio/coolify-cli` command metadata:
 
-- `POST /api/v1/applications/private-github-app` creates the Backend Private GitHub App Application.
+- `POST /api/v1/applications/private-github-app` creates the Backend or Frontend Private GitHub App Application.
 - `GET /api/v1/applications/{uuid}` reads Application detail.
 - `GET /api/v1/applications/{uuid}/envs` lists Application environment variables.
 - `POST /api/v1/applications/{uuid}/envs` creates one Application environment variable.
 - `PATCH /api/v1/applications/{uuid}/envs` updates one Application environment variable.
 
-If a future upstream contract contradicts these endpoints or the approved field names, Stage 5 must fail closed for the affected write path and keep dry-run/discovery read-only.
+If a future upstream contract contradicts these endpoints or the approved field names, Stage 6 must fail closed for the affected write path and keep dry-run/discovery read-only.
 
 ## Backend Application contract
 
@@ -123,7 +123,7 @@ Creation is idempotent: compatible existing resources are reused, absent resourc
 
 ## Stage boundaries
 
-Stage 5 does not create Frontend, deploy Frontend, deploy Backend, create Compose Applications, modify Compose Applications, delete resources, or run remote commands. Frontend Dockerfile Application provisioning remains planned for Stage 6.
+Stage 6 may create/configure the Frontend Application and VITE_API_URL only; it does not deploy Frontend, deploy Backend, create Compose Applications, modify Compose Applications, delete resources, or run remote commands.
 
 ## Backend UUID binding and env mutation verification
 
@@ -136,3 +136,27 @@ A successful `POST` or `PATCH` response only means Coolify accepted a write atte
 For `DATABASE_URL`, a hidden value remains `secret_value_unverified`; Stage 5 does not overwrite hidden secrets blindly. `POST`/`PATCH` 409 or 422 conflicts trigger one exact env rediscovery and compatibility check, never a retry, rollback, or delete. PATCH failures after the request is sent, including 5xx, timeouts, URL errors, malformed JSON, or unexpected 2xx statuses, are treated as mutation `write_outcome_unknown` just like POST failures.
 
 Operationally, an unverified hidden `DATABASE_URL` is a deployment dependency blocker, not a reconciliation dependency for independent non-secret variables: `APP_ENV` and `CORS_ORIGINS` should still be created or updated and verified through the post-write GET loop whenever their own writes are safe.
+
+## Stage 6: Frontend Dockerfile Application provisioning
+
+Stage 6 is now the canonical development provisioning architecture. The plan contains three independent resources: native private PostgreSQL 16 (`<product>-postgres-dev`), Backend Dockerfile Application (`<product>-api-dev`), and Frontend Dockerfile Application (`<product>-frontend-dev`). `compose.yaml` remains local-development and CI-only; it is not the Coolify production/dev provisioning unit.
+
+The Frontend is created only through the confirmed Coolify Private GitHub App Application endpoint: `POST /api/v1/applications/private-github-app`. Discovery and verification use `GET /api/v1/applications/{uuid}`, `GET /api/v1/applications/{uuid}/envs`, `POST /api/v1/applications/{uuid}/envs`, and `PATCH /api/v1/applications/{uuid}/envs`. The upstream sources checked for this contract are Coolify `openapi.yaml` on `v4.x`, `ApplicationsController.php` on `v4.x`, the official Coolify GitHub App documentation, and the Coolify CLI/API surface where useful.
+
+The redacted Frontend Application payload is limited to: `name`, `project_uuid`, `environment_uuid`, `environment_name=dev`, `server_uuid`, `destination_uuid`, `github_app_uuid`, `git_repository`, `git_branch=dev`, `build_pack=dockerfile`, `base_directory=/frontend`, `dockerfile_location=/Dockerfile`, `ports_exposes="80"`, `domains=https://dev.<product>.goodmorning.mx`, `instant_deploy=false`, `is_auto_deploy_enabled=false`, `autogenerate_domain=false`, and the healthcheck fields `health_check_enabled=true`, `health_check_path=/`, `health_check_port="80"`, `health_check_method=GET`, `health_check_scheme=http`, `health_check_return_code=200`. Public frontend URLs must stay clean and must never include `:80`, `:3000`, or `:8000`; port 80 is only the internal Nginx/Coolify/Traefik port.
+
+`VITE_API_URL` is the only Frontend variable reconciled in Stage 6. Its value is public and must be exactly `https://api.dev.<product>.goodmorning.mx`. The variable is build-time (`is_buildtime=true`) and not runtime (`is_runtime=false`), not preview, literal, and single-line. The GoodMorning MVP template builds the Frontend with Node 22, runs `npm ci`, passes `ARG/ENV VITE_API_URL`, runs `npm run build`, and serves the built SPA with Nginx on internal port 80; therefore changing `VITE_API_URL` requires a rebuild and later deployment. `DATABASE_URL`, backend env vars, tokens, and secrets never belong to the Frontend.
+
+Frontend Application writes require all base gates plus `COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES=true` and `--confirm-frontend-application <product>-frontend-dev`. Frontend env writes additionally require `COOLIFY_ALLOW_FRONTEND_ENV_WRITES=true` and `--confirm-frontend-environment <product>-frontend-dev`, a verified immutable Frontend UUID binding, and a `VITE_API_URL` value bound in memory to the verified Backend API domain.
+
+Backend is a precondition for Frontend writes. The Backend Application must be exact, in scope, non-duplicated, compatible, use the selected GitHub App, repository and branch `dev`, have clean domain `https://api.dev.<product>.goodmorning.mx`, internal port `8000`, `base_directory=/backend`, and `dockerfile_location=/Dockerfile`. `DATABASE_URL` with `secret_value_unverified` remains a global blocker for future deployment readiness but does not prevent creating/configuring Frontend or writing `VITE_API_URL`.
+
+Idempotency is conservative: compatible resources are reused; absent Frontend resources are planned in dry-run and created once in apply; duplicates block; incompatible Applications are marked `recreate_required`; scope or compatibility gaps block. HTTP 409/422 conflicts trigger GET rediscovery without retrying or parsing response text. 5xx, timeouts, URL errors, or invalid JSON on writes produce `write_outcome_unknown`, stop dependent writes, and do not retry or roll back.
+
+Stage 6 performs zero deployments, starts, restarts, stops, deletes, public smoke checks, SSH, rsync, SCP, Docker remote commands, server-local file operations, general Application PATCHes, PUTs, DELETEs, env bulk writes, or Compose Application creation. Controlled deployment remains pending for Stage 7.
+
+### Stage 6 Backend precondition for Frontend env writes
+
+Stage 6 discovery may report an existing compatible Frontend Application even when the Backend Application is absent or not yet verified; discovery is read-only and may keep the discovered Frontend UUID for reporting. That does not authorize `VITE_API_URL` writes. Frontend env create/update requires the same reusable Backend Application precondition as Frontend Application creation: Backend status must be `exists` or `created`, include a verified UUID, and have passed the Stage 5 compatibility checks. Complete gates alone never substitute for this structural precondition.
+
+If Backend is `absent`, `duplicate`, `recreate_required`, `incompatible`, `out_of_scope`, `scope_unverified`, `compatibility_unverified`, `created_unverified`, or `write_outcome_unknown`, Stage 6 reports the Frontend env as blocked in apply or planned after Backend in dry-run and performs zero POST/PATCH env writes. A `backend_environment` result of `secret_value_unverified` for hidden `DATABASE_URL` remains a deployment-readiness blocker only; it does not block Frontend Application discovery/provisioning or `VITE_API_URL` reconciliation when the Backend Application itself is verified. Stage 6 still performs zero deployment, lifecycle, or smoke-check operations.

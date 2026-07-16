@@ -34,12 +34,16 @@ WRITE_METHODS = {"POST", "PATCH"}
 POST_PROJECT_CREATE = "/projects"
 POST_POSTGRES_CREATE = "/databases/postgresql"
 POST_BACKEND_APPLICATION_CREATE = "/applications/private-github-app"
+POST_FRONTEND_APPLICATION_CREATE = "/applications/private-github-app"
+FRONTEND_ENV_KEYS = {"VITE_API_URL"}
 BACKEND_ENV_KEYS = {"DATABASE_URL", "APP_ENV", "CORS_ORIGINS"}
 APPROVED_BACKEND_APPLICATION_FIELDS = {"name", "project_uuid", "environment_uuid", "environment_name", "server_uuid", "destination_uuid", "github_app_uuid", "git_repository", "git_branch", "build_pack", "base_directory", "dockerfile_location", "ports_exposes", "domains", "instant_deploy", "is_auto_deploy_enabled", "autogenerate_domain", "health_check_enabled", "health_check_path", "health_check_port", "health_check_method", "health_check_scheme", "health_check_return_code"}
 APPROVED_BACKEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline", "is_shown_once"}
+APPROVED_FRONTEND_APPLICATION_FIELDS = APPROVED_BACKEND_APPLICATION_FIELDS
+APPROVED_FRONTEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline"}
 ENV_PAYLOAD_FIELDS = APPROVED_BACKEND_ENV_FIELDS
-ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start", "backend_application_create", "backend_env_create"}
-ALLOWED_PATCH_KINDS = {"backend_env_update"}
+ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start", "backend_application_create", "backend_env_create", "frontend_application_create", "frontend_env_create"}
+ALLOWED_PATCH_KINDS = {"backend_env_update", "frontend_env_update"}
 FORBIDDEN_ENDPOINT_RE = re.compile(r"/(deploy|deployments|restart|stop)(?:/|$)", re.I)
 NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
 
@@ -101,6 +105,10 @@ class ExecutionMode:
     confirm_backend_application: str | None = None
     allow_backend_env_writes: bool = False
     confirm_backend_environment: str | None = None
+    allow_frontend_application_writes: bool = False
+    confirm_frontend_application: str | None = None
+    allow_frontend_env_writes: bool = False
+    confirm_frontend_environment: str | None = None
 
     @property
     def is_apply(self) -> bool:
@@ -128,6 +136,18 @@ class ExecutionMode:
     def backend_env_writes_enabled(self) -> bool:
         return self.backend_application_writes_enabled and self.allow_backend_env_writes and self.confirm_backend_environment == self.backend_application_name
 
+    @property
+    def frontend_application_name(self) -> str:
+        return f"{self.product}-frontend-dev"
+
+    @property
+    def frontend_application_writes_enabled(self) -> bool:
+        return self.is_apply and self.allow_resource_writes and self.confirm_product == self.product and self.allow_frontend_application_writes and self.confirm_frontend_application == self.frontend_application_name
+
+    @property
+    def frontend_env_writes_enabled(self) -> bool:
+        return self.frontend_application_writes_enabled and self.allow_frontend_env_writes and self.confirm_frontend_environment == self.frontend_application_name
+
     def gates(self) -> dict[str, Any]:
         return {
             "apply_requested": self.is_apply,
@@ -149,6 +169,13 @@ class ExecutionMode:
             "confirm_backend_environment_matches": self.confirm_backend_environment == self.backend_application_name if self.confirm_backend_environment is not None else False,
             "backend_env_writes_enabled": self.backend_env_writes_enabled,
             "backend_application_creation_enabled": self.backend_application_writes_enabled,
+            "frontend_application_env": self.allow_frontend_application_writes,
+            "confirm_frontend_application_matches": self.confirm_frontend_application == self.frontend_application_name if self.confirm_frontend_application is not None else False,
+            "frontend_application_writes_enabled": self.frontend_application_writes_enabled,
+            "frontend_env_env": self.allow_frontend_env_writes,
+            "confirm_frontend_environment_matches": self.confirm_frontend_environment == self.frontend_application_name if self.confirm_frontend_environment is not None else False,
+            "frontend_env_writes_enabled": self.frontend_env_writes_enabled,
+            "frontend_application_creation_enabled": self.frontend_application_writes_enabled,
         }
 
     def assert_write_gates(self) -> None:
@@ -243,6 +270,9 @@ class CoolifyClient:
         self.expected_backend_application_uuid: str | None = None
         self.backend_application_bindings: dict[str, Any] = {}
         self.expected_backend_env_contract: dict[str, dict[str, Any]] | None = None
+        self.expected_frontend_application_uuid: str | None = None
+        self.frontend_application_bindings: dict[str, Any] = {}
+        self.expected_frontend_env_contract: dict[str, dict[str, Any]] | None = None
 
 
     def bind_backend_application_bindings(self, bindings: dict[str, Any]) -> None:
@@ -267,6 +297,74 @@ class CoolifyClient:
             raise ProvisioningError("Refusing to change the verified Backend Application UUID binding.", error_type="safety")
         self.expected_backend_application_uuid = text
         self.bind_backend_application_bindings(dict(bindings or {}))
+
+
+    def bind_frontend_application_bindings(self, bindings: dict[str, Any]) -> None:
+        sanitized = dict(bindings or {})
+        if self.frontend_application_bindings and self.frontend_application_bindings != sanitized:
+            raise ProvisioningError("Refusing to change selected Frontend Application bindings during this execution.", error_type="safety")
+        self.frontend_application_bindings = sanitized
+
+    def bind_frontend_env_contract(self, desired_env: list[dict[str, Any]]) -> None:
+        contract = {item["key"]: frontend_env_payload(item) for item in desired_env}
+        if set(contract) != FRONTEND_ENV_KEYS:
+            raise ProvisioningError("Frontend env desired contract must include exactly VITE_API_URL.", error_type="safety")
+        if self.expected_frontend_env_contract is not None and self.expected_frontend_env_contract != contract:
+            raise ProvisioningError("Refusing to change the bound Frontend env desired contract during this execution.", error_type="safety")
+        self.expected_frontend_env_contract = contract
+
+    def bind_frontend_application_uuid(self, uuid: Any, bindings: dict[str, Any] | None = None) -> None:
+        text = str(uuid or "")
+        if not text:
+            raise ProvisioningError("Cannot bind an empty Frontend Application UUID.", error_type="safety")
+        if self.expected_backend_application_uuid is not None and self.expected_backend_application_uuid == text:
+            raise ProvisioningError("Frontend Application UUID must not equal the Backend Application UUID binding.", error_type="safety")
+        if self.expected_frontend_application_uuid is not None and self.expected_frontend_application_uuid != text:
+            raise ProvisioningError("Refusing to change the verified Frontend Application UUID binding.", error_type="safety")
+        self.expected_frontend_application_uuid = text
+        self.bind_frontend_application_bindings(dict(bindings or {}))
+
+    def _frontend_env_path_matches_binding(self, path: str) -> bool:
+        if self.expected_frontend_application_uuid is None:
+            return False
+        encoded = urllib.parse.quote(self.expected_frontend_application_uuid, safe="")
+        return path == f"/applications/{encoded}/envs"
+
+    def _validate_frontend_application_payload(self, json_body: dict[str, Any] | None) -> None:
+        if not isinstance(json_body, dict):
+            raise ProvisioningError("Frontend Application creation requires an approved JSON object payload.", error_type="safety")
+        if set(json_body) != APPROVED_FRONTEND_APPLICATION_FIELDS:
+            raise ProvisioningError("Frontend Application payload fields do not exactly match the approved contract.", error_type="safety")
+        expected_domain = f"https://dev.{self.mode.product}.goodmorning.mx"
+        checks = {"name": self.mode.frontend_application_name, "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/frontend", "dockerfile_location": "/Dockerfile", "ports_exposes": "80", "domains": expected_domain, "instant_deploy": False, "is_auto_deploy_enabled": False, "autogenerate_domain": False, "health_check_enabled": True, "health_check_path": "/", "health_check_port": "80", "health_check_method": "GET", "health_check_scheme": "http", "health_check_return_code": 200}
+        for key, expected in checks.items():
+            if json_body.get(key) != expected:
+                raise ProvisioningError(f"Frontend Application payload field {key} does not match the approved Stage 6 contract.", error_type="safety")
+        if re.search(r":(?:80|3000|8000)(?:/|$)", str(json_body.get("domains") or "")):
+            raise ProvisioningError("Frontend Application public domain must not include an internal port.", error_type="safety")
+        for key in ("project_uuid", "environment_uuid", "server_uuid", "destination_uuid", "github_app_uuid"):
+            expected = self.frontend_application_bindings.get(key)
+            if expected not in (None, "") and str(json_body.get(key)) != str(expected):
+                raise ProvisioningError(f"Frontend Application payload binding {key} does not match the selected binding.", error_type="safety")
+        if json_body.get("environment_name") != "dev":
+            raise ProvisioningError("Frontend Application payload must target environment_name=dev.", error_type="safety")
+        expected_repository = self.frontend_application_bindings.get("git_repository") or self.frontend_application_bindings.get("repository")
+        if not expected_repository or normalize_repository(json_body.get("git_repository")) != normalize_repository(expected_repository):
+            raise ProvisioningError("Frontend Application payload repository does not match the selected repository binding.", error_type="safety")
+
+    def _validate_frontend_env_payload(self, json_body: dict[str, Any] | None) -> None:
+        if not isinstance(json_body, dict):
+            raise ProvisioningError("Frontend env write requires an approved JSON object payload.", error_type="safety")
+        if self.expected_frontend_env_contract is None:
+            raise ProvisioningError("Frontend env writes require a bound desired env contract.", error_type="safety")
+        if set(json_body) != APPROVED_FRONTEND_ENV_FIELDS:
+            raise ProvisioningError("Frontend env payload fields do not exactly match the approved VITE_API_URL contract.", error_type="safety")
+        if json_body.get("key") != "VITE_API_URL":
+            raise ProvisioningError("Frontend env payload key must be exactly VITE_API_URL.", error_type="safety")
+        expected_payload = self.expected_frontend_env_contract.get("VITE_API_URL")
+        if json_body != expected_payload:
+            raise ProvisioningError("Frontend env value does not match the bound desired contract.", error_type="safety")
+        validate_vite_api_url(str(json_body.get("value") or ""), self.mode.product)
 
     def _backend_env_path_matches_binding(self, path: str) -> bool:
         if self.expected_backend_application_uuid is None:
@@ -356,19 +454,28 @@ class CoolifyClient:
         if method in {"PUT", "DELETE"}:
             raise ProvisioningError(f"Refusing non-read-only Coolify method {method}. Method {method} is always forbidden in this stage.", error_type="safety", method=method, path=path)
         if method == "PATCH":
-            if post_kind != "backend_env_update" or not getattr(self.mode, "backend_env_writes_enabled", False):
-                raise ProvisioningError("Refusing non-read-only Coolify method PATCH. PATCH is allowed only for verified Backend Application env variables after env gates.", error_type="safety", method=method, path=path)
-            if not self._backend_env_path_matches_binding(path):
-                raise ProvisioningError("PATCH endpoint is limited to env vars for the verified Backend Application UUID binding.", error_type="safety", method=method, path=path)
-            self._validate_backend_env_payload(json_body)
+            if post_kind == "backend_env_update" and getattr(self.mode, "backend_env_writes_enabled", False):
+                if not self._backend_env_path_matches_binding(path):
+                    raise ProvisioningError("PATCH endpoint is limited to env vars for the verified Backend Application UUID binding.", error_type="safety", method=method, path=path)
+                self._validate_backend_env_payload(json_body)
+            elif post_kind == "frontend_env_update" and getattr(self.mode, "frontend_env_writes_enabled", False):
+                if not self._frontend_env_path_matches_binding(path):
+                    raise ProvisioningError("PATCH endpoint is limited to env vars for the verified Frontend Application UUID binding.", error_type="safety", method=method, path=path)
+                self._validate_frontend_env_payload(json_body)
+            else:
+                raise ProvisioningError("Refusing non-read-only Coolify method PATCH. PATCH is allowed only for verified Application env variables after env gates.", error_type="safety", method=method, path=path)
         if method == "POST":
             self.mode.assert_write_gates()
-            if path.startswith("/applications") and post_kind not in {"backend_application_create", "backend_env_create"}:
-                raise ProvisioningError("Only Backend Application creation/env writes are allowlisted for applications in Stage 5.", error_type="safety", method=method, path=path)
+            if path.startswith("/applications") and post_kind not in {"backend_application_create", "backend_env_create", "frontend_application_create", "frontend_env_create"}:
+                raise ProvisioningError("Only Backend/Frontend Application creation/env writes are allowlisted for applications in Stage 6.", error_type="safety", method=method, path=path)
             if post_kind == "backend_application_create" and not getattr(self.mode, "backend_application_writes_enabled", False):
                 raise ProvisioningError("Backend Application creation requires COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES=true and exact --confirm-backend-application.", error_type="safety", method=method, path=path)
             if post_kind == "backend_env_create" and not getattr(self.mode, "backend_env_writes_enabled", False):
                 raise ProvisioningError("Backend env writes require COOLIFY_ALLOW_BACKEND_ENV_WRITES=true and exact --confirm-backend-environment.", error_type="safety", method=method, path=path)
+            if post_kind == "frontend_application_create" and not getattr(self.mode, "frontend_application_writes_enabled", False):
+                raise ProvisioningError("Frontend Application creation requires COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES=true and exact --confirm-frontend-application.", error_type="safety", method=method, path=path)
+            if post_kind == "frontend_env_create" and not getattr(self.mode, "frontend_env_writes_enabled", False):
+                raise ProvisioningError("Frontend env writes require COOLIFY_ALLOW_FRONTEND_ENV_WRITES=true and exact --confirm-frontend-environment.", error_type="safety", method=method, path=path)
             if post_kind not in ALLOWED_POST_KINDS:
                 raise ProvisioningError("POST requires a stage allowlisted operation kind.", error_type="safety", method=method, path=path)
             if post_kind == "project_create" and path != POST_PROJECT_CREATE:
@@ -385,6 +492,14 @@ class CoolifyClient:
                 if not self._backend_env_path_matches_binding(path):
                     raise ProvisioningError("Backend env create endpoint is limited to the verified Backend Application UUID binding.", error_type="safety", method=method, path=path)
                 self._validate_backend_env_payload(json_body)
+            if post_kind == "frontend_application_create":
+                if path != POST_FRONTEND_APPLICATION_CREATE:
+                    raise ProvisioningError("Frontend Application creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
+                self._validate_frontend_application_payload(json_body)
+            if post_kind == "frontend_env_create":
+                if not self._frontend_env_path_matches_binding(path):
+                    raise ProvisioningError("Frontend env create endpoint is limited to the verified Frontend Application UUID binding.", error_type="safety", method=method, path=path)
+                self._validate_frontend_env_payload(json_body)
             if post_kind == "postgresql_start":
                 if not self.mode.database_start_enabled:
                     raise ProvisioningError("PostgreSQL start requires COOLIFY_ALLOW_DATABASE_START=true and exact --confirm-database-start before POST.", error_type="safety", method=method, path=path)
@@ -497,6 +612,15 @@ class CoolifyClient:
 
     def update_backend_env(self, uuid: str, payload: dict[str, Any]) -> Response:
         return self.request("PATCH", f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="backend_env_update")
+
+    def create_frontend_application(self, payload: dict[str, Any]) -> Response:
+        return self.request("POST", POST_FRONTEND_APPLICATION_CREATE, json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_application_create")
+
+    def create_frontend_env(self, uuid: str, payload: dict[str, Any]) -> Response:
+        return self.request("POST", f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_env_create")
+
+    def update_frontend_env(self, uuid: str, payload: dict[str, Any]) -> Response:
+        return self.request("PATCH", f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_env_update")
 
 
 def validate_base_url(value: str) -> str:
@@ -1063,6 +1187,10 @@ def mode_from_args(args: argparse.Namespace) -> ExecutionMode:
         getattr(args, "confirm_backend_application", None),
         os.environ.get("COOLIFY_ALLOW_BACKEND_ENV_WRITES") == "true",
         getattr(args, "confirm_backend_environment", None),
+        os.environ.get("COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES") == "true",
+        getattr(args, "confirm_frontend_application", None),
+        os.environ.get("COOLIFY_ALLOW_FRONTEND_ENV_WRITES") == "true",
+        getattr(args, "confirm_frontend_environment", None),
     )
 
 
@@ -1770,6 +1898,254 @@ def ensure_backend_application(client: CoolifyClient, args: argparse.Namespace, 
     return {**verified,"status":"created_unverified","write_performed":True}
 
 
+
+def frontend_application_name(product: str) -> str:
+    return f"{product}-frontend-dev"
+
+
+def validate_clean_public_domain(url: str, expected: str) -> None:
+    parsed = urllib.parse.urlparse(url)
+    if url != expected or parsed.scheme != "https" or parsed.netloc != urllib.parse.urlparse(expected).netloc or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ProvisioningError("Public domain must be the exact clean HTTPS GoodMorning development domain without port, path, query, or fragment.", error_type="safety")
+    if parsed.port is not None or re.search(r":(?:80|3000|8000)$", parsed.netloc):
+        raise ProvisioningError("Public domain must not include an internal port.", error_type="safety")
+
+
+def validate_vite_api_url(url: str, product: str) -> None:
+    expected = api_domain(product)
+    parsed = urllib.parse.urlparse(url)
+    if url != expected or parsed.scheme != "https" or parsed.netloc != f"api.dev.{product}.goodmorning.mx" or parsed.path not in ("", "/") or parsed.query or parsed.fragment:
+        raise ProvisioningError("VITE_API_URL must be the exact clean Backend API HTTPS domain.", error_type="safety")
+    if parsed.hostname in {"localhost", "127.0.0.1"} or re.fullmatch(r"\d+\.\d+\.\d+\.\d+", parsed.hostname or "") or parsed.port is not None:
+        raise ProvisioningError("VITE_API_URL must not use localhost, IPs, or ports.", error_type="safety")
+
+
+def frontend_create_payload(args: argparse.Namespace, bindings: dict[str, Any]) -> dict[str, Any]:
+    domain = frontend_domain(args.product)
+    validate_clean_public_domain(domain, f"https://dev.{args.product}.goodmorning.mx")
+    return {
+        "name": frontend_application_name(args.product),
+        "project_uuid": bindings.get("project_uuid"),
+        "environment_uuid": bindings.get("environment_uuid"),
+        "environment_name": "dev",
+        "server_uuid": bindings.get("server_uuid"),
+        "destination_uuid": bindings.get("destination_uuid"),
+        "github_app_uuid": bindings.get("github_app_uuid"),
+        "git_repository": normalize_repository(args.repository),
+        "git_branch": "dev",
+        "build_pack": "dockerfile",
+        "base_directory": "/frontend",
+        "dockerfile_location": "/Dockerfile",
+        "ports_exposes": "80",
+        "domains": domain,
+        "instant_deploy": False,
+        "is_auto_deploy_enabled": False,
+        "autogenerate_domain": False,
+        "health_check_enabled": True,
+        "health_check_path": "/",
+        "health_check_port": "80",
+        "health_check_method": "GET",
+        "health_check_scheme": "http",
+        "health_check_return_code": 200,
+    }
+
+
+def frontend_payload_preview(payload: dict[str, Any]) -> dict[str, Any]:
+    return redact(dict(payload))
+
+
+def frontend_application_differences(item: dict[str, Any], args: argparse.Namespace, context: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    expected = frontend_create_payload(args, context)
+    paths = {
+        "name": ("name",), "git_repository": ("git_repository", "repository"), "git_branch": ("git_branch", "branch"),
+        "build_pack": ("build_pack", "buildpack"), "base_directory": ("base_directory",), "dockerfile_location": ("dockerfile_location", "dockerfile"),
+        "ports_exposes": ("ports_exposes",), "domains": ("domains", "domain"), "github_app_uuid": ("github_app_uuid", "source.uuid", "github_app.uuid"),
+        "destination_uuid": ("destination_uuid", "destination.uuid", "destination.id"),
+    }
+    diffs=[]; unver=[]
+    for key, ps in paths.items():
+        actual = nested_field(item, *ps); exp = expected.get(key)
+        if actual in (None, ""):
+            unver.append({"field": key, "expected": exp})
+        elif key == "domains" and re.search(r":(?:80|3000|8000)(?:/|$)", normalize_domain(actual)):
+            diffs.append({"field": key, "expected": exp, "actual": "contains_port"})
+        elif not normalized_equal(key, actual, exp):
+            diffs.append({"field": key, "expected": exp, "actual": actual})
+    for key in ("instant_deploy", "is_auto_deploy_enabled", "autogenerate_domain"):
+        actual = nested_field(item, key)
+        if actual in (None, ""):
+            continue
+        if bool_value(actual) is not False:
+            diffs.append({"field": key, "expected": False, "actual": actual})
+    hc = {"health_check_enabled": True, "health_check_path": "/", "health_check_port": "80", "health_check_method": "GET", "health_check_scheme": "http", "health_check_return_code": 200}
+    for key, exp in hc.items():
+        actual = nested_field(item, key)
+        if actual in (None, ""):
+            unver.append({"field": key, "expected": exp})
+        elif str(actual).lower() != str(exp).lower():
+            diffs.append({"field": key, "expected": exp, "actual": actual})
+    return diffs, unver
+
+
+def classify_frontend_application(matches: list[dict[str, Any]], args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    name = frontend_application_name(args.product)
+    if not matches: return {"name": name, "status": "absent"}
+    scoped=[]; reports=[]
+    for item in matches:
+        scope, details = resource_scope(item, context)
+        reports.append({"resource": operational_summary(item), "scope": scope, "scope_details": details})
+        if scope == "in_scope": scoped.append(item)
+    if not scoped:
+        return {"name": name, "status": "out_of_scope" if all(r["scope"]=="out_of_scope" for r in reports) else "scope_unverified", "matches": reports}
+    if len(scoped)>1: return {"name": name, "status": "duplicate", "matches": [operational_summary(i) for i in scoped]}
+    item=scoped[0]
+    diffs, unver = frontend_application_differences(item,args,context)
+    if diffs: return {"name": name, "status": "incompatible", "uuid": field(item,"uuid","id"), "differences": diffs, "matches": reports}
+    if unver: return {"name": name, "status": "compatibility_unverified", "uuid": field(item,"uuid","id"), "unverified_fields": unver, "matches": reports}
+    return {"name": name, "status": "exists", "uuid": field(item,"uuid","id"), "matches": reports}
+
+
+def exact_frontend_matches(client: CoolifyClient, args: argparse.Namespace) -> list[dict[str, Any]]:
+    name=frontend_application_name(args.product)
+    return [i for i in item_list(client.get("/applications")) if str(field(i,"name") or "") == name]
+
+
+def backend_allows_frontend(backend: dict[str, Any]) -> bool:
+    """Return True only for a verified compatible Backend Application.
+
+    This is the single Stage 6 precondition for both Frontend Application
+    creation and Frontend VITE_API_URL reconciliation. Backend env status is
+    intentionally not part of this check: a hidden DATABASE_URL remains a
+    deployment blocker, not a Frontend provisioning blocker.
+    """
+
+    return backend.get("status") in {"exists", "created"} and bool(backend.get("uuid"))
+
+
+def ensure_frontend_application(client: CoolifyClient, args: argparse.Namespace, context: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]], backend: dict[str, Any]) -> dict[str, Any]:
+    if hasattr(client, "bind_frontend_application_bindings"):
+        client.bind_frontend_application_bindings(dict(context))
+    matches=[]
+    for m in exact_frontend_matches(client,args):
+        uuid=field(m,"uuid","id")
+        if uuid:
+            try: m=hydrate_application_by_uuid(client,uuid,m)
+            except ProvisioningError: pass
+        matches.append(m)
+    classified=classify_frontend_application(matches,args,context)
+    st=classified["status"]
+    if st == "exists":
+        if hasattr(client, "bind_frontend_application_uuid"):
+            client.bind_frontend_application_uuid(classified.get("uuid"), context)
+        actions.append(ActionRecord("frontend_application","reuse","exists",verified=True).to_dict()); return classified
+    if st in {"duplicate","incompatible","compatibility_unverified","scope_unverified","out_of_scope"}:
+        return {**classified, "status": "recreate_required" if st=="incompatible" else st}
+    if not backend_allows_frontend(backend):
+        status = "planned_after_backend" if not mode.is_apply else "blocked"
+        return {"name": frontend_application_name(args.product), "status": status, "reason":"backend_application_not_verified"}
+    if not mode.is_apply:
+        actions.append(ActionRecord("frontend_application","plan_create","would_create").to_dict())
+        return {"name": frontend_application_name(args.product), "status":"would_create", "create_payload_preview": frontend_payload_preview(frontend_create_payload(args,context))}
+    if not mode.frontend_application_writes_enabled:
+        return {"name": frontend_application_name(args.product), "status":"blocked", "reason":"frontend_application_gates_incomplete"}
+    payload=frontend_create_payload(args,context); actions.append(ActionRecord("frontend_application","attempt_create","attempted").to_dict())
+    try:
+        resp=client.create_frontend_application(payload)
+    except ProvisioningError as exc:
+        if exc.write_outcome_unknown:
+            actions.append(ActionRecord("frontend_application","create","write_outcome_unknown",request_attempted=True,write_outcome_unknown=True).to_dict())
+            return {"name":frontend_application_name(args.product),"status":"write_outcome_unknown","request_attempted":True,"write_outcome_unknown":True}
+        if exc.http_status in {409,422}:
+            rematches=[hydrate_application_by_uuid(client, field(m,"uuid","id"), m) if field(m,"uuid","id") else m for m in exact_frontend_matches(client,args)]
+            recovered=classify_frontend_application(rematches,args,context)
+            if recovered.get("status")=="exists":
+                if hasattr(client, "bind_frontend_application_uuid"):
+                    client.bind_frontend_application_uuid(recovered.get("uuid"), context)
+                actions.append(ActionRecord("frontend_application","recover_after_conflict","exists",request_attempted=True,verified=True,recovered_after_conflict=True).to_dict())
+                return {**recovered,"recovered_after_conflict":True}
+            return {"name": frontend_application_name(args.product), "status":"blocked", "reason":"conflict_without_verified_resource"}
+        raise
+    item=resp.data.get("data") if isinstance(resp.data,dict) and isinstance(resp.data.get("data"),dict) else resp.data
+    uuid=field(item,"uuid","id") if isinstance(item,dict) else None
+    if not uuid:
+        actions.append(ActionRecord("frontend_application","create","created_unverified",request_attempted=True,write_performed=True).to_dict())
+        return {"name":frontend_application_name(args.product),"status":"created_unverified","write_performed":True}
+    try: detail=hydrate_application_by_uuid(client,uuid,item)
+    except ProvisioningError:
+        actions.append(ActionRecord("frontend_application","create","created_unverified",request_attempted=True,write_performed=True).to_dict()); return {"name":frontend_application_name(args.product),"uuid":uuid,"status":"created_unverified","write_performed":True}
+    verified=classify_frontend_application([detail],args,context)
+    if verified.get("status")=="exists":
+        if hasattr(client, "bind_frontend_application_uuid"):
+            client.bind_frontend_application_uuid(verified.get("uuid"), context)
+        actions.append(ActionRecord("frontend_application","create","created",request_attempted=True,write_performed=True,verified=True).to_dict())
+        return {**verified,"status":"created"}
+    return {**verified,"status":"created_unverified","write_performed":True}
+
+
+def desired_frontend_env(product: str, backend_api_url: str) -> list[dict[str, Any]]:
+    validate_vite_api_url(backend_api_url, product)
+    return [{"key":"VITE_API_URL","value":backend_api_url,"is_runtime":False,"is_buildtime":True,"is_preview":False,"is_literal":True,"is_multiline":False}]
+
+
+def frontend_env_payload(desired: dict[str, Any]) -> dict[str, Any]:
+    payload={k:desired[k] for k in ("key","value","is_runtime","is_buildtime","is_preview","is_literal","is_multiline")}
+    if set(payload) != APPROVED_FRONTEND_ENV_FIELDS or payload["key"] != "VITE_API_URL":
+        raise ProvisioningError("Frontend env payload must contain exactly the VITE_API_URL build-time contract.", error_type="safety")
+    return payload
+
+
+def frontend_env_write_action(resource_key: str, operation: str, status: str, *, request_attempted: bool, write_performed: bool = False, write_outcome_unknown: bool = False, verified: bool = False, recovered_after_conflict: bool = False) -> dict[str, Any]:
+    return ActionRecord("frontend_environment", f"{operation}_{resource_key}", status, request_attempted=request_attempted, write_performed=write_performed, write_outcome_unknown=write_outcome_unknown, verified=verified, recovered_after_conflict=recovered_after_conflict, details={"key": resource_key, "operation": operation}).to_dict()
+
+
+def reconcile_frontend_environment(client: CoolifyClient, args: argparse.Namespace, frontend: dict[str, Any], backend: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]]) -> dict[str, Any]:
+    uuid=frontend.get("uuid"); results=[]; blockers=[]
+    if not backend_allows_frontend(backend):
+        status = "blocked" if mode.is_apply else "planned_after_backend"
+        return {"status": status, "variables": [], "blockers": [{"resource":"frontend_environment", "key":"VITE_API_URL", "reason":"backend_application_not_verified", "backend_status": backend.get("status")}] if mode.is_apply else []}
+    if frontend.get("status") not in {"exists","created"} or not uuid:
+        return {"status":"blocked" if mode.is_apply else "planned", "variables":[], "blockers":[{"reason":"frontend_application_not_verified"}] if mode.is_apply else []}
+    if str(uuid) == str(backend.get("uuid")):
+        return {"status":"blocked","variables":[],"blockers":[{"resource":"frontend_environment","key":"VITE_API_URL","reason":"frontend_uuid_equals_backend_uuid"}]}
+    desired_env = desired_frontend_env(args.product, api_domain(args.product))
+    if hasattr(client, "bind_frontend_env_contract"):
+        client.bind_frontend_env_contract(desired_env)
+    envs=item_list(client.get(f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs"))
+    desired=desired_env[0]; key=desired["key"]
+    row=locate_env_variable(envs, desired)
+    if row["status"] == "duplicate":
+        blockers.append({"resource":"frontend_environment","key":key,"reason":"duplicate"}); results.append(row)
+    elif row["status"] == "exists":
+        results.append(row)
+    elif row["status"] == "secret_value_unverified":
+        blockers.append({"resource":"frontend_environment","key":key,"reason":"compatibility_unverified"}); results.append({**row,"status":"compatibility_unverified"})
+    else:
+        operation = "create" if row["status"] == "absent" else "update"
+        row["action"] = "would_create" if operation == "create" and not mode.is_apply else ("would_patch" if not mode.is_apply else operation)
+        if not mode.is_apply:
+            results.append(row)
+        elif not mode.frontend_env_writes_enabled:
+            row["status"]="blocked"; blockers.append({"resource":"frontend_environment","key":key,"reason":"frontend_env_gates_incomplete"}); results.append(row)
+        else:
+            try:
+                if operation == "create": client.create_frontend_env(str(uuid), frontend_env_payload(desired))
+                else: client.update_frontend_env(str(uuid), frontend_env_payload(desired))
+            except ProvisioningError as exc:
+                if exc.write_outcome_unknown:
+                    row.update({"status":"write_outcome_unknown", "write_outcome_unknown": True}); actions.append(frontend_env_write_action(key, operation, "write_outcome_unknown", request_attempted=True, write_outcome_unknown=True)); blockers.append({"resource":"frontend_environment","key":key,"reason":"write_outcome_unknown"}); results.append(row)
+                elif exc.http_status in {409,422}:
+                    envs2, row2 = rediscover_envs_after_write(client, str(uuid), desired, operation); row2["recovered_after_conflict"] = row2.get("status") in {"created","patched"}; actions.append(frontend_env_write_action(key, operation, row2.get("status","blocked"), request_attempted=True, verified=bool(row2.get("verified")), recovered_after_conflict=bool(row2.get("recovered_after_conflict")))); results.append(row2)
+                    if row2.get("status") not in {"created","patched"}: blockers.append({"resource":"frontend_environment","key":key,"reason":row2.get("status")})
+                else: raise
+            else:
+                envs2, verified_row = rediscover_envs_after_write(client, str(uuid), desired, operation); results.append(verified_row); actions.append(frontend_env_write_action(key, operation, verified_row["status"], request_attempted=True, write_performed=True, verified=bool(verified_row.get("verified"))))
+                if verified_row.get("status") not in {"created","patched"}: blockers.append({"resource":"frontend_environment","key":key,"reason":verified_row.get("status")})
+    if not mode.is_apply: status="planned"
+    elif blockers: status="partial" if any(r.get("status") in {"duplicate","created_unverified","updated_unverified","write_outcome_unknown"} for r in results) else "blocked"
+    else: status="exists"
+    return {"status":status,"variables":results,"blockers":blockers}
+
+
 def desired_backend_env(product: str, database_url: str | None) -> list[dict[str, Any]]:
     base={"is_runtime":True,"is_buildtime":False,"is_preview":False,"is_literal":True,"is_multiline":False}
     return [
@@ -2006,17 +2382,30 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         blockers.append({"resource": "backend_application", "status": backend.get("status")})
     backend_env = reconcile_backend_environment(client, args, backend, database_url, mode, actions) if backend.get("status") in {"exists", "created"} and precondition_ok else {"status": "blocked" if mode.is_apply else "planned", "variables": [], "blockers": []}
     blockers.extend(backend_env.get("blockers", []))
+    frontend = ensure_frontend_application(client, args, context, mode, actions, backend)
+    if frontend.get("status") in {"duplicate", "compatibility_unverified", "scope_unverified", "recreate_required", "blocked", "created_unverified", "write_outcome_unknown"}:
+        blockers.append({"resource": "frontend_application", "status": frontend.get("status")})
+    frontend_env = reconcile_frontend_environment(client, args, frontend, backend, mode, actions) if frontend.get("status") in {"exists", "created"} else {"status": "blocked" if mode.is_apply else "planned", "variables": [], "blockers": []}
+    blockers.extend(frontend_env.get("blockers", []))
     plan = build_plan(args, discovery)
     plan["mode"] = mode.name
-    allowed_posts = [] if not mode.is_apply else sorted({"project_create", "environment_create", "postgresql_create"} | ({"postgresql_start"} if mode.database_start_enabled else set()) | ({"backend_application_create"} if mode.backend_application_writes_enabled else set()) | ({"backend_env_create"} if mode.backend_env_writes_enabled else set()))
+    frontend_backend_ok = backend_allows_frontend(backend)
+    frontend_verified = frontend.get("status") in {"exists", "created"} and bool(frontend.get("uuid"))
+    frontend_application_operation_enabled = mode.frontend_application_writes_enabled and frontend_backend_ok
+    frontend_env_operation_enabled = mode.frontend_env_writes_enabled and frontend_backend_ok and frontend_verified
+    allowed_posts = [] if not mode.is_apply else sorted({"project_create", "environment_create", "postgresql_create"} | ({"postgresql_start"} if mode.database_start_enabled else set()) | ({"backend_application_create"} if mode.backend_application_writes_enabled else set()) | ({"backend_env_create"} if mode.backend_env_writes_enabled else set()) | ({"frontend_application_create"} if frontend_application_operation_enabled else set()) | ({"frontend_env_create"} if frontend_env_operation_enabled else set()))
     plan["safety"] = {
         "writes_enabled": mode.is_apply and mode.allow_resource_writes and mode.confirm_product == mode.product,
         "allowed_post_operations": allowed_posts,
-        "allowed_patch_operations": ["backend_env_update"] if mode.is_apply and mode.backend_env_writes_enabled else [],
+        "allowed_patch_operations": sorted((["backend_env_update"] if mode.is_apply and mode.backend_env_writes_enabled else []) + (["frontend_env_update"] if mode.is_apply and frontend_env_operation_enabled else [])),
         "database_start_enabled": mode.database_start_enabled,
         "forbidden_methods": ["PUT", "DELETE"],
         "deploy_actions_enabled": False,
-        "application_creation_enabled": mode.backend_application_writes_enabled,
+        "application_creation_enabled": mode.backend_application_writes_enabled or mode.frontend_application_writes_enabled,
+        "frontend_application_creation_enabled": frontend_application_operation_enabled,
+        "frontend_application_gates_enabled": mode.frontend_application_writes_enabled,
+        "frontend_backend_precondition_met": frontend_backend_ok,
+        "frontend_env_operation_enabled": frontend_env_operation_enabled,
     }
     for resource in plan["resources"]:
         if resource["name"] == f"{args.product}-postgres-dev":
@@ -2024,9 +2413,12 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         elif resource["name"] == backend_application_name(args.product):
             resource.update({"status": backend.get("status"), "provisioning": backend})
             resource["create_payload_preview"] = backend_payload_preview(backend_create_payload(args, context))
+        elif resource["name"] == frontend_application_name(args.product):
+            resource.update({"status": frontend.get("status"), "provisioning": frontend})
+            resource["create_payload_preview"] = frontend_payload_preview(frontend_create_payload(args, context))
         else:
             resource["status"] = "planned_later"
-    status = global_status(mode, [project, environment, postgres, backend, backend_env], blockers, actions, postgresql_readiness)
+    status = global_status(mode, [project, environment, postgres, backend, backend_env, frontend, frontend_env], blockers, actions, postgresql_readiness)
     return redact({
         **plan,
         "status": status,
@@ -2040,6 +2432,8 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         "postgresql_readiness": postgresql_readiness,
         "backend_application": backend,
         "backend_environment": backend_env,
+        "frontend_application": frontend,
+        "frontend_environment": frontend_env,
         "actions": actions,
         "warnings": warnings,
         "blockers": blockers,
@@ -2049,6 +2443,9 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
             "postgresql_payload_source": "Coolify OpenAPI/API reference for create PostgreSQL database; version is represented by the image field in this isolated builder pending any upstream contract rename.",
             "backend_application_payload_preview": backend_payload_preview(backend_create_payload(args, context)),
             "backend_env_keys": sorted(BACKEND_ENV_KEYS),
+            "frontend_application_payload_preview": frontend_payload_preview(frontend_create_payload(args, context)),
+            "frontend_env_keys": sorted(FRONTEND_ENV_KEYS),
+            "vite_api_url": api_domain(args.product),
             "upstream_sources": ["coollabsio/coolify openapi.yaml v4.x", "coollabsio/coolify ApplicationsController.php v4.x", "coollabsio/coolify-cli v4.x", "coolify.io official docs", "goodmorning-mx/goodmorning-mvp-template backend/app/config.py dev"],
         },
     })
@@ -2082,6 +2479,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--confirm-database-start")
     parser.add_argument("--confirm-backend-application")
     parser.add_argument("--confirm-backend-environment")
+    parser.add_argument("--confirm-frontend-application")
+    parser.add_argument("--confirm-frontend-environment")
     parser.add_argument("--destination-uuid")
     parser.add_argument("--postgres-readiness-interval", type=float, default=5.0)
     parser.add_argument("--postgres-readiness-timeout", type=float, default=300.0)
