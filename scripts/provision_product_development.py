@@ -242,7 +242,22 @@ class CoolifyClient:
         self.mode = mode or ExecutionMode("dry_run", "", None, False)
         self.expected_backend_application_uuid: str | None = None
         self.backend_application_bindings: dict[str, Any] = {}
+        self.expected_backend_env_contract: dict[str, dict[str, Any]] | None = None
 
+
+    def bind_backend_application_bindings(self, bindings: dict[str, Any]) -> None:
+        sanitized = dict(bindings or {})
+        if self.backend_application_bindings and self.backend_application_bindings != sanitized:
+            raise ProvisioningError("Refusing to change selected Backend Application bindings during this execution.", error_type="safety")
+        self.backend_application_bindings = sanitized
+
+    def bind_backend_env_contract(self, desired_env: list[dict[str, Any]]) -> None:
+        contract = {item["key"]: env_payload(item) for item in desired_env}
+        if set(contract) != BACKEND_ENV_KEYS:
+            raise ProvisioningError("Backend env desired contract must include exactly the approved keys.", error_type="safety")
+        if self.expected_backend_env_contract is not None and self.expected_backend_env_contract != contract:
+            raise ProvisioningError("Refusing to change the bound Backend env desired contract during this execution.", error_type="safety")
+        self.expected_backend_env_contract = contract
 
     def bind_backend_application_uuid(self, uuid: Any, bindings: dict[str, Any] | None = None) -> None:
         text = str(uuid or "")
@@ -251,7 +266,7 @@ class CoolifyClient:
         if self.expected_backend_application_uuid is not None and self.expected_backend_application_uuid != text:
             raise ProvisioningError("Refusing to change the verified Backend Application UUID binding.", error_type="safety")
         self.expected_backend_application_uuid = text
-        self.backend_application_bindings = dict(bindings or {})
+        self.bind_backend_application_bindings(dict(bindings or {}))
 
     def _backend_env_path_matches_binding(self, path: str) -> bool:
         if self.expected_backend_application_uuid is None:
@@ -295,21 +310,38 @@ class CoolifyClient:
                 raise ProvisioningError(f"Backend Application payload binding {key} does not match the selected binding.", error_type="safety")
         if json_body.get("environment_name") != "dev":
             raise ProvisioningError("Backend Application payload must target environment_name=dev.", error_type="safety")
+        expected_repository = self.backend_application_bindings.get("git_repository") or self.backend_application_bindings.get("repository")
+        if not expected_repository or not normalize_repository(json_body.get("git_repository")) or normalize_repository(json_body.get("git_repository")) != normalize_repository(expected_repository):
+            raise ProvisioningError("Backend Application payload repository does not match the selected repository binding.", error_type="safety")
 
     def _validate_backend_env_payload(self, json_body: dict[str, Any] | None) -> None:
         if not isinstance(json_body, dict):
             raise ProvisioningError("Backend env write requires an approved JSON object payload.", error_type="safety")
+        if self.expected_backend_env_contract is None:
+            raise ProvisioningError("Backend env writes require a bound desired env contract.", error_type="safety")
         if set(json_body) - APPROVED_BACKEND_ENV_FIELDS:
             raise ProvisioningError("Backend env payload contains fields outside the approved contract.", error_type="safety")
-        required = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline"}
-        if not required <= set(json_body):
-            raise ProvisioningError("Backend env payload is missing required approved fields.", error_type="safety")
-        if json_body.get("key") not in BACKEND_ENV_KEYS:
+        key = json_body.get("key")
+        if key not in BACKEND_ENV_KEYS:
             raise ProvisioningError("Backend env payload key is not allowlisted.", error_type="safety")
+        required = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline"}
+        if key == "DATABASE_URL":
+            if set(json_body) != required | {"is_shown_once"}:
+                raise ProvisioningError("Backend env payload fields do not exactly match the approved secret contract.", error_type="safety")
+            if json_body.get("is_shown_once") is not True:
+                raise ProvisioningError("Backend env payload secret marker does not match the approved contract.", error_type="safety")
+            if not str(json_body.get("value") or "").startswith("postgresql+psycopg://"):
+                raise ProvisioningError("Backend env value does not match the bound desired contract.", error_type="safety")
+        else:
+            if set(json_body) != required:
+                raise ProvisioningError("Backend env payload fields do not exactly match the approved runtime contract.", error_type="safety")
         expected_flags = {"is_runtime": True, "is_buildtime": False, "is_preview": False, "is_literal": True, "is_multiline": False}
-        for key, expected in expected_flags.items():
-            if json_body.get(key) is not expected:
-                raise ProvisioningError(f"Backend env payload flag {key} does not match the approved contract.", error_type="safety")
+        for flag, expected in expected_flags.items():
+            if json_body.get(flag) is not expected:
+                raise ProvisioningError(f"Backend env payload flag {flag} does not match the approved contract.", error_type="safety")
+        expected_payload = self.expected_backend_env_contract.get(str(key))
+        if expected_payload is None or json_body != expected_payload:
+            raise ProvisioningError("Backend env value does not match the bound desired contract.", error_type="safety")
 
     @classmethod
     def from_env(cls, mode: ExecutionMode | None = None) -> "CoolifyClient":
@@ -546,7 +578,6 @@ def discover(client: CoolifyClient, args: argparse.Namespace) -> dict[str, Any]:
     environment = select_unique_by_name(environments, args.environment, "environment")
 
     server = select_unique_by_name(item_list(client.get("/servers")), args.server, "server")
-    destination = select_destination(server, args, blockers)
     github_app = select_unique_by_name(item_list(client.get("/github-apps")), args.github_app, "GitHub App")
 
     project_summary = summary(project, "name", "uuid", "id")
@@ -1682,8 +1713,8 @@ def postgres_backend_precondition(client: CoolifyClient, args: argparse.Namespac
 
 
 def ensure_backend_application(client: CoolifyClient, args: argparse.Namespace, context: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]], precondition_ok: bool) -> dict[str, Any]:
-    if hasattr(client, "backend_application_bindings"):
-        client.backend_application_bindings = dict(context)
+    if hasattr(client, "bind_backend_application_bindings"):
+        client.bind_backend_application_bindings(dict(context))
     matches=[]
     for m in exact_backend_matches(client,args):
         uuid=field(m,"uuid","id")
@@ -1835,8 +1866,11 @@ def reconcile_backend_environment(client: CoolifyClient, args: argparse.Namespac
     results=[]; blockers=[]
     if backend.get("status") not in {"exists","created"} or not uuid:
         return {"status":"blocked","variables":[],"blockers":[{"reason":"backend_application_not_verified"}]}
+    desired_env = desired_backend_env(args.product, db_url)
+    if hasattr(client, "bind_backend_env_contract"):
+        client.bind_backend_env_contract(desired_env)
     envs=item_list(client.get(f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs"))
-    for desired in desired_backend_env(args.product, db_url):
+    for desired in desired_env:
         key=desired["key"]
         row=locate_env_variable(envs, desired)
         if row["status"] == "duplicate":
@@ -1844,7 +1878,7 @@ def reconcile_backend_environment(client: CoolifyClient, args: argparse.Namespac
         if row["status"] == "exists":
             results.append(row); continue
         if row["status"] == "secret_value_unverified":
-            blockers.append({"resource":"backend_environment","key":key,"reason":"secret_value_unverified"}); results.append(row); break
+            blockers.append({"resource":"backend_environment","key":key,"reason":"secret_value_unverified"}); results.append(row); continue
         operation = "create" if row["status"] == "absent" else "update"
         row["action"] = "would_create" if operation == "create" and not mode.is_apply else ("would_patch" if not mode.is_apply else operation)
         if not mode.is_apply:
@@ -1864,6 +1898,8 @@ def reconcile_backend_environment(client: CoolifyClient, args: argparse.Namespac
             if exc.http_status in {409, 422}:
                 envs, row, action = reconcile_env_conflict(client, str(uuid), desired, operation)
                 actions.append(action); results.append(row)
+                if row.get("status") == "secret_value_unverified":
+                    blockers.append({"resource":"backend_environment","key":key,"reason":"secret_value_unverified"}); continue
                 if row.get("status") not in {"created", "patched"}:
                     blockers.append({"resource":"backend_environment","key":key,"reason":row.get("status")}); break
                 continue
@@ -1871,6 +1907,8 @@ def reconcile_backend_environment(client: CoolifyClient, args: argparse.Namespac
         envs, verified_row = rediscover_envs_after_write(client, str(uuid), desired, operation)
         results.append(verified_row)
         actions.append(env_write_action(key, operation, verified_row["status"], request_attempted=True, write_performed=True, verified=bool(verified_row.get("verified"))))
+        if verified_row.get("status") == "secret_value_unverified":
+            blockers.append({"resource":"backend_environment","key":key,"reason":"secret_value_unverified"}); continue
         if verified_row.get("status") not in {"created", "patched"}:
             blockers.append({"resource":"backend_environment","key":key,"reason":verified_row.get("status")}); break
     if not mode.is_apply:
@@ -1949,6 +1987,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         "server_uuid": server_uuid,
         "github_app_uuid": github_app_summary.get("uuid") or github_app_summary.get("id"),
         "destination_uuid": (destination or {}).get("uuid") or (destination or {}).get("id"),
+        "git_repository": args.repository,
     }
     discovery = {
         "project": {"name": args.coolify_project, "uuid": project.get("uuid")},

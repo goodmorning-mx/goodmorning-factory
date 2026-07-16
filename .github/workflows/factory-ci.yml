@@ -230,7 +230,8 @@ jobs:
               raise SystemExit('Backend env payload fields changed without updating CI contract')
           mode = pp.ExecutionMode('apply', 'ledger', 'ledger', True, True, 'ledger-postgres-dev', True, 'ledger-api-dev', True, 'ledger-api-dev')
           client = pp.CoolifyClient('https://coolify.example', 'unit-test-token', mode=mode)
-          client.bind_backend_application_uuid('api-1', {'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','destination_uuid':'dest-1','github_app_uuid':'app-1'})
+          client.bind_backend_application_uuid('api-1', {'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','destination_uuid':'dest-1','github_app_uuid':'app-1','git_repository':'goodmorning-mx/ledger'})
+          client.bind_backend_env_contract(pp.desired_backend_env('ledger', 'postgresql+psycopg://user:pass@host/db'))
           client._check_request('POST', '/databases/db-1/start', post_kind='postgresql_start')
           for bad in ['/databases/db-1/restart', '/databases/db-1/stop', '/databases/db-1/start/extra']:
               try:
@@ -239,7 +240,7 @@ jobs:
                   pass
               else:
                   raise SystemExit(f'forbidden database lifecycle path was allowed: {bad}')
-          client.backend_application_bindings = {'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','destination_uuid':'dest-1','github_app_uuid':'app-1'}
+          client.bind_backend_application_bindings({'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','destination_uuid':'dest-1','github_app_uuid':'app-1','git_repository':'goodmorning-mx/ledger'})
           app_payload = pp.backend_create_payload(type('Args', (), {'product':'ledger', 'repository':'goodmorning-mx/ledger'})(), client.backend_application_bindings)
           client._check_request('POST', '/applications/private-github-app', post_kind='backend_application_create', json_body=app_payload)
           client._check_request('POST', '/applications/api-1/envs', post_kind='backend_env_create', json_body={'key':'APP_ENV','value':'dev','is_runtime':True,'is_buildtime':False,'is_preview':False,'is_literal':True,'is_multiline':False})
@@ -267,6 +268,8 @@ jobs:
               'env endpoints': 'patch /api/v1/applications/{uuid}/envs' in normalized,
               'internal_db_url secret handling': re.search(r'internal_db_url.{0,160}never|never.{0,160}internal_db_url', normalized) is not None,
               'frontend planned stage 6': 'frontend dockerfile application provisioning remains planned for stage 6' in normalized,
+              'backend uuid binding': 'binds a single verified backend application uuid' in normalized,
+              'independent env reconciliation': 'app_env/cors' in normalized or 'app_env and cors_origins' in normalized,
           }
           failures = [name for name, ok in checks.items() if not ok]
           if failures:
