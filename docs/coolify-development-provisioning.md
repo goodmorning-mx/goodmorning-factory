@@ -1,6 +1,6 @@
 # Coolify development provisioning
 
-Stage 6 is the current canonical development provisioning architecture for GoodMorning product repositories. Each product uses three independent Coolify resources:
+Stage 7 is the current canonical development provisioning architecture for GoodMorning product repositories. Each product uses three independent Coolify resources:
 
 1. a private native PostgreSQL 16 database named `<product>-postgres-dev`;
 2. a Backend Dockerfile Application named `<product>-api-dev`;
@@ -153,10 +153,108 @@ Backend is a precondition for Frontend writes. The Backend Application must be e
 
 Idempotency is conservative: compatible resources are reused; absent Frontend resources are planned in dry-run and created once in apply; duplicates block; incompatible Applications are marked `recreate_required`; scope or compatibility gaps block. HTTP 409/422 conflicts trigger GET rediscovery without retrying or parsing response text. 5xx, timeouts, URL errors, or invalid JSON on writes produce `write_outcome_unknown`, stop dependent writes, and do not retry or roll back.
 
-Stage 6 performs zero deployments, starts, restarts, stops, deletes, public smoke checks, SSH, rsync, SCP, Docker remote commands, server-local file operations, general Application PATCHes, PUTs, DELETEs, env bulk writes, or Compose Application creation. Controlled deployment remains pending for Stage 7.
+Stage 6 performed zero deployments, starts, restarts, stops, deletes, public smoke checks, SSH, rsync, SCP, Docker remote commands, server-local file operations, general Application PATCHes, PUTs, DELETEs, env bulk writes, or Compose Application creation. Controlled Backend deployment is implemented by Stage 7; Frontend deployment remains pending for Stage 8.
 
 ### Stage 6 Backend precondition for Frontend env writes
 
 Stage 6 discovery may report an existing compatible Frontend Application even when the Backend Application is absent or not yet verified; discovery is read-only and may keep the discovered Frontend UUID for reporting. That does not authorize `VITE_API_URL` writes. Frontend env create/update requires the same reusable Backend Application precondition as Frontend Application creation: Backend status must be `exists` or `created`, include a verified UUID, and have passed the Stage 5 compatibility checks. Complete gates alone never substitute for this structural precondition.
 
 If Backend is `absent`, `duplicate`, `recreate_required`, `incompatible`, `out_of_scope`, `scope_unverified`, `compatibility_unverified`, `created_unverified`, or `write_outcome_unknown`, Stage 6 reports the Frontend env as blocked in apply or planned after Backend in dry-run and performs zero POST/PATCH env writes. A `backend_environment` result of `secret_value_unverified` for hidden `DATABASE_URL` remains a deployment-readiness blocker only; it does not block Frontend Application discovery/provisioning or `VITE_API_URL` reconciliation when the Backend Application itself is verified. Stage 6 still performs zero deployment, lifecycle, or smoke-check operations.
+
+## Stage 7: controlled Backend deployment
+
+Stage 7 is the current canonical development architecture. It keeps the Stage 2-6 provisioning model and adds only a controlled Backend Application deployment path. Frontend deployment is explicitly deferred to Stage 8; Stage 7 reports `frontend_deployment=planned_later`, never calls `POST /deploy` with the Frontend UUID, and never performs a Frontend smoke check.
+
+### Confirmed Coolify deployment API contract
+
+The Stage 7 deployment contract was rechecked against upstream Coolify v4.x sources: `coollabsio/coolify` `openapi.yaml`, `routes/api.php`, `DeployController.php`, `ApplicationDeploymentStatus.php`, `ApplicationDeploymentQueue.php`, and official Coolify documentation. The controlled Backend deployment request is exactly:
+
+```http
+POST /api/v1/deploy
+Content-Type: application/json
+```
+
+```json
+{
+  "uuid": "<verified-backend-application-uuid>",
+  "force": false
+}
+```
+
+The provisioner does not send `tag`, `pr`, `pull_request_id`, `docker_tag`, comma-separated UUIDs, query parameters, or `force=true`. Coolify returns a deployment collection shaped like:
+
+```json
+{
+  "deployments": [
+    {
+      "message": "...",
+      "resource_uuid": "<backend_uuid>",
+      "deployment_uuid": "<deployment_uuid>"
+    }
+  ]
+}
+```
+
+Stage 7 accepts only one deployment entry, requires `resource_uuid` to match the bound Backend Application UUID, captures a non-empty `deployment_uuid`, and never parses `message` to determine success.
+
+Tracking uses `GET /api/v1/deployments/{deployment_uuid}`. Outcome recovery and active-deployment detection use read-only `GET /api/v1/deployments/applications/{backend_uuid}?skip=0&take=10`, whose expected response is `{ "count": <integer>, "deployments": [...] }`.
+
+### Why `/deploy`, not `/applications/{uuid}/start`
+
+Coolify exposes Application lifecycle endpoints, but Stage 7 exclusively uses `POST /deploy` because it returns a trackable `deployment_uuid`. `/applications/{uuid}/start` is not used for Backend deployment and remains blocked, along with restart, stop, and deployment cancel endpoints.
+
+### Deployment preflight
+
+No deployment is requested until these are verified:
+
+- PostgreSQL is exactly `<product>-postgres-dev`, in the selected scope, PostgreSQL 16, private, healthy or already healthy, has `internal_db_url`, and that URL converts in memory to `postgresql+psycopg://`.
+- Backend Application is exactly `<product>-api-dev`, `exists` or `created`, bound to one UUID, in the selected project/environment/server/destination, uses the selected GitHub App and repository, branch `dev`, `build_pack=dockerfile`, `base_directory=/backend`, `dockerfile_location=/Dockerfile`, `ports_exposes="8000"`, clean domain `https://api.dev.<product>.goodmorning.mx`, healthcheck `/health` on port `8000`, `instant_deploy=false`, and auto deploy disabled.
+- Backend env has exactly verified `DATABASE_URL`, `APP_ENV=dev`, and `CORS_ORIGINS=https://dev.<product>.goodmorning.mx` with runtime-only flags. Duplicate, incompatible, hidden, pending, or unknown-write env states block deployment.
+
+`DATABASE_URL` `secret_value_unverified` blocks deployment. There is no unsafe override. A token used for controlled deployment must have enough read/sensitive-read permission to verify the existing secret value, or the variable must be reconciled safely before deployment.
+
+### Gates
+
+Backend deployment requires all of the following simultaneously:
+
+- `--apply`;
+- `--deploy-backend`;
+- `COOLIFY_ALLOW_RESOURCE_WRITES=true`;
+- exact `--confirm-product <product>`;
+- `COOLIFY_ALLOW_DEPLOYMENTS=true`;
+- `COOLIFY_ALLOW_BACKEND_DEPLOYMENT=true`;
+- exact `--confirm-backend-deployment <product>-api-dev`;
+- complete preflight;
+- exact Backend UUID binding;
+- no prior unknown write outcome;
+- no PostgreSQL, Backend Application, or Backend env blockers.
+
+Dry-run never posts to `/deploy` and never performs public smoke HTTP. Apply without `--deploy-backend` preserves Stage 2-6 behavior and reports deployment `not_requested`.
+
+### Deployment status, recovery, polling, runtime, and smoke
+
+Official deployment statuses are exact-match only: `queued`, `in_progress`, `finished`, `failed`, and `cancelled-by-user`. Internally, `queued` and `in_progress` are pending, `finished` is succeeded, `failed` is failed, `cancelled-by-user` is cancelled, and any other value is `deployment_status_unverified`.
+
+Before `POST /deploy`, Stage 7 snapshots existing deployment UUIDs for the Backend and adopts exactly one pre-existing active `queued`/`in_progress` deployment. Multiple active deployments block as ambiguous. If a POST has an unknown outcome because of HTTP 5xx, timeout, URL error, or invalid JSON, the provisioner performs only a second read-only deployment-history GET, compares UUIDs to the preflight snapshot, recovers exactly one new deployment UUID, or reports unknown/ambiguous recovery. It never retries the POST, adopts an old deployment, cancels, rolls back, or selects arbitrarily.
+
+Polling is bounded by `--backend-deployment-timeout` (default `900`, max `3600` seconds), `--backend-deployment-interval` (default `5`, max `30` seconds), and `--backend-deployment-max-poll-errors` (default `3`, max `10`). Polling validates the deployment UUID, validates `application_name` when present, ignores logs and snapshots, and stops on finished, failed, cancelled, unknown status, too many transient GET errors, or timeout. It never prints deployment logs or configuration snapshots.
+
+After `finished`, Stage 7 rereads `GET /api/v1/applications/{backend_uuid}` and accepts runtime health only for exact statuses `running:healthy` or `healthy`. Exact transient statuses are `queued`, `starting`, and `running:starting`; exact unhealthy statuses are `running:unhealthy`, `unhealthy`, `exited`, `stopped`, `failed`, and `exited:unhealthy`; any other value is `runtime_status_unverified`.
+
+The Backend smoke check runs only after deployment is finished, Backend identity is verified, and runtime is healthy. The URL is exactly `https://api.dev.<product>.goodmorning.mx/health`; HTTP, ports, IPs, localhost, credentials, query strings, fragments, cross-host redirects, and disabled TLS verification are forbidden. The expected JSON object is:
+
+```json
+{
+  "service": "<app name>",
+  "status": "ok",
+  "environment": "dev"
+}
+```
+
+Stage 7 requires HTTP 200, JSON-compatible content type, object body, `status == "ok"`, `environment == "dev"`, and a non-empty string `service`. It retries only the smoke GET within `--backend-smoke-timeout` (default `120`, max `600` seconds), using `--backend-smoke-interval` (default `5`, max `30`) and `--backend-smoke-request-timeout` (default `10`, max `30`). Smoke failure never repeats deployment and never restarts, stops, cancels, rolls back, or deploys Frontend.
+
+### Output and forbidden operations
+
+Stage 7 adds redacted JSON objects `backend_deployment`, `backend_runtime_readiness`, and `backend_smoke_check`, plus structured actions for deployment planning/request/adoption/recovery/polling/runtime/smoke. Output never includes deployment logs, `DATABASE_URL`, `internal_db_url`, secret env values, Authorization, configuration snapshots/diffs, or response bodies.
+
+Stage 7 still performs zero SSH, rsync, SCP, Docker remote commands, server process execution, PUT, DELETE, Application PATCH general, env bulk writes, Frontend deployment, previews/PR deployments, tags, multiple UUID deploys, `force=true`, rollback, cancel, restart, stop, or resource deletion.

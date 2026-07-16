@@ -263,7 +263,7 @@ jobs:
           normalized = re.sub(r'[`*]+', '', doc).lower()
           normalized = re.sub(r'\s+', ' ', normalized)
           checks = {
-              'Stage 6 canonical': 'stage 6 is now the canonical development provisioning architecture' in normalized,
+              'Stage 7 canonical': 'stage 7 is the current canonical development provisioning architecture' in normalized,
               'backend endpoint': 'post /api/v1/applications/private-github-app' in normalized,
               'env endpoints': 'patch /api/v1/applications/{uuid}/envs' in normalized,
               'internal_db_url secret handling': re.search(r'internal_db_url.{0,160}never|never.{0,160}internal_db_url', normalized) is not None,
@@ -285,7 +285,7 @@ jobs:
           import ast
           from pathlib import Path
           import scripts.provision_product_development as pp
-          expected_stage6_posts = {'project_create', 'environment_create', 'postgresql_create', 'postgresql_start', 'backend_application_create', 'backend_env_create', 'frontend_application_create', 'frontend_env_create'}
+          expected_stage6_posts = {'project_create', 'environment_create', 'postgresql_create', 'postgresql_start', 'backend_application_create', 'backend_env_create', 'frontend_application_create', 'frontend_env_create', 'backend_deploy'}
           expected_stage6_patches = {'backend_env_update', 'frontend_env_update'}
           if pp.ALLOWED_POST_KINDS != expected_stage6_posts:
               raise SystemExit(f'Stage 6 canonical POST allowlist mismatch: {pp.ALLOWED_POST_KINDS}')
@@ -326,4 +326,59 @@ jobs:
               if forbidden in source:
                   raise SystemExit(f'forbidden remote execution marker: {forbidden}')
           print('Stage 6 frontend allowlist, payload, env, UUID isolation, post-write GET helpers, and lifecycle blocks verified.')
+          PY
+
+
+      - name: Verify Stage 7 backend deployment semantic contract
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import ast
+          from pathlib import Path
+          import scripts.provision_product_development as pp
+          if 'backend_deploy' not in pp.ALLOWED_POST_KINDS:
+              raise SystemExit('backend_deploy missing from POST allowlist')
+          mode = pp.ExecutionMode('apply','ledger','ledger',True,deploy_backend=True,allow_deployments=True,allow_backend_deployment=True,confirm_backend_deployment='ledger-api-dev')
+          client = pp.CoolifyClient('https://coolify.example','unit-test-token',mode=mode)
+          client.bind_backend_application_uuid('api-1', {})
+          client.bind_backend_deployment_preconditions(True)
+          client._check_request('POST','/deploy',post_kind='backend_deploy',json_body={'uuid':'api-1','force':False})
+          for body in ({'uuid':'api-1','force':True},{'uuid':'api-1,api-2','force':False},{'uuid':'api-2','force':False},{'uuid':'api-1','force':False,'tag':'x'}):
+              try:
+                  client._check_request('POST','/deploy',post_kind='backend_deploy',json_body=body)
+              except pp.ProvisioningError:
+                  pass
+              else:
+                  raise SystemExit(f'unsafe deploy body allowed: {body}')
+          for method,path in [('GET','/deploy'),('POST','/applications/api-1/start'),('POST','/applications/api-1/restart'),('POST','/applications/api-1/stop'),('POST','/deployments/dep-1/cancel')]:
+              try:
+                  client._check_request(method,path)
+              except pp.ProvisioningError:
+                  pass
+              else:
+                  raise SystemExit(f'forbidden lifecycle/deployment endpoint allowed: {method} {path}')
+          if pp.DEPLOYMENT_OFFICIAL_STATUSES != {'queued','in_progress','finished','failed','cancelled-by-user'}:
+              raise SystemExit('deployment status allowlist changed')
+          if pp.RUNTIME_HEALTHY_STATUSES != {'running:healthy','healthy'}:
+              raise SystemExit('runtime healthy status allowlist changed')
+          class A: product='ledger'; backend_deployment_timeout=1.0; backend_deployment_interval=0.1; backend_deployment_max_poll_errors=1; backend_smoke_timeout=1.0; backend_smoke_interval=0.1; backend_smoke_request_timeout=0.5
+          pp.validate_stage7_timing_args(A)
+          pp.validate_backend_smoke_url('https://api.dev.ledger.goodmorning.mx/health','ledger')
+          for bad in ['http://api.dev.ledger.goodmorning.mx/health','https://api.dev.ledger.goodmorning.mx:8000/health','https://api.dev.ledger.goodmorning.mx/health?x=1','https://localhost/health']:
+              try:
+                  pp.validate_backend_smoke_url(bad,'ledger')
+              except pp.ProvisioningError:
+                  pass
+              else:
+                  raise SystemExit(f'bad smoke URL allowed: {bad}')
+          source = Path('scripts/provision_product_development.py').read_text()
+          forbidden = ['subprocess','paramiko','rsync','scp ','configuration_snapshot','configuration_diff']
+          for marker in forbidden:
+              if marker in source:
+                  raise SystemExit(f'forbidden Stage 7 marker present: {marker}')
+          tree = ast.parse(source)
+          names = [node.name for node in tree.body if isinstance(node, ast.FunctionDef)]
+          if len(names) != len(set(names)):
+              raise SystemExit('duplicate top-level functions detected')
+          print('Stage 7 backend deploy allowlist, gates, status allowlists, polling/smoke contracts, lifecycle blocks, and remote execution ban verified.')
           PY
