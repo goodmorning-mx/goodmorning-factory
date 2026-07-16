@@ -124,3 +124,13 @@ Creation is idempotent: compatible existing resources are reused, absent resourc
 ## Stage boundaries
 
 Stage 5 does not create Frontend, deploy Frontend, deploy Backend, create Compose Applications, modify Compose Applications, delete resources, or run remote commands. Frontend Dockerfile Application provisioning remains planned for Stage 6.
+
+## Backend UUID binding and env mutation verification
+
+Stage 5 binds a single verified Backend Application UUID before any env mutation is allowlisted. The client starts with no authorized Backend UUID, binds only after a compatible existing Backend is verified or after a newly-created Backend is re-read through `GET /api/v1/applications/{uuid}` and passes compatibility checks, and refuses to silently rebind to another UUID. `POST` and `PATCH` env requests are valid only for `/api/v1/applications/{bound_backend_uuid}/envs`; env writes without a binding or with another Application UUID fail before the HTTP request is built.
+
+`PATCH` is therefore conditionally allowed, not globally allowed: `PUT` and `DELETE` remain always forbidden, while `PATCH` is scoped only to env vars on the bound Backend UUID after env gates are complete.
+
+A successful `POST` or `PATCH` response only means Coolify accepted a write attempt. Stage 5 does not mark env writes verified until it performs a fresh `GET /api/v1/applications/{bound_backend_uuid}/envs`, locates the exact key with `is_preview=false`, detects duplicates, verifies flags, and verifies the value when Coolify exposes it. If the follow-up GET fails, the variable is missing, flags are wrong, or values are not verifiable, the result is `created_unverified`, `updated_unverified`, `partial`, `duplicate`, or `secret_value_unverified` as appropriate.
+
+For `DATABASE_URL`, a hidden value remains `secret_value_unverified`; Stage 5 does not overwrite hidden secrets blindly. `POST`/`PATCH` 409 or 422 conflicts trigger one exact env rediscovery and compatibility check, never a retry, rollback, or delete. PATCH failures after the request is sent, including 5xx, timeouts, URL errors, malformed JSON, or unexpected 2xx statuses, are treated as mutation `write_outcome_unknown` just like POST failures.

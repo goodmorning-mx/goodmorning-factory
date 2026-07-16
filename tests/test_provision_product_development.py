@@ -58,6 +58,9 @@ class FakeClient:
         value = self.payloads.get(f"POST /applications/{uuid}/envs", pp.Response(201, {"key": payload.get("key")}, {}))
         if isinstance(value, Exception):
             raise value
+        if self.payloads.get("__mutate_envs__", True):
+            self.payloads.setdefault(f"/applications/{uuid}/envs", [])
+            self.payloads[f"/applications/{uuid}/envs"].append(dict(payload))
         return value
 
     def update_backend_env(self, uuid, payload):
@@ -65,6 +68,10 @@ class FakeClient:
         value = self.payloads.get(f"PATCH /applications/{uuid}/envs", pp.Response(200, {"key": payload.get("key")}, {}))
         if isinstance(value, Exception):
             raise value
+        if self.payloads.get("__mutate_envs__", True):
+            envs = self.payloads.setdefault(f"/applications/{uuid}/envs", [])
+            envs[:] = [item for item in envs if item.get("key") != payload.get("key")]
+            envs.append(dict(payload))
         return value
 
     def start_postgresql(self, uuid):
@@ -1272,3 +1279,148 @@ class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
         source=open("scripts/provision_product_development.py").read()
         for term in ("ssh ","rsync","scp ","docker -H"):
             self.assertNotIn(term, source)
+
+    def bound_client(self):
+        mode=pp.ExecutionMode("apply","ledger","ledger",True,False,None,True,"ledger-api-dev",True,"ledger-api-dev")
+        client=pp.CoolifyClient("https://coolify.example","token",mode=mode)
+        client.bind_backend_application_uuid("api-1", {"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1"})
+        return client
+
+    def app_payload(self, **updates):
+        payload=pp.backend_create_payload(args(), {"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1"})
+        payload.update(updates)
+        return payload
+
+    def env_payload_for(self, key="APP_ENV", **updates):
+        desired={"key":key,"value":"dev","secret":False,"is_runtime":True,"is_buildtime":False,"is_preview":False,"is_literal":True,"is_multiline":False}
+        if key == "DATABASE_URL":
+            desired["value"]="postgresql+psycopg://user:pass@host/db"; desired["secret"]=True
+        payload=pp.env_payload(desired); payload.update(updates); return payload
+
+    def test_stage5_env_uuid_binding_exact_and_mismatch(self):
+        client=self.bound_client()
+        client._check_request("POST","/applications/api-1/envs",post_kind="backend_env_create",json_body=self.env_payload_for())
+        with self.assertRaises(pp.ProvisioningError):
+            client._check_request("POST","/applications/other/envs",post_kind="backend_env_create",json_body=self.env_payload_for())
+        with self.assertRaises(pp.ProvisioningError):
+            client._check_request("PATCH","/applications/other/envs",post_kind="backend_env_update",json_body=self.env_payload_for())
+
+    def test_stage5_env_without_binding_and_rebind_rejected(self):
+        mode=pp.ExecutionMode("apply","ledger","ledger",True,False,None,True,"ledger-api-dev",True,"ledger-api-dev")
+        client=pp.CoolifyClient("https://coolify.example","token",mode=mode)
+        with self.assertRaises(pp.ProvisioningError):
+            client._check_request("POST","/applications/api-1/envs",post_kind="backend_env_create",json_body=self.env_payload_for())
+        client.bind_backend_application_uuid("api-1", {})
+        with self.assertRaises(pp.ProvisioningError):
+            client.bind_backend_application_uuid("api-2", {})
+
+    def test_stage5_env_payload_rejects_keys_extra_and_bad_flags(self):
+        client=self.bound_client()
+        for key in ("EVIL_KEY","VITE_API_URL","POSTGRES_PASSWORD"):
+            with self.assertRaises(pp.ProvisioningError):
+                client._check_request("POST","/applications/api-1/envs",post_kind="backend_env_create",json_body=self.env_payload_for(key))
+        with self.assertRaises(pp.ProvisioningError):
+            client._check_request("POST","/applications/api-1/envs",post_kind="backend_env_create",json_body={**self.env_payload_for(),"extra":"no"})
+        for bad in ({"is_runtime":False},{"is_buildtime":True},{"is_preview":True},{"is_multiline":True},{"is_literal":False}):
+            with self.assertRaises(pp.ProvisioningError):
+                client._check_request("POST","/applications/api-1/envs",post_kind="backend_env_create",json_body=self.env_payload_for(**bad))
+
+    def test_stage5_application_payload_rejects_extra_ported_domain_and_wrong_binding(self):
+        mode=pp.ExecutionMode("apply","ledger","ledger",True,False,None,True,"ledger-api-dev",False,None)
+        client=pp.CoolifyClient("https://coolify.example","token",mode=mode)
+        client.backend_application_bindings={"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1"}
+        client._check_request("POST","/applications/private-github-app",post_kind="backend_application_create",json_body=self.app_payload())
+        for payload in ({**self.app_payload(),"extra":"no"}, self.app_payload(domains="https://api.dev.ledger.goodmorning.mx:8000"), self.app_payload(project_uuid="other")):
+            with self.assertRaises(pp.ProvisioningError):
+                client._check_request("POST","/applications/private-github-app",post_kind="backend_application_create",json_body=payload)
+
+    def test_stage5_post_env_verified_and_unverified_after_get(self):
+        c=self.healthy_client()
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev",confirm_backend_environment="ledger-api-dev"), client_factory=lambda:c)
+        self.assertTrue(any(a["resource"]=="backend_environment" and a["verified"] for a in r["actions"]))
+        c=self.healthy_client(**{"__mutate_envs__":False})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev",confirm_backend_environment="ledger-api-dev"), client_factory=lambda:c)
+        self.assertEqual(r["backend_environment"]["variables"][0]["status"], "created_unverified")
+
+    def test_stage5_patch_env_verified_and_unverified_after_get(self):
+        existing={"key":"APP_ENV","value":"prod","is_preview":False,"is_runtime":True,"is_buildtime":False,"is_literal":True,"is_multiline":False}
+        c=self.healthy_client(**{"/applications/api-1/envs":[existing]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev",confirm_backend_environment="ledger-api-dev"), client_factory=lambda:c)
+        self.assertTrue(any(a["action"]=="update_APP_ENV" and a["verified"] for a in r["actions"]))
+        db_existing={**self.env_payload_for("DATABASE_URL"), "value":"postgresql+psycopg://user:p%40ss@host:5432/db"}
+        c=self.healthy_client(**{"/applications/api-1/envs":[db_existing, existing],"__mutate_envs__":False})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev",confirm_backend_environment="ledger-api-dev"), client_factory=lambda:c)
+        self.assertEqual(r["backend_environment"]["variables"][1]["status"], "updated_unverified")
+
+    def test_stage5_secret_hidden_and_duplicate_after_write(self):
+        c=self.healthy_client(**{"/applications/api-1/envs":[{"key":"DATABASE_URL","is_preview":False,"is_runtime":True,"is_buildtime":False,"is_literal":True,"is_multiline":False}]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev",confirm_backend_environment="ledger-api-dev"), client_factory=lambda:c)
+        self.assertEqual(r["backend_environment"]["status"], "secret_value_unverified")
+        dup=[self.env_payload_for("APP_ENV"), self.env_payload_for("APP_ENV")]
+        c=self.healthy_client(**{"/applications/api-1/envs":[self.env_payload_for("DATABASE_URL"), dup[0], dup[1]]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev",confirm_backend_environment="ledger-api-dev"), client_factory=lambda:c)
+        self.assertIn(r["backend_environment"]["status"], {"partial", "blocked"})
+
+    def test_stage5_env_conflict_recovery_no_retry(self):
+        for method, exc, key in [("POST", pp.ProvisioningError("conflict", http_status=409, method="POST", path="/applications/api-1/envs"), "DATABASE_URL"), ("PATCH", pp.ProvisioningError("conflict", http_status=422, method="PATCH", path="/applications/api-1/envs"), "APP_ENV")]:
+            payloads={"/applications/api-1/envs":[self.env_payload_for("DATABASE_URL"), self.env_payload_for("APP_ENV"), self.env_payload_for("CORS_ORIGINS")]}
+            if method == "POST": payloads["POST /applications/api-1/envs"]=exc; payloads["/applications/api-1/envs"]=[]
+            else: payloads["PATCH /applications/api-1/envs"]=exc; payloads["/applications/api-1/envs"]=[{"key":"APP_ENV","value":"prod","is_preview":False,"is_runtime":True,"is_buildtime":False,"is_literal":True,"is_multiline":False}, self.env_payload_for("DATABASE_URL"), self.env_payload_for("CORS_ORIGINS")]
+            c=self.healthy_client(**payloads)
+            with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}, clear=False):
+                r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev",confirm_backend_environment="ledger-api-dev"), client_factory=lambda:c)
+            calls=[call for call in c.calls if call[0]==method and call[1].endswith("/envs")]
+            self.assertLessEqual(len(calls), 1)
+
+    def test_stage5_patch_unknown_errors_and_get_not_unknown(self):
+        import io
+        client=self.bound_client()
+        def http_error(*_a, **_k):
+            raise pp.urllib.error.HTTPError("url", 500, "boom", {}, io.BytesIO(b"{}"))
+        with mock.patch("urllib.request.urlopen", http_error):
+            with self.assertRaises(pp.ProvisioningError) as raised:
+                client.update_backend_env("api-1", self.env_payload_for())
+            self.assertTrue(raised.exception.request_attempted)
+            self.assertTrue(raised.exception.write_outcome_unknown)
+        def url_error(*_a, **_k):
+            raise pp.urllib.error.URLError("timeout")
+        with mock.patch("urllib.request.urlopen", url_error):
+            with self.assertRaises(pp.ProvisioningError) as raised:
+                client.update_backend_env("api-1", self.env_payload_for())
+            self.assertTrue(raised.exception.write_outcome_unknown)
+        class BadJson:
+            status=200; headers={}
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return b"{"
+        with mock.patch("urllib.request.urlopen", lambda *_a, **_k: BadJson()):
+            with self.assertRaises(pp.ProvisioningError) as raised:
+                client.update_backend_env("api-1", self.env_payload_for())
+            self.assertTrue(raised.exception.write_outcome_unknown)
+        get_exc=pp.ProvisioningError("500", http_status=500, method="GET", path="/applications/api-1/envs")
+        self.assertFalse(get_exc.write_outcome_unknown)
+
+    def test_stage5_action_records_and_safety_output_no_secrets_no_patch_contradiction(self):
+        c=self.healthy_client()
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev",confirm_backend_environment="ledger-api-dev"), client_factory=lambda:c)
+        text=json.dumps(r)
+        self.assertNotIn("postgresql://user", text)
+        self.assertIn("always_forbidden_methods", r["safety_gates"])
+        self.assertIn("PATCH", r["safety_gates"]["conditionally_allowed_methods"])
+        self.assertIn("backend_env_update", r["safety_gates"]["allowed_patch_operations"])
+
+    def test_stage5_no_writes_after_unknown_and_lifecycle_blocked(self):
+        c=self.healthy_client(**{"POST /applications/api-1/envs": pp.ProvisioningError("boom", method="POST", path="/applications/api-1/envs", write_outcome_unknown=True)})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}, clear=False):
+            r=pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_backend_application="ledger-api-dev",confirm_backend_environment="ledger-api-dev"), client_factory=lambda:c)
+        self.assertEqual(len([call for call in c.calls if call[0] in {"POST","PATCH"} and call[1].endswith("/envs")]), 1)
+        client=self.bound_client()
+        for method,path,kind in [("POST","/applications/api-1/envs/bulk","backend_env_create"),("PATCH","/applications/api-1","backend_env_update"),("POST","/deployments",None),("POST","/applications/api-1/restart",None),("DELETE","/applications/api-1",None)]:
+            with self.assertRaises(pp.ProvisioningError): client._check_request(method,path,post_kind=kind,json_body=self.env_payload_for())
