@@ -3,7 +3,7 @@
 
 Dry-run is GET-only and produces the complete three-resource plan. Apply can
 create only the Coolify Project, exact ``dev`` Environment, and private native
-PostgreSQL record after explicit gates. Backend Dockerfile Applications and their runtime environment variables can be created/reconciled only after Stage 5 gates. Deployments and lifecycle actions remain forbidden.
+PostgreSQL record after explicit gates. Backend Dockerfile Applications and their runtime environment variables can be created/reconciled only after Stage 5 gates. Stage 7 permits only the Backend POST /deploy path after explicit deployment gates and preflight; Frontend deployment, Application start/restart/stop, deployment cancel, rollback, and all non-allowlisted deployment actions remain forbidden.
 """
 
 from __future__ import annotations
@@ -42,9 +42,9 @@ APPROVED_BACKEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is
 APPROVED_FRONTEND_APPLICATION_FIELDS = APPROVED_BACKEND_APPLICATION_FIELDS
 APPROVED_FRONTEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline"}
 ENV_PAYLOAD_FIELDS = APPROVED_BACKEND_ENV_FIELDS
-ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start", "backend_application_create", "backend_env_create", "frontend_application_create", "frontend_env_create"}
+ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start", "backend_application_create", "backend_env_create", "frontend_application_create", "frontend_env_create", "backend_deploy"}
 ALLOWED_PATCH_KINDS = {"backend_env_update", "frontend_env_update"}
-FORBIDDEN_ENDPOINT_RE = re.compile(r"/(deploy|deployments|restart|stop)(?:/|$)", re.I)
+FORBIDDEN_ENDPOINT_RE = re.compile(r"/(restart|stop|rollback)(?:/|$)|/applications/[^/]+/(?:start|restart|stop|rollback)(?:/|$)|/deployments/[^/]+/cancel(?:/|$)", re.I)
 NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
 
 
@@ -109,6 +109,10 @@ class ExecutionMode:
     confirm_frontend_application: str | None = None
     allow_frontend_env_writes: bool = False
     confirm_frontend_environment: str | None = None
+    deploy_backend: bool = False
+    allow_deployments: bool = False
+    allow_backend_deployment: bool = False
+    confirm_backend_deployment: str | None = None
 
     @property
     def is_apply(self) -> bool:
@@ -137,6 +141,10 @@ class ExecutionMode:
         return self.backend_application_writes_enabled and self.allow_backend_env_writes and self.confirm_backend_environment == self.backend_application_name
 
     @property
+    def backend_deployment_enabled(self) -> bool:
+        return (self.is_apply and self.deploy_backend and self.allow_resource_writes and self.confirm_product == self.product and self.allow_deployments and self.allow_backend_deployment and self.confirm_backend_deployment == self.backend_application_name)
+
+    @property
     def frontend_application_name(self) -> str:
         return f"{self.product}-frontend-dev"
 
@@ -161,7 +169,10 @@ class ExecutionMode:
             "conditionally_allowed_methods": ["PATCH"],
             "allowed_patch_operations": ["backend_env_update"] if self.backend_env_writes_enabled else [],
             "patch_scope": "backend_application_envs_bound_uuid" if self.backend_env_writes_enabled else None,
-            "deployments_forbidden": True,
+            "non_allowlisted_deployments_forbidden": True,
+            "frontend_deployment_enabled": False,
+            "deployment_cancel_forbidden": True,
+            "application_lifecycle_forbidden": True,
             "backend_application_env": self.allow_backend_application_writes,
             "confirm_backend_application_matches": self.confirm_backend_application == self.backend_application_name if self.confirm_backend_application is not None else False,
             "backend_application_writes_enabled": self.backend_application_writes_enabled,
@@ -176,6 +187,11 @@ class ExecutionMode:
             "confirm_frontend_environment_matches": self.confirm_frontend_environment == self.frontend_application_name if self.confirm_frontend_environment is not None else False,
             "frontend_env_writes_enabled": self.frontend_env_writes_enabled,
             "frontend_application_creation_enabled": self.frontend_application_writes_enabled,
+            "deploy_backend_requested": self.deploy_backend,
+            "deployments_env": self.allow_deployments,
+            "backend_deployment_env": self.allow_backend_deployment,
+            "confirm_backend_deployment_matches": self.confirm_backend_deployment == self.backend_application_name if self.confirm_backend_deployment is not None else False,
+            "backend_deployment_enabled": self.backend_deployment_enabled,
         }
 
     def assert_write_gates(self) -> None:
@@ -273,6 +289,7 @@ class CoolifyClient:
         self.expected_frontend_application_uuid: str | None = None
         self.frontend_application_bindings: dict[str, Any] = {}
         self.expected_frontend_env_contract: dict[str, dict[str, Any]] | None = None
+        self.backend_deployment_preconditions_ok = False
 
 
     def bind_backend_application_bindings(self, bindings: dict[str, Any]) -> None:
@@ -329,6 +346,26 @@ class CoolifyClient:
             return False
         encoded = urllib.parse.quote(self.expected_frontend_application_uuid, safe="")
         return path == f"/applications/{encoded}/envs"
+
+    def bind_backend_deployment_preconditions(self, ok: bool) -> None:
+        self.backend_deployment_preconditions_ok = bool(ok)
+
+    def _validate_backend_deploy_payload(self, json_body: dict[str, Any] | None) -> None:
+        if not isinstance(json_body, dict):
+            raise ProvisioningError("Backend deployment requires an approved JSON object payload.", error_type="safety")
+        if set(json_body) != {"uuid", "force"}:
+            raise ProvisioningError("Backend deployment payload fields must be exactly uuid and force.", error_type="safety")
+        uuid = str(json_body.get("uuid") or "")
+        if not uuid or "," in uuid or uuid != str(self.expected_backend_application_uuid or ""):
+            raise ProvisioningError("Backend deployment UUID must match the verified Backend Application binding and must not contain commas.", error_type="safety")
+        if json_body.get("force") is not False:
+            raise ProvisioningError("Backend deployment payload force must be exactly false.", error_type="safety")
+        if any(k in json_body for k in ("tag", "pr", "pull_request_id", "docker_tag")):
+            raise ProvisioningError("Backend deployment must not include tag, PR, or docker tag fields.", error_type="safety")
+        if not self.mode.backend_deployment_enabled:
+            raise ProvisioningError("Backend deployment requires --apply, --deploy-backend, deployment env gates, and exact --confirm-backend-deployment.", error_type="safety")
+        if not self.backend_deployment_preconditions_ok:
+            raise ProvisioningError("Backend deployment preconditions are not complete.", error_type="safety")
 
     def _validate_frontend_application_payload(self, json_body: dict[str, Any] | None) -> None:
         if not isinstance(json_body, dict):
@@ -449,6 +486,8 @@ class CoolifyClient:
         method = method.upper()
         if not path.startswith("/"):
             raise ProvisioningError("Coolify API path must start with '/'.")
+        if path == "/deploy" and not (method == "POST" and post_kind == "backend_deploy"):
+            raise ProvisioningError("GET /deploy and non-backend deployment actions are forbidden.", error_type="safety", method=method, path=path)
         if FORBIDDEN_ENDPOINT_RE.search(path) or ("/start" in path and not (method == "POST" and post_kind == "postgresql_start" and re.fullmatch(r"/databases/[^/]+/start", path))):
             raise ProvisioningError(f"Lifecycle/deployment endpoint is forbidden in this stage: {path}", error_type="safety", method=method, path=path)
         if method in {"PUT", "DELETE"}:
@@ -476,6 +515,10 @@ class CoolifyClient:
                 raise ProvisioningError("Frontend Application creation requires COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES=true and exact --confirm-frontend-application.", error_type="safety", method=method, path=path)
             if post_kind == "frontend_env_create" and not getattr(self.mode, "frontend_env_writes_enabled", False):
                 raise ProvisioningError("Frontend env writes require COOLIFY_ALLOW_FRONTEND_ENV_WRITES=true and exact --confirm-frontend-environment.", error_type="safety", method=method, path=path)
+            if post_kind == "backend_deploy":
+                if path != "/deploy":
+                    raise ProvisioningError("Backend deployment POST endpoint must be exactly /deploy.", error_type="safety", method=method, path=path)
+                self._validate_backend_deploy_payload(json_body)
             if post_kind not in ALLOWED_POST_KINDS:
                 raise ProvisioningError("POST requires a stage allowlisted operation kind.", error_type="safety", method=method, path=path)
             if post_kind == "project_create" and path != POST_PROJECT_CREATE:
@@ -536,21 +579,39 @@ class CoolifyClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                response_status_value = getattr(response, "status", None)
+                if response_status_value is None:
+                    response_status_value = response.getcode()
+                response_status = int(response_status_value)
+                write_2xx = method in WRITE_METHODS and 200 <= response_status <= 299
                 raw = response.read().decode("utf-8")
-                data = json.loads(raw) if raw else None
-                if allowed_statuses is not None and response.status not in allowed_statuses:
+                try:
+                    data = json.loads(raw) if raw else None
+                except json.JSONDecodeError as exc:
                     raise ProvisioningError(
-                        f"Unexpected Coolify status {response.status} for {method} {path}.",
+                        f"Malformed JSON response for {method} {path}: {exc}",
                         error_type="coolify_api",
                         code=2,
-                        http_status=response.status,
+                        http_status=response_status,
                         method=method,
                         path=path,
-                        write_performed=False,
-                        write_outcome_unknown=method in WRITE_METHODS,
+                        write_performed=write_2xx,
+                        write_outcome_unknown=write_2xx,
+                        request_attempted=True,
+                    ) from exc
+                if allowed_statuses is not None and response_status not in allowed_statuses:
+                    raise ProvisioningError(
+                        f"Unexpected Coolify status {response_status} for {method} {path}.",
+                        error_type="coolify_api",
+                        code=2,
+                        http_status=response_status,
+                        method=method,
+                        path=path,
+                        write_performed=write_2xx,
+                        write_outcome_unknown=write_2xx,
                         request_attempted=True,
                     )
-                return Response(response.status, data, dict(response.headers))
+                return Response(response_status, data, dict(response.headers))
         except urllib.error.HTTPError as exc:
             body = safe_http_body(exc.read().decode("utf-8", errors="replace"))
             raise ProvisioningError(
@@ -568,17 +629,6 @@ class CoolifyClient:
             raise ProvisioningError(
                 f"Coolify connection failure for {method} {path}: {exc}",
                 error_type="network",
-                code=2,
-                method=method,
-                path=path,
-                write_performed=False,
-                write_outcome_unknown=(method in WRITE_METHODS),
-                request_attempted=True,
-            ) from exc
-        except json.JSONDecodeError as exc:
-            raise ProvisioningError(
-                f"Malformed JSON response for {method} {path}: {exc}",
-                error_type="coolify_api",
                 code=2,
                 method=method,
                 path=path,
@@ -621,6 +671,9 @@ class CoolifyClient:
 
     def update_frontend_env(self, uuid: str, payload: dict[str, Any]) -> Response:
         return self.request("PATCH", f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_env_update")
+
+    def deploy_backend(self, uuid: str) -> Response:
+        return self.request("POST", "/deploy", json_body={"uuid": str(uuid), "force": False}, allowed_statuses={200}, post_kind="backend_deploy")
 
 
 def validate_base_url(value: str) -> str:
@@ -1191,6 +1244,10 @@ def mode_from_args(args: argparse.Namespace) -> ExecutionMode:
         getattr(args, "confirm_frontend_application", None),
         os.environ.get("COOLIFY_ALLOW_FRONTEND_ENV_WRITES") == "true",
         getattr(args, "confirm_frontend_environment", None),
+        bool(getattr(args, "deploy_backend", False)),
+        os.environ.get("COOLIFY_ALLOW_DEPLOYMENTS") == "true",
+        os.environ.get("COOLIFY_ALLOW_BACKEND_DEPLOYMENT") == "true",
+        getattr(args, "confirm_backend_deployment", None),
     )
 
 
@@ -2302,12 +2359,367 @@ def reconcile_backend_environment(client: CoolifyClient, args: argparse.Namespac
         status="exists"
     return {"status":status,"variables":results,"blockers":blockers}
 
-def global_status(mode: ExecutionMode, resources: list[dict[str, Any]], blockers: list[Any], actions: list[dict[str, Any]], readiness: dict[str, Any] | None = None) -> str:
+DEPLOYMENT_OFFICIAL_STATUSES = {"queued", "in_progress", "finished", "failed", "cancelled-by-user"}
+DEPLOYMENT_PENDING_STATUSES = {"queued", "in_progress"}
+RUNTIME_HEALTHY_STATUSES = {"running:healthy", "healthy"}
+RUNTIME_TRANSIENT_STATUSES = {"queued", "starting", "running:starting"}
+RUNTIME_UNHEALTHY_STATUSES = {"running:unhealthy", "unhealthy", "exited", "stopped", "failed", "exited:unhealthy"}
+
+
+def backend_deployment_result(status: str = "not_requested", **updates: Any) -> dict[str, Any]:
+    result = {"user_requested": False, "requested": False, "post_attempted": False, "adopted_active": False, "recovered_after_unknown": False, "deployment_uuid": None, "status": status, "terminal": False, "verified": False, "request_attempted": False, "write_performed": False, "write_outcome_unknown": False, "poll_attempts": 0, "poll_errors": 0, "timed_out": False}
+    result.update(updates)
+    return result
+
+
+def runtime_readiness_result(status: str = "not_checked", **updates: Any) -> dict[str, Any]:
+    result = {"status": status, "healthy": False, "verified": False}
+    result.update(updates)
+    return result
+
+
+def smoke_check_result(product: str, status: str = "not_checked", **updates: Any) -> dict[str, Any]:
+    result = {"url": f"https://api.dev.{product}.goodmorning.mx/health", "status": status, "http_status": None, "body_verified": False, "attempts": 0, "timed_out": False}
+    result.update(updates)
+    return result
+
+
+def backend_deployment_request_action(status: str, exc: ProvisioningError | None = None) -> dict[str, Any]:
+    return ActionRecord(
+        "backend_deployment",
+        "request",
+        status,
+        request_attempted=True if exc is None else exc.request_attempted,
+        write_performed=True if exc is None else exc.write_performed,
+        write_outcome_unknown=False if exc is None else exc.write_outcome_unknown,
+    ).to_dict()
+
+
+def validate_stage7_timing_args(args: argparse.Namespace) -> None:
+    for name, maximum in (("backend_deployment_timeout", 3600), ("backend_deployment_interval", 30), ("backend_runtime_timeout", 600), ("backend_runtime_interval", 30), ("backend_smoke_timeout", 600), ("backend_smoke_interval", 30), ("backend_smoke_request_timeout", 30)):
+        value = getattr(args, name, None)
+        if not isinstance(value, (int, float)) or not math.isfinite(value) or value <= 0 or value > maximum:
+            raise ProvisioningError(f"--{name.replace('_', '-')} must be finite, greater than zero, and <= {maximum}.", error_type="validation")
+    for name in ("backend_deployment_max_poll_errors", "backend_runtime_max_poll_errors"):
+        value = getattr(args, name, None)
+        if not isinstance(value, int) or value < 0 or value > 10:
+            raise ProvisioningError(f"--{name.replace('_', '-')} must be an integer from 0 through 10.", error_type="validation")
+
+
+def deployment_history(client: CoolifyClient, backend_uuid: str) -> list[dict[str, Any]]:
+    data = client.get(f"/deployments/applications/{urllib.parse.quote(str(backend_uuid), safe='')}?skip=0&take=10")
+    if not isinstance(data, dict):
+        raise ProvisioningError("Deployment history response must be a JSON object.", error_type="coolify_api", code=2)
+    if "deployments" not in data or not isinstance(data.get("deployments"), list):
+        raise ProvisioningError("Deployment history response must include deployments list.", error_type="coolify_api", code=2)
+    if "count" in data and not isinstance(data.get("count"), int):
+        raise ProvisioningError("Deployment history count must be an integer when present.", error_type="coolify_api", code=2)
+    items: list[dict[str, Any]] = []
+    for item in data["deployments"]:
+        if not isinstance(item, dict):
+            raise ProvisioningError("Deployment history entries must be objects.", error_type="coolify_api", code=2)
+        items.append(item)
+    return items
+
+
+def deployment_uuid_from_item(item: dict[str, Any]) -> str | None:
+    value = field(item, "deployment_uuid", "uuid", "id")
+    return str(value) if value not in (None, "") else None
+
+
+def deployment_belongs_to_backend(item: dict[str, Any], backend_uuid: str) -> bool:
+    resource_uuid = field(item, "resource_uuid", "application_uuid")
+    return resource_uuid in (None, "") or str(resource_uuid) == str(backend_uuid)
+
+
+def active_deployments(items: list[dict[str, Any]], backend_uuid: str) -> list[str]:
+    result=[]
+    seen=set()
+    for item in items:
+        status=str(field(item,"status") or "")
+        if status not in DEPLOYMENT_PENDING_STATUSES:
+            continue
+        if not deployment_belongs_to_backend(item, backend_uuid):
+            raise ProvisioningError("Deployment history contains an active deployment for a different Backend UUID.", error_type="coolify_api", code=2)
+        du=deployment_uuid_from_item(item)
+        if not du:
+            raise ProvisioningError("Active deployment history entry is missing deployment UUID.", error_type="coolify_api", code=2)
+        if du not in seen:
+            result.append(du); seen.add(du)
+    return result
+
+
+def backend_env_flags_match(row: dict[str, Any]) -> bool:
+    flags = row.get("desired_flags")
+    expected = {"is_runtime": True, "is_buildtime": False, "is_preview": False, "is_literal": True, "is_multiline": False}
+    return isinstance(flags, dict) and all(flags.get(key) is value for key, value in expected.items())
+
+
+def backend_deployment_preflight(args: argparse.Namespace, postgres: dict[str, Any], readiness: dict[str, Any], backend: dict[str, Any], backend_env: dict[str, Any], actions: list[dict[str, Any]], *, require_env_status: bool = True) -> tuple[bool, list[dict[str, Any]]]:
+    blockers=[]
+    if postgres.get("name") != f"{args.product}-postgres-dev" or postgres.get("status") not in {"exists", "created"}:
+        blockers.append({"resource":"backend_deployment","reason":"postgresql_identity_or_compatibility_unverified"})
+    if readiness.get("status") not in {"healthy","already_healthy"} or not readiness.get("internal_db_url_available") or not readiness.get("database_url_driver_ready"):
+        blockers.append({"resource":"backend_deployment","reason":"postgresql_not_ready"})
+    if backend.get("name") != backend_application_name(args.product) or backend.get("status") not in {"exists","created"} or not backend.get("uuid"):
+        blockers.append({"resource":"backend_deployment","reason":"backend_application_not_verified"})
+    if require_env_status and backend_env.get("status") != "exists":
+        blockers.append({"resource":"backend_deployment","reason":"backend_environment_not_verified"})
+    env_rows = backend_env.get("variables", [])
+    if not isinstance(env_rows, list) or not env_rows:
+        blockers.append({"resource":"backend_deployment","reason":"backend_environment_variables_missing"})
+        env_rows = [] if not isinstance(env_rows, list) else env_rows
+    counts: dict[str, int] = {}
+    for row in env_rows:
+        key = row.get("key") if isinstance(row, dict) else None
+        if key in BACKEND_ENV_KEYS:
+            counts[str(key)] = counts.get(str(key), 0) + 1
+        else:
+            blockers.append({"resource":"backend_deployment","reason":"backend_environment_unexpected_key", "key": key})
+    for key in sorted(BACKEND_ENV_KEYS):
+        count = counts.get(key, 0)
+        if count == 0:
+            blockers.append({"resource":"backend_deployment","reason":"backend_environment_key_missing", "key": key})
+        elif count > 1:
+            blockers.append({"resource":"backend_deployment","reason":"backend_environment_key_duplicate", "key": key})
+    for row in env_rows:
+        if not isinstance(row, dict):
+            blockers.append({"resource":"backend_deployment","reason":"backend_environment_row_invalid"}); continue
+        key = row.get("key")
+        if key not in BACKEND_ENV_KEYS:
+            continue
+        if row.get("status") == "secret_value_unverified":
+            blockers.append({"resource":"backend_deployment","reason":"secret_value_unverified", "key": key})
+            continue
+        if row.get("status") != "exists":
+            blockers.append({"resource":"backend_deployment","reason":"backend_environment_key_not_exists", "key": key})
+        if row.get("value_verified") is not True:
+            blockers.append({"resource":"backend_deployment","reason":"backend_environment_value_unverified", "key": key})
+        if not backend_env_flags_match(row):
+            blockers.append({"resource":"backend_deployment","reason":"backend_environment_flags_incompatible", "key": key})
+    if any(a.get("write_outcome_unknown") for a in actions):
+        blockers.append({"resource":"backend_deployment","reason":"prior_write_outcome_unknown"})
+    return (not blockers), blockers
+
+
+def parse_deploy_response(data: Any, backend_uuid: str) -> str:
+    deployments = data.get("deployments") if isinstance(data, dict) else None
+    if not isinstance(deployments, list) or len(deployments) != 1:
+        raise ProvisioningError("Coolify deploy response must include exactly one deployment entry.", error_type="coolify_api", code=2)
+    item=deployments[0]
+    if not isinstance(item, dict) or str(item.get("resource_uuid") or "") != str(backend_uuid):
+        raise ProvisioningError("Coolify deploy response resource_uuid did not match Backend Application UUID.", error_type="coolify_api", code=2)
+    du=item.get("deployment_uuid")
+    if not isinstance(du, str) or not du.strip():
+        raise ProvisioningError("Coolify deploy response missing deployment_uuid.", error_type="coolify_api", code=2)
+    return du
+
+
+def poll_backend_deployment(client: CoolifyClient, args: argparse.Namespace, deployment_uuid: str, backend_uuid: str, sleeper: Callable[[float], None] | None = None, clock: Callable[[], float] | None = None) -> dict[str, Any]:
+    sleeper=sleeper or (lambda seconds: None if seconds <= 0 else __import__("time").sleep(seconds)); clock=clock or __import__("time").monotonic
+    start=clock(); attempts=0; errors=0; consecutive=0
+    while clock() - start <= args.backend_deployment_timeout:
+        attempts += 1
+        try:
+            data=client.get(f"/deployments/{urllib.parse.quote(str(deployment_uuid), safe='')}")
+        except ProvisioningError:
+            errors += 1; consecutive += 1
+            if consecutive > args.backend_deployment_max_poll_errors:
+                return backend_deployment_result("deployment_poll_failed", deployment_uuid=deployment_uuid, terminal=False, poll_attempts=attempts, poll_errors=errors)
+            sleeper(args.backend_deployment_interval); continue
+        consecutive=0
+        item=data.get("data") if isinstance(data,dict) and isinstance(data.get("data"),dict) else data
+        if not isinstance(item,dict):
+            return backend_deployment_result("deployment_status_unverified", deployment_uuid=deployment_uuid, poll_attempts=attempts, poll_errors=errors)
+        if str(field(item,"deployment_uuid","uuid","id") or "") != str(deployment_uuid):
+            return backend_deployment_result("deployment_uuid_mismatch", deployment_uuid=deployment_uuid, poll_attempts=attempts, poll_errors=errors)
+        resource_uuid=field(item,"resource_uuid","application_uuid")
+        if resource_uuid not in (None, "") and str(resource_uuid) != str(backend_uuid):
+            return backend_deployment_result("backend_uuid_mismatch", deployment_uuid=deployment_uuid, poll_attempts=attempts, poll_errors=errors)
+        app_name=field(item,"application_name")
+        if app_name not in (None, "") and str(app_name) != backend_application_name(args.product):
+            return backend_deployment_result("application_name_mismatch", deployment_uuid=deployment_uuid, poll_attempts=attempts, poll_errors=errors)
+        status=str(field(item,"status") or "")
+        if status == "finished":
+            return backend_deployment_result("finished", deployment_uuid=deployment_uuid, terminal=True, verified=True, poll_attempts=attempts, poll_errors=errors)
+        if status in {"failed", "cancelled-by-user"}:
+            return backend_deployment_result(status, deployment_uuid=deployment_uuid, terminal=True, poll_attempts=attempts, poll_errors=errors)
+        if status not in DEPLOYMENT_PENDING_STATUSES:
+            return backend_deployment_result("deployment_status_unverified", deployment_uuid=deployment_uuid, poll_attempts=attempts, poll_errors=errors)
+        sleeper(args.backend_deployment_interval)
+    return backend_deployment_result("deployment_timeout", deployment_uuid=deployment_uuid, poll_attempts=attempts, poll_errors=errors, timed_out=True)
+
+
+def read_backend_runtime_once(client: CoolifyClient, args: argparse.Namespace, backend_uuid: str) -> dict[str, Any]:
+    data=client.get(f"/applications/{urllib.parse.quote(str(backend_uuid), safe='')}")
+    item=data.get("data") if isinstance(data,dict) and isinstance(data.get("data"),dict) else data
+    if not isinstance(item,dict) or str(field(item,"uuid","id") or "") != str(backend_uuid):
+        return runtime_readiness_result("runtime_status_unverified")
+    name=field(item,"name")
+    if name not in (None, "") and str(name) != backend_application_name(args.product):
+        return runtime_readiness_result("runtime_status_unverified")
+    status=str(field(item,"status","human_status") or "")
+    if status in RUNTIME_HEALTHY_STATUSES:
+        return runtime_readiness_result(status, healthy=True, verified=True)
+    if status in RUNTIME_UNHEALTHY_STATUSES:
+        return runtime_readiness_result(status, healthy=False, verified=True)
+    if status in RUNTIME_TRANSIENT_STATUSES:
+        return runtime_readiness_result(status, healthy=False, verified=False)
+    return runtime_readiness_result("runtime_status_unverified")
+
+
+def verify_backend_runtime(client: CoolifyClient, args: argparse.Namespace, backend_uuid: str, sleeper: Callable[[float], None] | None = None, clock: Callable[[], float] | None = None) -> dict[str, Any]:
+    sleeper=sleeper or (lambda seconds: None if seconds <= 0 else __import__("time").sleep(seconds)); clock=clock or __import__("time").monotonic
+    start=clock(); attempts=0; errors=0; consecutive=0; last_status="runtime_timeout"
+    while clock() - start <= args.backend_runtime_timeout:
+        attempts += 1
+        try:
+            result = read_backend_runtime_once(client, args, backend_uuid)
+        except ProvisioningError:
+            errors += 1; consecutive += 1
+            if consecutive > args.backend_runtime_max_poll_errors:
+                return runtime_readiness_result("runtime_poll_failed", poll_attempts=attempts, poll_errors=errors)
+            sleeper(args.backend_runtime_interval); continue
+        consecutive = 0
+        status = result.get("status")
+        if result.get("healthy") and result.get("verified"):
+            return {**result, "poll_attempts": attempts, "poll_errors": errors}
+        if status in RUNTIME_UNHEALTHY_STATUSES or status == "runtime_status_unverified":
+            return {**result, "poll_attempts": attempts, "poll_errors": errors}
+        last_status = str(status or "runtime_timeout")
+        sleeper(args.backend_runtime_interval)
+    return runtime_readiness_result("runtime_timeout", poll_attempts=attempts, poll_errors=errors, timed_out=True, last_status=last_status)
+
+
+def backend_smoke_url(product: str) -> str:
+    return f"https://api.dev.{product}.goodmorning.mx/health"
+
+
+def validate_backend_smoke_url(url: str, product: str) -> None:
+    parsed=urllib.parse.urlparse(url)
+    if url != backend_smoke_url(product) or parsed.scheme != "https" or parsed.hostname != f"api.dev.{product}.goodmorning.mx" or parsed.port is not None or parsed.username or parsed.password or parsed.path != "/health" or parsed.query or parsed.fragment:
+        raise ProvisioningError("Backend smoke URL must be exact HTTPS /health URL without port, query, fragment, credentials, IP, or localhost.", error_type="safety")
+
+
+def run_backend_smoke(args: argparse.Namespace, opener: Callable[..., Any] | None = None, sleeper: Callable[[float], None] | None = None, clock: Callable[[], float] | None = None) -> dict[str, Any]:
+    url=backend_smoke_url(args.product); validate_backend_smoke_url(url,args.product)
+    opener=opener or urllib.request.urlopen; sleeper=sleeper or (lambda seconds: None if seconds <= 0 else __import__("time").sleep(seconds)); clock=clock or __import__("time").monotonic
+    start=clock(); attempts=0; last_status=None
+    while clock()-start <= args.backend_smoke_timeout:
+        attempts += 1
+        req=urllib.request.Request(url, method="GET", headers={"Accept":"application/json", "User-Agent":"goodmorning-factory-backend-smoke"})
+        try:
+            with opener(req, timeout=args.backend_smoke_request_timeout) as resp:
+                last_status=getattr(resp,"status",None) or resp.getcode()
+                final_url=getattr(resp,"url",url)
+                try:
+                    validate_backend_smoke_url(str(final_url), args.product)
+                except ProvisioningError:
+                    return smoke_check_result(args.product,"smoke_failed",http_status=last_status,attempts=attempts)
+                ctype=resp.headers.get("Content-Type","") if hasattr(resp,"headers") else ""
+                raw=resp.read(4096).decode("utf-8",errors="replace")
+                if last_status == 200 and "json" in ctype.lower():
+                    body=json.loads(raw)
+                    if isinstance(body,dict) and body.get("status")=="ok" and body.get("environment")=="dev" and isinstance(body.get("service"),str) and body.get("service"):
+                        return smoke_check_result(args.product,"passed",http_status=200,body_verified=True,attempts=attempts)
+        except Exception:
+            pass
+        sleeper(args.backend_smoke_interval)
+    return smoke_check_result(args.product,"smoke_timeout",http_status=last_status,attempts=attempts,timed_out=True)
+
+
+def recover_new_deployment_candidates(before_ids: set[str | None], after: list[dict[str, Any]], backend_uuid: str) -> list[str]:
+    candidates=[]; seen=set()
+    clean_before={str(item) for item in before_ids if item}
+    for item in after:
+        du=deployment_uuid_from_item(item)
+        if not du:
+            continue
+        if du in clean_before or du in seen:
+            continue
+        if not deployment_belongs_to_backend(item, backend_uuid):
+            continue
+        candidates.append(du); seen.add(du)
+    return candidates
+
+
+def execute_backend_deployment(client: CoolifyClient, args: argparse.Namespace, mode: ExecutionMode, backend: dict[str, Any], preflight_ok: bool, actions: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    runtime=runtime_readiness_result(); smoke=smoke_check_result(args.product); blockers=[]; uuid=backend.get("uuid")
+    if hasattr(client,"bind_backend_deployment_preconditions"):
+        client.bind_backend_deployment_preconditions(preflight_ok)
+    user_requested = bool(getattr(args,"deploy_backend",False))
+    if not user_requested:
+        actions.append(ActionRecord("backend_deployment","plan","not_requested",verified=False).to_dict())
+        return backend_deployment_result("not_requested", user_requested=False), runtime, smoke, blockers
+    if not preflight_ok:
+        actions.append(ActionRecord("backend_deployment","plan","blocked_by_preconditions").to_dict())
+        return backend_deployment_result("blocked_by_preconditions", user_requested=True), runtime, smoke, [{"resource":"backend_deployment","reason":"preflight_incomplete"}]
+    if not mode.is_apply:
+        actions.append(ActionRecord("backend_deployment","plan","would_deploy").to_dict())
+        return backend_deployment_result("would_deploy", user_requested=True), runtime, smoke, blockers
+    if not mode.backend_deployment_enabled:
+        return backend_deployment_result("gates_incomplete", user_requested=True), runtime, smoke, [{"resource":"backend_deployment","reason":"deployment_gates_incomplete"}]
+    try:
+        before=deployment_history(client,str(uuid))
+        before_ids={deployment_uuid_from_item(i) for i in before if deployment_uuid_from_item(i)}
+        active=active_deployments(before,str(uuid))
+    except ProvisioningError as exc:
+        actions.append(ActionRecord("backend_deployment","history","deployment_history_unverified",verified=False).to_dict())
+        return backend_deployment_result("deployment_history_unverified", user_requested=True), runtime, smoke, [{"resource":"backend_deployment","reason":"deployment_history_unverified"}]
+    if len(active)>1:
+        return backend_deployment_result("ambiguous_active_deployments", user_requested=True), runtime, smoke, [{"resource":"backend_deployment","reason":"ambiguous_active_deployments"}]
+    if len(active)==1:
+        dep=backend_deployment_result("adopted_active_deployment", user_requested=True, post_attempted=False, adopted_active=True, deployment_uuid=active[0]); actions.append(ActionRecord("backend_deployment","adopt_active","adopted_active_deployment",verified=False).to_dict())
+    else:
+        try:
+            resp=client.deploy_backend(str(uuid))
+            try:
+                du=parse_deploy_response(resp.data,str(uuid))
+                dep=backend_deployment_result("requested", user_requested=True, post_attempted=True, requested=True, deployment_uuid=du, request_attempted=True, write_performed=True)
+                actions.append(backend_deployment_request_action("requested"))
+            except ProvisioningError:
+                raise ProvisioningError("Accepted deploy response shape was ambiguous after POST /deploy.", error_type="coolify_api", code=2, method="POST", path="/deploy", write_performed=True, write_outcome_unknown=True, request_attempted=True)
+        except ProvisioningError as exc:
+            if exc.http_status == 429:
+                actions.append(backend_deployment_request_action("rate_limited", exc))
+                return backend_deployment_result("rate_limited", user_requested=True, post_attempted=True, requested=True, request_attempted=True), runtime, smoke, [{"resource":"backend_deployment","reason":"rate_limited"}]
+            if exc.write_outcome_unknown:
+                actions.append(backend_deployment_request_action("write_outcome_unknown", exc))
+                try:
+                    after=deployment_history(client,str(uuid))
+                    new=recover_new_deployment_candidates(before_ids, after, str(uuid))
+                except ProvisioningError:
+                    return backend_deployment_result("deployment_outcome_unknown", user_requested=True, post_attempted=True, request_attempted=True, write_performed=exc.write_performed, write_outcome_unknown=True), runtime, smoke, [{"resource":"backend_deployment","reason":"deployment_outcome_unknown"}]
+                if len(new)==1:
+                    dep=backend_deployment_result("recovered_after_unknown", user_requested=True, post_attempted=True, recovered_after_unknown=True, deployment_uuid=new[0], request_attempted=True, write_performed=exc.write_performed, write_outcome_unknown=False)
+                    actions.append(ActionRecord("backend_deployment","recover_unknown","recovered_after_unknown",request_attempted=True,verified=False).to_dict())
+                elif len(new)==0:
+                    return backend_deployment_result("deployment_outcome_unknown", user_requested=True, post_attempted=True, request_attempted=True, write_performed=exc.write_performed, write_outcome_unknown=True), runtime, smoke, [{"resource":"backend_deployment","reason":"deployment_outcome_unknown"}]
+                else:
+                    return backend_deployment_result("ambiguous_deployment_recovery", user_requested=True, post_attempted=True, request_attempted=True, write_performed=exc.write_performed, write_outcome_unknown=True), runtime, smoke, [{"resource":"backend_deployment","reason":"ambiguous_deployment_recovery"}]
+            else:
+                actions.append(backend_deployment_request_action("request_failed", exc))
+                return backend_deployment_result("request_failed", user_requested=True, post_attempted=True, request_attempted=True), runtime, smoke, [{"resource":"backend_deployment","reason":exc.message}]
+    polled=poll_backend_deployment(client,args,str(dep["deployment_uuid"]),str(uuid)); preserved={"user_requested":dep.get("user_requested"),"post_attempted":dep.get("post_attempted"),"requested":dep.get("requested"),"adopted_active":dep.get("adopted_active"),"recovered_after_unknown":dep.get("recovered_after_unknown"),"request_attempted":dep.get("request_attempted"),"write_performed":dep.get("write_performed"),"write_outcome_unknown":dep.get("write_outcome_unknown")}; dep.update(polled); dep.update({k:v for k,v in preserved.items() if v}); actions.append(ActionRecord("backend_deployment","poll",dep["status"],verified=dep.get("verified",False)).to_dict())
+    if not dep.get("verified"):
+        return dep, runtime, smoke, [{"resource":"backend_deployment","reason":dep.get("status")}]
+    runtime=verify_backend_runtime(client,args,str(uuid)); actions.append(ActionRecord("backend_runtime_readiness","verify",runtime["status"],verified=runtime.get("verified",False)).to_dict())
+    if not runtime.get("healthy"):
+        return dep, runtime, smoke, [{"resource":"backend_runtime_readiness","reason":runtime.get("status")}]
+    smoke=run_backend_smoke(args); actions.append(ActionRecord("backend_smoke_check","smoke",smoke["status"],verified=smoke.get("body_verified",False)).to_dict())
+    if not smoke.get("body_verified"):
+        blockers.append({"resource":"backend_smoke_check","reason":smoke.get("status")})
+    return dep,runtime,smoke,blockers
+
+
+def global_status(mode: ExecutionMode, resources: list[dict[str, Any]], blockers: list[Any], actions: list[dict[str, Any]], readiness: dict[str, Any] | None = None, backend_deployment: dict[str, Any] | None = None, runtime: dict[str, Any] | None = None, smoke: dict[str, Any] | None = None) -> str:
     statuses = {resource.get("status") for resource in resources}
     write_performed = any(action.get("write_performed") for action in actions) or any(resource.get("write_performed") for resource in resources)
     write_outcome_unknown = any(action.get("write_outcome_unknown") for action in actions) or any(resource.get("write_outcome_unknown") for resource in resources)
     if not mode.is_apply:
         return "dry_run"
+    if backend_deployment and backend_deployment.get("user_requested") and mode.is_apply and (backend_deployment.get("status") != "finished" or not backend_deployment.get("verified") or not (runtime or {}).get("healthy") or not (runtime or {}).get("verified") or not (smoke or {}).get("body_verified")) :
+        return "partial"
     if mode.is_apply and readiness and (readiness.get("write_outcome_unknown") or readiness.get("status") in READINESS_FAILURE_STATUSES):
         return "partial" if readiness.get("write_outcome_unknown") else readiness.get("status")
     if "incompatible" in statuses:
@@ -2382,6 +2794,10 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         blockers.append({"resource": "backend_application", "status": backend.get("status")})
     backend_env = reconcile_backend_environment(client, args, backend, database_url, mode, actions) if backend.get("status") in {"exists", "created"} and precondition_ok else {"status": "blocked" if mode.is_apply else "planned", "variables": [], "blockers": []}
     blockers.extend(backend_env.get("blockers", []))
+    deploy_preflight_ok, deploy_preflight_blockers = backend_deployment_preflight(args, postgres, postgresql_readiness, backend, backend_env, actions, require_env_status=mode.is_apply)
+    blockers.extend(deploy_preflight_blockers if mode.is_apply and getattr(args, "deploy_backend", False) else [])
+    backend_deployment, backend_runtime_readiness, backend_smoke_check, deploy_blockers = execute_backend_deployment(client, args, mode, backend, deploy_preflight_ok, actions)
+    blockers.extend(deploy_blockers)
     frontend = ensure_frontend_application(client, args, context, mode, actions, backend)
     if frontend.get("status") in {"duplicate", "compatibility_unverified", "scope_unverified", "recreate_required", "blocked", "created_unverified", "write_outcome_unknown"}:
         blockers.append({"resource": "frontend_application", "status": frontend.get("status")})
@@ -2393,14 +2809,14 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
     frontend_verified = frontend.get("status") in {"exists", "created"} and bool(frontend.get("uuid"))
     frontend_application_operation_enabled = mode.frontend_application_writes_enabled and frontend_backend_ok
     frontend_env_operation_enabled = mode.frontend_env_writes_enabled and frontend_backend_ok and frontend_verified
-    allowed_posts = [] if not mode.is_apply else sorted({"project_create", "environment_create", "postgresql_create"} | ({"postgresql_start"} if mode.database_start_enabled else set()) | ({"backend_application_create"} if mode.backend_application_writes_enabled else set()) | ({"backend_env_create"} if mode.backend_env_writes_enabled else set()) | ({"frontend_application_create"} if frontend_application_operation_enabled else set()) | ({"frontend_env_create"} if frontend_env_operation_enabled else set()))
+    allowed_posts = [] if not mode.is_apply else sorted({"project_create", "environment_create", "postgresql_create"} | ({"postgresql_start"} if mode.database_start_enabled else set()) | ({"backend_application_create"} if mode.backend_application_writes_enabled else set()) | ({"backend_env_create"} if mode.backend_env_writes_enabled else set()) | ({"frontend_application_create"} if frontend_application_operation_enabled else set()) | ({"frontend_env_create"} if frontend_env_operation_enabled else set()) | ({"backend_deploy"} if mode.backend_deployment_enabled and deploy_preflight_ok else set()))
     plan["safety"] = {
         "writes_enabled": mode.is_apply and mode.allow_resource_writes and mode.confirm_product == mode.product,
         "allowed_post_operations": allowed_posts,
         "allowed_patch_operations": sorted((["backend_env_update"] if mode.is_apply and mode.backend_env_writes_enabled else []) + (["frontend_env_update"] if mode.is_apply and frontend_env_operation_enabled else [])),
         "database_start_enabled": mode.database_start_enabled,
         "forbidden_methods": ["PUT", "DELETE"],
-        "deploy_actions_enabled": False,
+        "deploy_actions_enabled": mode.backend_deployment_enabled and deploy_preflight_ok,
         "application_creation_enabled": mode.backend_application_writes_enabled or mode.frontend_application_writes_enabled,
         "frontend_application_creation_enabled": frontend_application_operation_enabled,
         "frontend_application_gates_enabled": mode.frontend_application_writes_enabled,
@@ -2418,7 +2834,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
             resource["create_payload_preview"] = frontend_payload_preview(frontend_create_payload(args, context))
         else:
             resource["status"] = "planned_later"
-    status = global_status(mode, [project, environment, postgres, backend, backend_env, frontend, frontend_env], blockers, actions, postgresql_readiness)
+    status = global_status(mode, [project, environment, postgres, backend, backend_env, frontend, frontend_env], blockers, actions, postgresql_readiness, backend_deployment, backend_runtime_readiness, backend_smoke_check)
     return redact({
         **plan,
         "status": status,
@@ -2434,17 +2850,23 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         "backend_environment": backend_env,
         "frontend_application": frontend,
         "frontend_environment": frontend_env,
+        "frontend_deployment": "planned_later",
+        "backend_deployment": backend_deployment,
+        "backend_runtime_readiness": backend_runtime_readiness,
+        "backend_smoke_check": backend_smoke_check,
         "actions": actions,
         "warnings": warnings,
         "blockers": blockers,
         "contract": {
-            "confirmed_endpoints": ["POST /api/v1/projects", "POST /api/v1/projects/{project_uuid}/environments", "POST /api/v1/databases/postgresql", "GET /api/v1/databases/{uuid}", "POST /api/v1/databases/{uuid}/start", "POST /api/v1/applications/private-github-app", "GET /api/v1/applications/{uuid}", "GET /api/v1/applications/{uuid}/envs", "POST /api/v1/applications/{uuid}/envs", "PATCH /api/v1/applications/{uuid}/envs"],
+            "confirmed_endpoints": ["POST /api/v1/projects", "POST /api/v1/projects/{project_uuid}/environments", "POST /api/v1/databases/postgresql", "GET /api/v1/databases/{uuid}", "POST /api/v1/databases/{uuid}/start", "POST /api/v1/applications/private-github-app", "GET /api/v1/applications/{uuid}", "GET /api/v1/applications/{uuid}/envs", "POST /api/v1/applications/{uuid}/envs", "PATCH /api/v1/applications/{uuid}/envs", "POST /api/v1/deploy", "GET /api/v1/deployments/{deployment_uuid}", "GET /api/v1/deployments/applications/{backend_uuid}?skip=0&take=10"],
             "postgresql_payload_preview": redact(postgresql_create_payload(args, "${project.uuid}", "${server.uuid}", "${generated_secret}")),
             "postgresql_payload_source": "Coolify OpenAPI/API reference for create PostgreSQL database; version is represented by the image field in this isolated builder pending any upstream contract rename.",
             "backend_application_payload_preview": backend_payload_preview(backend_create_payload(args, context)),
             "backend_env_keys": sorted(BACKEND_ENV_KEYS),
             "frontend_application_payload_preview": frontend_payload_preview(frontend_create_payload(args, context)),
             "frontend_env_keys": sorted(FRONTEND_ENV_KEYS),
+            "backend_deploy_payload": {"uuid": "${backend_application.uuid}", "force": False},
+            "deployment_statuses": sorted(DEPLOYMENT_OFFICIAL_STATUSES),
             "vite_api_url": api_domain(args.product),
             "upstream_sources": ["coollabsio/coolify openapi.yaml v4.x", "coollabsio/coolify ApplicationsController.php v4.x", "coollabsio/coolify-cli v4.x", "coolify.io official docs", "goodmorning-mx/goodmorning-mvp-template backend/app/config.py dev"],
         },
@@ -2454,6 +2876,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
 def provision(args: argparse.Namespace, *, client_factory: Callable[[], CoolifyClient] | None = None) -> dict[str, Any]:
     validate_args(args)
     validate_readiness_timing_args(args)
+    validate_stage7_timing_args(args)
     mode = mode_from_args(args)
     if mode.is_apply:
         mode.assert_write_gates()
@@ -2481,6 +2904,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--confirm-backend-environment")
     parser.add_argument("--confirm-frontend-application")
     parser.add_argument("--confirm-frontend-environment")
+    parser.add_argument("--deploy-backend", action="store_true")
+    parser.add_argument("--confirm-backend-deployment")
+    parser.add_argument("--backend-deployment-timeout", type=float, default=900.0)
+    parser.add_argument("--backend-deployment-interval", type=float, default=5.0)
+    parser.add_argument("--backend-deployment-max-poll-errors", type=int, default=3)
+    parser.add_argument("--backend-runtime-timeout", type=float, default=180.0)
+    parser.add_argument("--backend-runtime-interval", type=float, default=5.0)
+    parser.add_argument("--backend-runtime-max-poll-errors", type=int, default=3)
+    parser.add_argument("--backend-smoke-timeout", type=float, default=120.0)
+    parser.add_argument("--backend-smoke-interval", type=float, default=5.0)
+    parser.add_argument("--backend-smoke-request-timeout", type=float, default=10.0)
     parser.add_argument("--destination-uuid")
     parser.add_argument("--postgres-readiness-interval", type=float, default=5.0)
     parser.add_argument("--postgres-readiness-timeout", type=float, default=300.0)
