@@ -43,11 +43,11 @@ APPLY_TRUE_GATES = {
 ALLOWED_TRUE_GATES = APPLY_TRUE_GATES
 SAFE_STATUSES = {
     "absent", "would_create", "would_start", "would_deploy", "would_verify_backend_then_deploy",
-    "planned", "dry_run", "exists", "found", "healthy", "already_healthy", "not_requested",
+    "planned", "planned_after_backend", "dry_run", "exists", "found", "matched", "healthy", "already_healthy", "not_requested",
     "present", "compatible", "verified", "passed", "finished", "running:healthy",
 }
 UNSAFE_STATUSES = {
-    "duplicate", "incompatible", "recreate_required", "out_of_scope", "scope_unverified",
+    "duplicate", "incompatible", "mismatch", "unverified", "secret_value_unverified", "recreate_required", "out_of_scope", "scope_unverified",
     "compatibility_unverified", "legacy_compose_migration_required", "write_outcome_unknown",
     "created_unverified", "updated_unverified", "deployment_outcome_unknown",
     "backend_deployment_outcome_unknown", "frontend_deployment_outcome_unknown", "blocked",
@@ -67,6 +67,7 @@ DECISION_KEYS = {
     "frontend_runtime_readiness", "frontend_smoke_check", "selected_server", "selected_destination",
     "selected_github_app", "github_app", "server", "destination", "resources", "actions", "legacy_compose",
 }
+SUCCESSFUL_APPLY_STATUSES = {"exists", "created", "ready"}
 NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
 SLUG_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
 
@@ -171,8 +172,20 @@ def _is_decision_path(path: tuple[str, ...]) -> bool:
     return any(part in DECISION_KEYS for part in path)
 
 
+def _backend_plan_safe_for_frontend(result: dict[str, Any]) -> bool:
+    backend = result.get("backend_application")
+    if isinstance(backend, dict):
+        return backend.get("status") in {"absent", "would_create", "planned", "exists", "created"} and not backend.get("blockers")
+    for resource in result.get("resources", []) if isinstance(result.get("resources"), list) else []:
+        if isinstance(resource, dict) and str(resource.get("name", "")).endswith("-api-dev"):
+            return resource.get("status") in {"absent", "would_create", "planned", "exists", "created"} and not resource.get("blockers")
+    return True
+
+
 def classify_plan_safety(result: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
     blockers: list[dict[str, Any]] = []
+    if result.get("status") != "dry_run":
+        blockers.append({"path": "status", "reason": "global_plan_status_not_dry_run", "status": result.get("status")})
     if result.get("selected_destination") is None:
         blockers.append({"path": "selected_destination", "reason": "destination_missing"})
     for path, node in _walk(result):
@@ -180,6 +193,12 @@ def classify_plan_safety(result: dict[str, Any]) -> tuple[bool, list[dict[str, A
         reason = str(node.get("reason", "")) if "reason" in node else ""
         if isinstance(node.get("blockers"), list) and node.get("blockers"):
             blockers.append(_safe_blocker(path + ("blockers",), node, "blockers_present"))
+        if status == "planned_after_backend":
+            dependency_reason = str(node.get("reason", "backend_dependency_planned"))
+            if "backend" not in dependency_reason:
+                blockers.append(_safe_blocker(path, node, "planned_after_backend_reason_unverified"))
+            if node.get("blockers") or not _backend_plan_safe_for_frontend(result):
+                blockers.append(_safe_blocker(path, node, "planned_after_backend_backend_not_safe"))
         if status in UNSAFE_STATUSES:
             blockers.append(_safe_blocker(path, node, status))
         elif status and status not in SAFE_STATUSES and _is_decision_path(path):
@@ -194,7 +213,7 @@ def classify_plan_safety(result: dict[str, Any]) -> tuple[bool, list[dict[str, A
 
 
 def _result_success(exit_code: int, result: dict[str, Any]) -> bool:
-    return exit_code == 0 and result.get("status") not in NON_SUCCESS_EXIT_STATUSES
+    return exit_code == 0 and result.get("status") in SUCCESSFUL_APPLY_STATUSES
 
 
 def orchestration_metadata(args: argparse.Namespace, *, phase: str, plan_safe: bool | None, apply_authorized: bool, confirmation_matches: bool, exit_code: int | None = None, result: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -238,7 +257,7 @@ def orchestrate(args: argparse.Namespace, *, client_factory: Callable[[], Any] |
     if args.phase == "plan":
         plan_safe, plan_blockers = classify_plan_safety(result)
         result["plan_blockers"] = plan_blockers
-    exit_code = 2 if result.get("status") in NON_SUCCESS_EXIT_STATUSES else 0
+    exit_code = 0 if (args.phase == "apply" and result.get("status") in SUCCESSFUL_APPLY_STATUSES) or (args.phase == "plan" and result.get("status") == "dry_run") else 2
     if args.phase == "plan" and not plan_safe:
         exit_code = 2
     result["orchestration"] = orchestration_metadata(args, phase=args.phase, plan_safe=plan_safe, apply_authorized=args.phase == "apply" and confirmation_matches, confirmation_matches=confirmation_matches, exit_code=exit_code, result=result)

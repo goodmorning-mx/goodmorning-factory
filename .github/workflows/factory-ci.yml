@@ -593,11 +593,13 @@ jobs:
           for marker in ['pull_request','schedule','repository_dispatch','continue-on-error','set -x','ref: dev',"github.ref_name != 'dev'"]:
               if marker in wf:
                   raise SystemExit(f'forbidden workflow marker: {marker}')
-          for marker in ['environment: dev','contents: read','cancel-in-progress: false',"github.ref != 'refs/heads/dev'",'ref: ${{ github.sha }}','"--phase", "plan"','"--phase", "apply"','else "<invalid>"']:
+          dollar = '$'
+          github_sha_expression = dollar + '{{ github.sha }}'
+          token_expression = dollar + '{{ secrets.COOLIFY_API_TOKEN }}'
+          base_url_expression = dollar + '{{ secrets.COOLIFY_BASE_URL }}'
+          for marker in ['environment: dev','contents: read','cancel-in-progress: false',"github.ref != 'refs/heads/dev'",f'ref: {github_sha_expression}','"--phase", "plan"','"--phase", "apply"','else "<invalid>"',f'COOLIFY_API_TOKEN: {token_expression}',f'COOLIFY_BASE_URL: {base_url_expression}']:
               if marker not in wf:
                   raise SystemExit(f'missing workflow marker: {marker}')
-          if 'COOLIFY_API_TOKEN' in wf and '${{ secrets.COOLIFY_API_TOKEN }}' not in wf:
-              raise SystemExit('token must only come from secrets')
           stage8_posts = {'project_create','environment_create','postgresql_create','postgresql_start','backend_application_create','backend_env_create','frontend_application_create','frontend_env_create','backend_deploy','frontend_deploy'}
           import scripts.provision_product_development as pp
           if pp.ALLOWED_POST_KINDS != stage8_posts or pp.ALLOWED_PATCH_KINDS != {'backend_env_update','frontend_env_update'}:

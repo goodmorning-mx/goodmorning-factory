@@ -90,8 +90,10 @@ class Stage9OrchestratorTests(unittest.TestCase):
             if oper == "deploy-full": self.assertLess(argv.index("--deploy-backend"), argv.index("--deploy-frontend"))
 
     def test_plan_classification_safe_and_fail_closed_fixtures(self):
-        safe={"status":"dry_run","selected_destination":{"status":"found"},"resources":[{"status":"absent"},{"status":"would_create"}],"blockers":[]}
+        safe={"status":"dry_run","selected_destination":{"status":"found"},"backend_application":{"status":"would_create"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"},"resources":[{"status":"absent"},{"status":"would_create"}],"blockers":[]}
         self.assertTrue(op.classify_plan_safety(safe)[0])
+        safe_matched={"status":"dry_run","selected_destination":{"status":"found"},"project":{"status":"found","scope_details":[{"status":"matched"}]},"blockers":[]}
+        self.assertTrue(op.classify_plan_safety(safe_matched)[0])
         safe_backend={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"would_deploy"},"blockers":[]}
         self.assertTrue(op.classify_plan_safety(safe_backend)[0])
         safe_full={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"would_deploy"},"frontend_deployment":{"status":"would_verify_backend_then_deploy"},"blockers":[]}
@@ -109,6 +111,11 @@ class Stage9OrchestratorTests(unittest.TestCase):
             {"status":"dry_run","selected_destination":{"status":"found"},"actions":[{"status":"write_outcome_unknown","write_outcome_unknown":True}]},
             {"status":"dry_run","selected_destination":{"status":"found"},"frontend_deployment":{"status":"blocked","blockers":[{"reason":"preflight_new"}]}},
             {"status":"dry_run","selected_destination":{"status":"found"},"resources":[{"status":"mystery"}]},
+            {"status":"dry_run","selected_destination":{"status":"found"},"backend_application":{"status":"incompatible"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"}},
+            {"status":"dry_run","selected_destination":{"status":"found"},"project":{"status":"found","scope_details":[{"status":"matched"},{"status":"mismatch"}]}},
+            {"status":"exists","selected_destination":{"status":"found"}},
+            {"status":"created","selected_destination":{"status":"found"}},
+            {"status":"future_status","selected_destination":{"status":"found"}},
         ]
         for fixture in bad_fixtures:
             ok, blockers=op.classify_plan_safety(fixture)
@@ -119,9 +126,14 @@ class Stage9OrchestratorTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env_for("deploy-backend","plan"), clear=True), mock.patch.object(op,"provision",return_value={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"would_deploy"}}):
             code,res=op.orchestrate(oargs(operation="deploy-backend", phase="plan"), client_factory=lambda: object())
         self.assertEqual(code,0); self.assertTrue(res["orchestration"]["plan_safe"]); self.assertEqual(res["orchestration"]["next_action"],"apply")
-        with mock.patch.dict(os.environ, env_for("deploy-backend","apply"), clear=True), mock.patch.object(op,"provision",return_value={"status":"partial"}):
-            code,res=op.orchestrate(oargs(operation="deploy-backend", phase="apply", confirmation="deploy-backend:ledger:dev"))
-        self.assertEqual(code,2); self.assertEqual(res["orchestration"]["next_action"],"inspect_failure"); self.assertNotEqual(res["orchestration"]["next_action"],"complete")
+        for status in ("exists", "created", "ready"):
+            with mock.patch.dict(os.environ, env_for("deploy-backend","apply"), clear=True), mock.patch.object(op,"provision",return_value={"status":status}):
+                code,res=op.orchestrate(oargs(operation="deploy-backend", phase="apply", confirmation="deploy-backend:ledger:dev"))
+            self.assertEqual(code,0); self.assertEqual(res["orchestration"]["next_action"],"complete")
+        for status in ("partial", "blocked", "write_outcome_unknown", "created_unverified", "future_status"):
+            with mock.patch.dict(os.environ, env_for("deploy-backend","apply"), clear=True), mock.patch.object(op,"provision",return_value={"status":status}):
+                code,res=op.orchestrate(oargs(operation="deploy-backend", phase="apply", confirmation="deploy-backend:ledger:dev"))
+            self.assertNotEqual(code,0); self.assertEqual(res["orchestration"]["next_action"],"inspect_failure"); self.assertNotEqual(res["orchestration"]["next_action"],"complete")
 
     def test_observed_variable_metadata_visible_values_redacted(self):
         observed={"observed_variable_names":["DATABASE_URL","VITE_API_URL"],"observed_variable_name_counts":{"DATABASE_URL":1},"DATABASE_URL":"postgres://u:p@h/db"}
@@ -160,6 +172,12 @@ class Stage9OrchestratorTests(unittest.TestCase):
         self.assertIn('product = product_raw if re.fullmatch', text)
         self.assertIn('else "<invalid>"', text)
         self.assertNotIn("INPUT_CONFIRMATION", text[text.index("Write safe operation summary"):])
+
+        ci = Path(".github/workflows/factory-ci.yml").read_text()
+        stage9_block = ci[ci.index("Verify Stage 9 orchestration semantic contract"):]
+        self.assertNotIn("${{", stage9_block)
+        self.assertIn("dollar = '$'", stage9_block)
+        self.assertIn("github_sha_expression = dollar + '{{ github.sha }}'", stage9_block)
 
 if __name__ == "__main__":
     unittest.main()
