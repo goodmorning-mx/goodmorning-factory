@@ -262,7 +262,7 @@ def sanitize_string(text: str) -> str:
 def sanitize_for_output(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: item if str(key) in {"observed_key_counts", "observed_keys"} else (sanitize_for_output(item) if str(key) in {"internal_db_url_available", "database_url_driver_ready"} else ("[REDACTED]" if SECRET_KEY_RE.search(str(key)) else sanitize_for_output(item)))
+            key: item if str(key) in {"observed_variable_name_counts", "observed_variable_names"} else (sanitize_for_output(item) if str(key) in {"internal_db_url_available", "database_url_driver_ready"} else ("[REDACTED]" if SECRET_KEY_RE.search(str(key)) else sanitize_for_output(item)))
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -2212,7 +2212,7 @@ def frontend_env_observed_metadata(envs: list[dict[str, Any]], desired: dict[str
             continue
         text = str(key)
         counts[text] = counts.get(text, 0) + 1
-    meta: dict[str, Any] = {"observed_key_counts": dict(sorted(counts.items())), "observed_keys": sorted(counts)}
+    meta: dict[str, Any] = {"observed_variable_name_counts": dict(sorted(counts.items())), "observed_variable_names": sorted(counts)}
     vite_rows = [item for item in envs if isinstance(item, dict) and item.get("key") == "VITE_API_URL" and bool_value(item.get("is_preview")) is False]
     if len(vite_rows) == 1:
         available, value = env_value(vite_rows[0])
@@ -2227,7 +2227,7 @@ def frontend_env_observed_metadata(envs: list[dict[str, Any]], desired: dict[str
 
 
 def empty_frontend_env_metadata() -> dict[str, Any]:
-    return {"observed_key_counts": {}, "observed_keys": [], "vite_api_url_value_available": False, "vite_api_url_value": None, "vite_api_url_value_matches": False}
+    return {"observed_variable_name_counts": {}, "observed_variable_names": [], "vite_api_url_value_available": False, "vite_api_url_value": None, "vite_api_url_value_matches": False}
 
 
 def reconcile_frontend_environment(client: CoolifyClient, args: argparse.Namespace, frontend: dict[str, Any], backend: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -2824,8 +2824,8 @@ def frontend_deployment_preflight(args: argparse.Namespace, postgres: dict[str, 
         blockers.append({"resource":"frontend_deployment","reason":"frontend_environment_not_verified"})
     rows = frontend_env.get("variables", []) if isinstance(frontend_env.get("variables", []), list) else []
     observed = frontend_env.get("observed") if isinstance(frontend_env.get("observed"), dict) else {}
-    if observed.get("observed_key_counts") != {"VITE_API_URL": 1}:
-        blockers.append({"resource":"frontend_deployment","reason":"frontend_environment_not_exact", "observed_keys": observed.get("observed_keys", [])})
+    if observed.get("observed_variable_name_counts") != {"VITE_API_URL": 1}:
+        blockers.append({"resource":"frontend_deployment","reason":"frontend_environment_not_exact", "observed_variable_names": observed.get("observed_variable_names", [])})
     vite = [r for r in rows if isinstance(r, dict) and r.get("key") == "VITE_API_URL"]
     if len(vite) != 1:
         blockers.append({"resource":"frontend_deployment","reason":"vite_api_url_missing_or_duplicate"})

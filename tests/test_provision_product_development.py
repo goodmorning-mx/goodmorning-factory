@@ -2332,13 +2332,13 @@ class Stage8FrontendDeploymentTests(Stage6FrontendApplicationTests):
             c=self.deploy_client(**{"/applications/front-1/envs": []})
             mode=pp.ExecutionMode(name="apply", product="ledger", confirm_product="ledger", allow_resource_writes=True, allow_frontend_application_writes=True, confirm_frontend_application="ledger-frontend-dev", allow_frontend_env_writes=True, confirm_frontend_environment="ledger-frontend-dev")
             r=pp.reconcile_frontend_environment(c,args(),{"status":"exists","uuid":"front-1"},{"status":"exists","uuid":"api-1"},mode,[])
-            self.assertEqual(r["observed"]["observed_key_counts"], {"VITE_API_URL": 1})
+            self.assertEqual(r["observed"]["observed_variable_name_counts"], {"VITE_API_URL": 1})
             self.assertTrue(r["observed"]["vite_api_url_value_matches"])
         with self.subTest("patch"):
             c=self.deploy_client(**{"/applications/front-1/envs": [{**desired,"value":"https://api.dev.other.goodmorning.mx"}]})
             mode=pp.ExecutionMode(name="apply", product="ledger", confirm_product="ledger", allow_resource_writes=True, allow_frontend_application_writes=True, confirm_frontend_application="ledger-frontend-dev", allow_frontend_env_writes=True, confirm_frontend_environment="ledger-frontend-dev")
             r=pp.reconcile_frontend_environment(c,args(),{"status":"exists","uuid":"front-1"},{"status":"exists","uuid":"api-1"},mode,[])
-            self.assertEqual(r["observed"]["observed_key_counts"], {"VITE_API_URL": 1})
+            self.assertEqual(r["observed"]["observed_variable_name_counts"], {"VITE_API_URL": 1})
             self.assertTrue(r["observed"]["vite_api_url_value_matches"])
 
     def test_stage8_dry_run_frontend_plans_live_verification_without_smoke(self):
