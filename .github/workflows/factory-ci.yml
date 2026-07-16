@@ -417,6 +417,8 @@ jobs:
           import scripts.provision_product_development as pp
           stage7_posts = {'project_create', 'environment_create', 'postgresql_create', 'postgresql_start', 'backend_application_create', 'backend_env_create', 'frontend_application_create', 'frontend_env_create', 'backend_deploy'}
           stage8_posts = stage7_posts | {'frontend_deploy'}
+          if not stage7_posts <= pp.ALLOWED_POST_KINDS:
+              raise SystemExit('Stage 7 POST allowlist is not preserved as a Stage 8 subset')
           if pp.ALLOWED_POST_KINDS != stage8_posts:
               raise SystemExit(f'Stage 8 POST allowlist mismatch: {pp.ALLOWED_POST_KINDS}')
           if pp.ALLOWED_PATCH_KINDS != {'backend_env_update','frontend_env_update'}:
@@ -437,17 +439,40 @@ jobs:
               else: raise SystemExit(f'forbidden lifecycle/deployment endpoint allowed: {method} {path}')
           fflags={'is_runtime':False,'is_buildtime':True,'is_preview':False,'is_literal':True,'is_multiline':False}
           bflags={'is_runtime':True,'is_buildtime':False,'is_preview':False,'is_literal':True,'is_multiline':False}
+          good_frontend_env = {
+              'status':'exists',
+              'variables':[{'key':'VITE_API_URL','status':'exists','value_verified':True,'desired_flags':fflags}],
+              'observed': {
+                  'observed_key_counts': {'VITE_API_URL': 1},
+                  'observed_keys': ['VITE_API_URL'],
+                  'vite_api_url_value_available': True,
+                  'vite_api_url_value': 'https://api.dev.ledger.goodmorning.mx',
+                  'vite_api_url_value_matches': True,
+              },
+          }
           ok, blockers = pp.frontend_deployment_preflight(
               type('Args', (), {'product':'ledger'})(),
               {'name':'ledger-postgres-dev','status':'exists'}, {'status':'healthy','internal_db_url_available':True,'database_url_driver_ready':True},
               {'name':'ledger-api-dev','status':'exists','uuid':'api-1'}, {'status':'exists','variables':[{'key':k,'status':'exists','value_verified':True,'desired_flags':bflags} for k in ('DATABASE_URL','APP_ENV','CORS_ORIGINS')]},
-              {'name':'ledger-frontend-dev','status':'exists','uuid':'front-1'}, {'status':'exists','variables':[{'key':'VITE_API_URL','status':'exists','value_verified':True,'desired_flags':fflags}]},
+              {'name':'ledger-frontend-dev','status':'exists','uuid':'front-1'}, good_frontend_env,
               {'status':'healthy','healthy':True,'verified':True}, {'status':'passed','body_verified':True}, [])
           if not ok or blockers:
               raise SystemExit(f'valid frontend preflight blocked: {blockers}')
-          bad_ok, _ = pp.frontend_deployment_preflight(type('Args', (), {'product':'ledger'})(), {'name':'ledger-postgres-dev','status':'exists'}, {'status':'healthy','internal_db_url_available':True,'database_url_driver_ready':True}, {'name':'ledger-api-dev','status':'exists','uuid':'api-1'}, {'status':'exists','variables':[]}, {'name':'ledger-frontend-dev','status':'exists','uuid':'front-1'}, {'status':'exists','variables':[{'key':'DATABASE_URL','status':'exists','value_verified':True,'desired_flags':fflags}]}, {'status':'healthy','healthy':True,'verified':True}, {'status':'passed','body_verified':True}, [])
-          if bad_ok:
-              raise SystemExit('invalid frontend dependency/env preflight was allowed')
+          for bad_env in (
+              {
+                  'status':'exists',
+                  'variables':[{'key':'VITE_API_URL','status':'exists','value_verified':True,'desired_flags':fflags}],
+                  'observed': {'observed_key_counts': {'VITE_API_URL': 1, 'APP_ENV': 1}, 'observed_keys': ['APP_ENV','VITE_API_URL'], 'vite_api_url_value_available': True, 'vite_api_url_value': 'https://api.dev.ledger.goodmorning.mx', 'vite_api_url_value_matches': True},
+              },
+              {
+                  'status':'exists',
+                  'variables':[{'key':'VITE_API_URL','status':'exists','value_verified':True,'desired_flags':fflags}],
+                  'observed': {'observed_key_counts': {'VITE_API_URL': 1}, 'observed_keys': ['VITE_API_URL'], 'vite_api_url_value_available': True, 'vite_api_url_value': 'https://other.example', 'vite_api_url_value_matches': False},
+              },
+          ):
+              bad_ok, _ = pp.frontend_deployment_preflight(type('Args', (), {'product':'ledger'})(), {'name':'ledger-postgres-dev','status':'exists'}, {'status':'healthy','internal_db_url_available':True,'database_url_driver_ready':True}, {'name':'ledger-api-dev','status':'exists','uuid':'api-1'}, {'status':'exists','variables':[]}, {'name':'ledger-frontend-dev','status':'exists','uuid':'front-1'}, bad_env, {'status':'healthy','healthy':True,'verified':True}, {'status':'passed','body_verified':True}, [])
+              if bad_ok:
+                  raise SystemExit(f'invalid frontend env preflight was allowed: {bad_env}')
           if pp.recover_new_deployment_candidates_for_application(set(), [{'deployment_uuid':'dep','resource_uuid':'front-1'}], 'front-1') != ['dep']:
               raise SystemExit('frontend recovery candidate failed')
           class A:
@@ -460,6 +485,49 @@ jobs:
           runtime = pp.verify_frontend_runtime(type('C', (), {'get': lambda self, path: {'uuid':'front-1','name':'ledger-frontend-dev','status':'running:healthy'}})(), A, 'front-1', sleeper=lambda seconds: None, clock=iter([0,0]).__next__)
           if not runtime.get('healthy'):
               raise SystemExit('frontend runtime polling did not accept healthy')
+          class AmbiguousDeployClient:
+              def __init__(self):
+                  self.posts = 0
+                  self.history_calls = 0
+              def bind_frontend_deployment_preconditions(self, ok): self.preflight = ok
+              def get(self, path):
+                  if path.startswith('/deployments/applications/front-1'):
+                      self.history_calls += 1
+                      return {'deployments': [], 'count': 0}
+                  raise pp.ProvisioningError('unexpected path')
+              def deploy_frontend(self, uuid):
+                  self.posts += 1
+                  return pp.Response(200, {}, {})
+          actions = []
+          amb_dep, _, _, _ = pp.execute_frontend_deployment(AmbiguousDeployClient(), type('Args', (), {'product':'ledger','deploy_frontend':True})(), mode, {'uuid':'front-1'}, True, actions)
+          if amb_dep['status'] != 'frontend_deployment_outcome_unknown' or amb_dep['write_performed'] is not True or amb_dep['write_outcome_unknown'] is not True or actions[0]['write_outcome_unknown'] is not True:
+              raise SystemExit(f'ambiguous 2xx frontend deploy did not become unknown write: {amb_dep} {actions}')
+          dry_actions = []
+          dry_mode = pp.ExecutionMode(name='dry_run', product='ledger', confirm_product=None, allow_resource_writes=False, deploy_frontend=True)
+          dry_dep, _, _, _ = pp.execute_frontend_deployment(AmbiguousDeployClient(), type('Args', (), {'product':'ledger','deploy_frontend':True})(), dry_mode, {'uuid':'front-1'}, True, dry_actions)
+          if dry_dep['status'] != 'would_verify_backend_then_deploy' or dry_actions[0]['status'] != 'would_verify_backend_then_deploy':
+              raise SystemExit(f'dry-run required live smoke/deployment: {dry_dep}')
+          gate_actions = []
+          gate_client = AmbiguousDeployClient()
+          gate_dep, _, _, _ = pp.execute_frontend_deployment(gate_client, type('Args', (), {'product':'ledger','deploy_frontend':True})(), pp.ExecutionMode(name='apply', product='ledger', confirm_product='ledger', allow_resource_writes=True, deploy_frontend=True, allow_deployments=False, allow_frontend_deployment=True, confirm_frontend_deployment='ledger-frontend-dev'), {'uuid':'front-1'}, True, gate_actions)
+          if gate_dep['status'] != 'gates_incomplete' or gate_client.posts != 0:
+              raise SystemExit(f'incomplete frontend gates performed deployment/smoke path: {gate_dep}')
+          class SmokeResponse:
+              status = 200
+              def __init__(self, body, ctype='text/html', url='https://dev.ledger.goodmorning.mx/'):
+                  self.body = body
+                  self.ctype = ctype
+                  self.url = url
+                  self.headers = {'Content-Type': ctype}
+              def __enter__(self): return self
+              def __exit__(self, exc_type, exc, tb): return False
+              def read(self, limit): return self.body
+          good_smoke = pp.run_frontend_smoke(A, opener=lambda req, timeout: SmokeResponse(b'<!doctype html><html><body><div id="root"></div></body></html>'), sleeper=lambda seconds: None, clock=iter([0,0]).__next__)
+          fragment_smoke = pp.run_frontend_smoke(A, opener=lambda req, timeout: SmokeResponse(b'<div id="root"></div>'), sleeper=lambda seconds: None, clock=iter([0,0]).__next__)
+          if good_smoke['status'] != 'passed' or not good_smoke['html_verified'] or not good_smoke['root_element_verified']:
+              raise SystemExit(f'full HTML/root smoke failed: {good_smoke}')
+          if fragment_smoke['status'] == 'passed' or fragment_smoke['html_verified'] is not False or fragment_smoke['root_element_verified'] is not True:
+              raise SystemExit(f'HTML fragment incorrectly passed smoke: {fragment_smoke}')
           pp.validate_frontend_smoke_url('https://dev.ledger.goodmorning.mx/','ledger')
           for bad in ['http://dev.ledger.goodmorning.mx/','https://dev.ledger.goodmorning.mx:80/','https://dev.ledger.goodmorning.mx/path','https://dev.ledger.goodmorning.mx/?q=1','https://localhost/']:
               try: pp.validate_frontend_smoke_url(bad,'ledger')

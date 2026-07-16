@@ -151,6 +151,10 @@ class FakeClient:
     def deploy_frontend(self, uuid):
         self.calls.append(("POST", "/deploy", {"uuid": str(uuid), "force": False}))
         value = self.payloads.get("POST frontend /deploy", pp.Response(200, {"deployments":[{"message":"queued","resource_uuid":str(uuid),"deployment_uuid":"front-dep-1"}]}, {}))
+        if isinstance(value, list) and value and isinstance(value[0], tuple):
+            method, result = value.pop(0)
+            assert method == "POST"
+            value = result
         if isinstance(value, Exception):
             raise value
         return value
@@ -2229,13 +2233,13 @@ class Stage8FrontendDeploymentTests(Stage6FrontendApplicationTests):
 
     def test_stage8_frontend_smoke_html_root_and_redirect_guards(self):
         class Resp:
-            def __init__(self, status=200, ctype="text/html", body=b'<!doctype html><div id="root"></div>', url="https://dev.ledger.goodmorning.mx/"):
+            def __init__(self, status=200, ctype="text/html", body=b'<!doctype html><html><body><div id="root"></div></body></html>', url="https://dev.ledger.goodmorning.mx/"):
                 self.status=status; self.headers={"Content-Type":ctype}; self._body=body; self.url=url
             def __enter__(self): return self
             def __exit__(self,*a): return False
             def getcode(self): return self.status
             def read(self,n=-1): return self._body
-        cases=[(Resp(), True), (Resp(status=500), False), (Resp(ctype="application/json"), False), (Resp(body=b""), False), (Resp(body=b"<html></html>"), False), (Resp(url="https://evil.example/"), False), (Resp(url="http://dev.ledger.goodmorning.mx/"), False), (Resp(url="https://dev.ledger.goodmorning.mx:80/"), False), (Resp(url="https://dev.ledger.goodmorning.mx/path"), False), (Resp(url="https://dev.ledger.goodmorning.mx/?q=1"), False)]
+        cases=[(Resp(), True), (Resp(status=500), False), (Resp(ctype="application/json"), False), (Resp(body=b""), False), (Resp(body=b"<div id='root'></div>"), False), (Resp(body=b"<html></html>"), False), (Resp(body=b"<html><body><div id='other'></div></body></html>"), False), (Resp(body=b"<html><body><div data-id='root'></div></body></html>"), False), (Resp(body=b"<html><body>" + b"x"*(1024*1024+1) + b"<div id='root'></div></body></html>"), False), (Resp(url="https://evil.example/"), False), (Resp(url="http://dev.ledger.goodmorning.mx/"), False), (Resp(url="https://dev.ledger.goodmorning.mx:80/"), False), (Resp(url="https://dev.ledger.goodmorning.mx/path"), False), (Resp(url="https://dev.ledger.goodmorning.mx/?q=1"), False)]
         for resp, ok in cases:
             with self.subTest(url=resp.url,status=resp.status,ctype=resp.headers["Content-Type"]):
                 tick = {"v": 0}
@@ -2243,4 +2247,134 @@ class Stage8FrontendDeploymentTests(Stage6FrontendApplicationTests):
                     tick["v"] += 0.001
                     return tick["v"]
                 r=pp.run_frontend_smoke(args(), opener=lambda req, timeout: resp, sleeper=lambda s: None, clock=clock)
-                self.assertEqual(r["root_element_verified"], ok)
+                self.assertEqual(r["status"] == "passed", ok)
+                if ok:
+                    self.assertTrue(r["html_verified"])
+                    self.assertTrue(r["root_element_verified"])
+
+    def test_stage8_frontend_ambiguous_2xx_uses_recovery_once(self):
+        ambiguous_shapes = [
+            ("missing_deployments", {}),
+            ("empty_deployments", {"deployments": []}),
+            ("two_deployments", {"deployments": [{"resource_uuid":"front-1","deployment_uuid":"a"}, {"resource_uuid":"front-1","deployment_uuid":"b"}]}),
+            ("backend_resource_uuid", {"deployments": [{"resource_uuid":"api-1","deployment_uuid":"dep-x"}]}),
+            ("missing_deployment_uuid", {"deployments": [{"resource_uuid":"front-1"}]}),
+        ]
+        for name, body in ambiguous_shapes:
+            with self.subTest(name=name):
+                c=self.deploy_client(**{
+                    "POST frontend /deploy": pp.Response(200, body, {}),
+                    "/deployments/applications/front-1?skip=0&take=10": [
+                        ("GET", {"deployments": [], "count": 0}),
+                        ("GET", {"deployments": [{"deployment_uuid":"recovered-front","resource_uuid":"front-1","status":"queued"}], "count": 1}),
+                    ],
+                    "/deployments/recovered-front": {"deployment_uuid":"recovered-front","resource_uuid":"front-1","application_name":"ledger-frontend-dev","status":"finished"},
+                })
+                with mock.patch.dict(os.environ,self.gate_env(),clear=False), mock.patch.object(pp,"run_backend_smoke",return_value=pp.smoke_check_result("ledger","passed",http_status=200,body_verified=True,attempts=1)), mock.patch.object(pp,"run_frontend_smoke",return_value=pp.frontend_smoke_check_result("ledger","passed",http_status=200,html_verified=True,root_element_verified=True,attempts=1)):
+                    r=pp.provision(self.deploy_args(), client_factory=lambda:c)
+                posts=[call for call in c.calls if call[0]=="POST" and call[1]=="/deploy"]
+                self.assertEqual(len(posts), 1)
+                self.assertEqual(r["frontend_deployment"]["status"], "finished")
+                self.assertTrue(r["frontend_deployment"]["recovered_after_unknown"])
+                request_actions=[a for a in r["actions"] if a["resource"]=="frontend_deployment" and a["action"]=="request"]
+                self.assertEqual(len(request_actions), 1)
+                self.assertTrue(request_actions[0]["write_performed"])
+                self.assertTrue(request_actions[0]["write_outcome_unknown"])
+                self.assertTrue(any(a["resource"]=="frontend_deployment" and a["action"]=="recover_unknown" for a in r["actions"]))
+
+    def test_stage8_frontend_ambiguous_2xx_recovery_fail_closed(self):
+        recovery_cases = [
+            ("zero", {"deployments": [], "count": 0}, "frontend_deployment_outcome_unknown"),
+            ("many", {"deployments": [{"deployment_uuid":"a","resource_uuid":"front-1"},{"deployment_uuid":"b","resource_uuid":"front-1"}], "count": 2}, "ambiguous_frontend_deployment_recovery"),
+            ("invalid", {"count": 0}, "frontend_deployment_outcome_unknown"),
+        ]
+        for name, recovery, expected in recovery_cases:
+            with self.subTest(name=name):
+                c=self.deploy_client(**{
+                    "POST frontend /deploy": pp.Response(200, {}, {}),
+                    "/deployments/applications/front-1?skip=0&take=10": [("GET", {"deployments": [], "count": 0}), ("GET", recovery)],
+                })
+                with mock.patch.dict(os.environ,self.gate_env(),clear=False), mock.patch.object(pp,"run_backend_smoke",return_value=pp.smoke_check_result("ledger","passed",http_status=200,body_verified=True,attempts=1)):
+                    r=pp.provision(self.deploy_args(), client_factory=lambda:c)
+                self.assertEqual(r["frontend_deployment"]["status"], expected)
+                self.assertTrue(r["frontend_deployment"]["write_outcome_unknown"])
+                self.assertEqual(len([call for call in c.calls if call[0]=="POST" and call[1]=="/deploy"]), 1)
+                self.assertFalse(any("cancel" in call[1] or "rollback" in call[1] for call in c.calls if len(call) > 1))
+
+    def test_stage8_frontend_env_observed_exactness_and_values(self):
+        base = self.frontend_envs()[0]
+        cases = [
+            ("only", [base], True),
+            ("database", [base, {"key":"DATABASE_URL","value":"secret","is_preview":False}], False),
+            ("app_env", [base, {"key":"APP_ENV","value":"dev","is_preview":False}], False),
+            ("arbitrary", [base, {"key":"SECRET","value":"hidden","is_preview":False}], False),
+            ("duplicate", [base, base], False),
+            ("absent", [], False),
+            ("wrong_value", [{**base,"value":"https://api.dev.other.goodmorning.mx"}], False),
+            ("ported", [{**base,"value":"https://api.dev.ledger.goodmorning.mx:8000"}], False),
+            ("path_query", [{**base,"value":"https://api.dev.ledger.goodmorning.mx/health?x=1"}], False),
+            ("bad_flags", [{**base,"is_runtime":True}], False),
+        ]
+        for name, envs, ok in cases:
+            with self.subTest(name=name):
+                c=self.deploy_client(**{"/applications/front-1/envs": envs})
+                frontend_env=pp.reconcile_frontend_environment(c,args(),{"status":"exists","uuid":"front-1"},{"status":"exists","uuid":"api-1"},pp.ExecutionMode("dry_run","ledger",None,False),[])
+                observed=frontend_env["observed"]
+                self.assertNotIn("value_of_extra_key", json.dumps(observed).lower())
+                bflags={"is_runtime":True,"is_buildtime":False,"is_preview":False,"is_literal":True,"is_multiline":False}
+                backend_env={"status":"planned","variables":[{"key":k,"status":"exists","value_verified":True,"desired_flags":bflags} for k in ("DATABASE_URL","APP_ENV","CORS_ORIGINS")]}
+                preflight_ok, blockers=pp.frontend_deployment_preflight(args(), {"name":"ledger-postgres-dev","status":"exists"}, {"status":"healthy","internal_db_url_available":True,"database_url_driver_ready":True}, {"name":"ledger-api-dev","status":"exists","uuid":"api-1"}, backend_env, {"name":"ledger-frontend-dev","status":"exists","uuid":"front-1"}, frontend_env, {"healthy":True,"verified":True}, {"body_verified":True}, [], require_live=False)
+                self.assertEqual(preflight_ok, ok, blockers)
+
+    def test_stage8_frontend_env_observed_after_create_and_patch(self):
+        desired=self.frontend_envs()[0]
+        with self.subTest("create"):
+            c=self.deploy_client(**{"/applications/front-1/envs": []})
+            mode=pp.ExecutionMode(name="apply", product="ledger", confirm_product="ledger", allow_resource_writes=True, allow_frontend_application_writes=True, confirm_frontend_application="ledger-frontend-dev", allow_frontend_env_writes=True, confirm_frontend_environment="ledger-frontend-dev")
+            r=pp.reconcile_frontend_environment(c,args(),{"status":"exists","uuid":"front-1"},{"status":"exists","uuid":"api-1"},mode,[])
+            self.assertEqual(r["observed"]["observed_key_counts"], {"VITE_API_URL": 1})
+            self.assertTrue(r["observed"]["vite_api_url_value_matches"])
+        with self.subTest("patch"):
+            c=self.deploy_client(**{"/applications/front-1/envs": [{**desired,"value":"https://api.dev.other.goodmorning.mx"}]})
+            mode=pp.ExecutionMode(name="apply", product="ledger", confirm_product="ledger", allow_resource_writes=True, allow_frontend_application_writes=True, confirm_frontend_application="ledger-frontend-dev", allow_frontend_env_writes=True, confirm_frontend_environment="ledger-frontend-dev")
+            r=pp.reconcile_frontend_environment(c,args(),{"status":"exists","uuid":"front-1"},{"status":"exists","uuid":"api-1"},mode,[])
+            self.assertEqual(r["observed"]["observed_key_counts"], {"VITE_API_URL": 1})
+            self.assertTrue(r["observed"]["vite_api_url_value_matches"])
+
+    def test_stage8_dry_run_frontend_plans_live_verification_without_smoke(self):
+        c=self.deploy_client()
+        with mock.patch.object(pp,"run_backend_smoke") as backend_smoke, mock.patch.object(pp,"run_frontend_smoke") as frontend_smoke:
+            r=pp.provision(args(deploy_frontend=True), client_factory=lambda:c)
+        self.assertEqual(r["status"], "dry_run")
+        self.assertIn(r["frontend_deployment"]["status"], {"would_deploy", "would_verify_backend_then_deploy"})
+        self.assertFalse(any(call[0] in {"POST","PATCH"} for call in c.calls))
+        backend_smoke.assert_not_called(); frontend_smoke.assert_not_called()
+        c_bad=self.deploy_client(**{"/applications/front-1/envs": []})
+        r_bad=pp.provision(args(deploy_frontend=True), client_factory=lambda:c_bad)
+        self.assertEqual(r_bad["status"], "dry_run")
+        self.assertEqual(r_bad["frontend_deployment"]["status"], "blocked_by_preconditions")
+        self.assertFalse(any(call[0] in {"POST","PATCH"} for call in c_bad.calls))
+
+    def test_stage8_incomplete_gates_do_not_run_live_smoke_or_deploy(self):
+        gate_cases = [
+            ("missing_deployments_env", {"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_FRONTEND_DEPLOYMENT":"true"}, self.deploy_args()),
+            ("missing_frontend_env", {"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_DEPLOYMENTS":"true"}, self.deploy_args()),
+            ("wrong_confirm", self.gate_env(), self.deploy_args(confirm_frontend_deployment="wrong-frontend-dev")),
+            ("no_deploy_flag", self.gate_env(), self.deploy_args(deploy_frontend=False, confirm_frontend_deployment="ledger-frontend-dev")),
+            ("missing_base_write_gate", {"COOLIFY_ALLOW_DEPLOYMENTS":"true","COOLIFY_ALLOW_FRONTEND_DEPLOYMENT":"true"}, self.deploy_args()),
+        ]
+        for name, env, a in gate_cases:
+            with self.subTest(name=name):
+                c=self.deploy_client()
+                with mock.patch.dict(os.environ,env,clear=True), mock.patch.object(pp,"run_backend_smoke") as backend_smoke, mock.patch.object(pp,"run_frontend_smoke") as frontend_smoke:
+                    if name == "missing_base_write_gate":
+                        with self.assertRaises(pp.ProvisioningError):
+                            pp.provision(a, client_factory=lambda:c)
+                    else:
+                        r=pp.provision(a, client_factory=lambda:c)
+                        if getattr(a,"deploy_frontend",False):
+                            self.assertEqual(r["frontend_deployment"]["status"], "gates_incomplete")
+                        else:
+                            self.assertEqual(r["frontend_deployment"]["status"], "not_requested")
+                backend_smoke.assert_not_called(); frontend_smoke.assert_not_called()
+                self.assertFalse(any(call[0]=="POST" and call[1]=="/deploy" for call in c.calls))

@@ -262,7 +262,7 @@ def sanitize_string(text: str) -> str:
 def sanitize_for_output(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: sanitize_for_output(item) if str(key) in {"internal_db_url_available", "database_url_driver_ready"} else ("[REDACTED]" if SECRET_KEY_RE.search(str(key)) else sanitize_for_output(item))
+            key: item if str(key) in {"observed_key_counts", "observed_keys"} else (sanitize_for_output(item) if str(key) in {"internal_db_url_available", "database_url_driver_ready"} else ("[REDACTED]" if SECRET_KEY_RE.search(str(key)) else sanitize_for_output(item)))
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -2202,20 +2202,49 @@ def frontend_env_write_action(resource_key: str, operation: str, status: str, *,
     return ActionRecord("frontend_environment", f"{operation}_{resource_key}", status, request_attempted=request_attempted, write_performed=write_performed, write_outcome_unknown=write_outcome_unknown, verified=verified, recovered_after_conflict=recovered_after_conflict, details={"key": resource_key, "operation": operation}).to_dict()
 
 
+def frontend_env_observed_metadata(envs: list[dict[str, Any]], desired: dict[str, Any]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    for item in envs:
+        if not isinstance(item, dict):
+            continue
+        key = item.get("key")
+        if key in (None, ""):
+            continue
+        text = str(key)
+        counts[text] = counts.get(text, 0) + 1
+    meta: dict[str, Any] = {"observed_key_counts": dict(sorted(counts.items())), "observed_keys": sorted(counts)}
+    vite_rows = [item for item in envs if isinstance(item, dict) and item.get("key") == "VITE_API_URL" and bool_value(item.get("is_preview")) is False]
+    if len(vite_rows) == 1:
+        available, value = env_value(vite_rows[0])
+        meta["vite_api_url_value_available"] = available
+        meta["vite_api_url_value"] = value if available else None
+        meta["vite_api_url_value_matches"] = available and value == desired.get("value")
+    else:
+        meta["vite_api_url_value_available"] = False
+        meta["vite_api_url_value"] = None
+        meta["vite_api_url_value_matches"] = False
+    return meta
+
+
+def empty_frontend_env_metadata() -> dict[str, Any]:
+    return {"observed_key_counts": {}, "observed_keys": [], "vite_api_url_value_available": False, "vite_api_url_value": None, "vite_api_url_value_matches": False}
+
+
 def reconcile_frontend_environment(client: CoolifyClient, args: argparse.Namespace, frontend: dict[str, Any], backend: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]]) -> dict[str, Any]:
     uuid=frontend.get("uuid"); results=[]; blockers=[]
     if not backend_allows_frontend(backend):
         status = "blocked" if mode.is_apply else "planned_after_backend"
-        return {"status": status, "variables": [], "blockers": [{"resource":"frontend_environment", "key":"VITE_API_URL", "reason":"backend_application_not_verified", "backend_status": backend.get("status")}] if mode.is_apply else []}
+        return {"status": status, "variables": [], "blockers": [{"resource":"frontend_environment", "key":"VITE_API_URL", "reason":"backend_application_not_verified", "backend_status": backend.get("status")}] if mode.is_apply else [], "observed": empty_frontend_env_metadata()}
     if frontend.get("status") not in {"exists","created"} or not uuid:
-        return {"status":"blocked" if mode.is_apply else "planned", "variables":[], "blockers":[{"reason":"frontend_application_not_verified"}] if mode.is_apply else []}
+        return {"status":"blocked" if mode.is_apply else "planned", "variables":[], "blockers":[{"reason":"frontend_application_not_verified"}] if mode.is_apply else [], "observed": empty_frontend_env_metadata()}
     if str(uuid) == str(backend.get("uuid")):
-        return {"status":"blocked","variables":[],"blockers":[{"resource":"frontend_environment","key":"VITE_API_URL","reason":"frontend_uuid_equals_backend_uuid"}]}
+        return {"status":"blocked","variables":[],"blockers":[{"resource":"frontend_environment","key":"VITE_API_URL","reason":"frontend_uuid_equals_backend_uuid"}], "observed": empty_frontend_env_metadata()}
     desired_env = desired_frontend_env(args.product, api_domain(args.product))
     if hasattr(client, "bind_frontend_env_contract"):
         client.bind_frontend_env_contract(desired_env)
     envs=item_list(client.get(f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs"))
     desired=desired_env[0]; key=desired["key"]
+    observed = frontend_env_observed_metadata(envs, desired)
     row=locate_env_variable(envs, desired)
     if row["status"] == "duplicate":
         blockers.append({"resource":"frontend_environment","key":key,"reason":"duplicate"}); results.append(row)
@@ -2238,16 +2267,16 @@ def reconcile_frontend_environment(client: CoolifyClient, args: argparse.Namespa
                 if exc.write_outcome_unknown:
                     row.update({"status":"write_outcome_unknown", "write_outcome_unknown": True}); actions.append(frontend_env_write_action(key, operation, "write_outcome_unknown", request_attempted=True, write_outcome_unknown=True)); blockers.append({"resource":"frontend_environment","key":key,"reason":"write_outcome_unknown"}); results.append(row)
                 elif exc.http_status in {409,422}:
-                    envs2, row2 = rediscover_envs_after_write(client, str(uuid), desired, operation); row2["recovered_after_conflict"] = row2.get("status") in {"created","patched"}; actions.append(frontend_env_write_action(key, operation, row2.get("status","blocked"), request_attempted=True, verified=bool(row2.get("verified")), recovered_after_conflict=bool(row2.get("recovered_after_conflict")))); results.append(row2)
+                    envs2, row2 = rediscover_envs_after_write(client, str(uuid), desired, operation); observed = frontend_env_observed_metadata(envs2 or [], desired); row2["recovered_after_conflict"] = row2.get("status") in {"created","patched"}; actions.append(frontend_env_write_action(key, operation, row2.get("status","blocked"), request_attempted=True, verified=bool(row2.get("verified")), recovered_after_conflict=bool(row2.get("recovered_after_conflict")))); results.append(row2)
                     if row2.get("status") not in {"created","patched"}: blockers.append({"resource":"frontend_environment","key":key,"reason":row2.get("status")})
                 else: raise
             else:
-                envs2, verified_row = rediscover_envs_after_write(client, str(uuid), desired, operation); results.append(verified_row); actions.append(frontend_env_write_action(key, operation, verified_row["status"], request_attempted=True, write_performed=True, verified=bool(verified_row.get("verified"))))
+                envs2, verified_row = rediscover_envs_after_write(client, str(uuid), desired, operation); observed = frontend_env_observed_metadata(envs2 or [], desired); results.append(verified_row); actions.append(frontend_env_write_action(key, operation, verified_row["status"], request_attempted=True, write_performed=True, verified=bool(verified_row.get("verified"))))
                 if verified_row.get("status") not in {"created","patched"}: blockers.append({"resource":"frontend_environment","key":key,"reason":verified_row.get("status")})
     if not mode.is_apply: status="planned"
     elif blockers: status="partial" if any(r.get("status") in {"duplicate","created_unverified","updated_unverified","write_outcome_unknown"} for r in results) else "blocked"
     else: status="exists"
-    return {"status":status,"variables":results,"blockers":blockers}
+    return {"status":status,"variables":results,"blockers":blockers,"observed":observed}
 
 
 def desired_backend_env(product: str, database_url: str | None) -> list[dict[str, Any]]:
@@ -2686,10 +2715,13 @@ def frontend_runtime_readiness_result(status: str = "not_checked", **updates: An
 class RootElementParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
-        self.root_found = False
+        self.html_element_found = False
+        self.root_element_found = False
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "html":
+            self.html_element_found = True
         if any(name == "id" and value == "root" for name, value in attrs):
-            self.root_found = True
+            self.root_element_found = True
 
 
 def frontend_smoke_url(product: str) -> str:
@@ -2725,8 +2757,10 @@ def run_frontend_smoke(args: argparse.Namespace, opener: Callable[..., Any] | No
                 if len(raw) > max_bytes: return frontend_smoke_check_result(args.product, "smoke_failed", http_status=last_status, attempts=attempts)
                 if last_status == 200 and "html" in ctype.lower() and raw:
                     parser = RootElementParser(); parser.feed(raw.decode("utf-8", errors="replace"))
-                    if parser.root_found:
+                    if parser.html_element_found and parser.root_element_found:
                         return frontend_smoke_check_result(args.product, "passed", http_status=200, html_verified=True, root_element_verified=True, attempts=attempts)
+                    if parser.html_element_found or parser.root_element_found:
+                        return frontend_smoke_check_result(args.product, "smoke_failed", http_status=last_status, html_verified=parser.html_element_found, root_element_verified=parser.root_element_found, attempts=attempts)
         except Exception:
             pass
         sleeper(args.frontend_smoke_interval)
@@ -2780,30 +2814,34 @@ def frontend_env_flags_match(row: dict[str, Any]) -> bool:
     return isinstance(flags, dict) and all(flags.get(k) is v for k, v in expected.items())
 
 
-def frontend_deployment_preflight(args: argparse.Namespace, postgres: dict[str, Any], readiness: dict[str, Any], backend: dict[str, Any], backend_env: dict[str, Any], frontend: dict[str, Any], frontend_env: dict[str, Any], backend_runtime: dict[str, Any], backend_smoke: dict[str, Any], actions: list[dict[str, Any]]) -> tuple[bool, list[dict[str, Any]]]:
+def frontend_deployment_preflight(args: argparse.Namespace, postgres: dict[str, Any], readiness: dict[str, Any], backend: dict[str, Any], backend_env: dict[str, Any], frontend: dict[str, Any], frontend_env: dict[str, Any], backend_runtime: dict[str, Any], backend_smoke: dict[str, Any], actions: list[dict[str, Any]], *, require_live: bool = True) -> tuple[bool, list[dict[str, Any]]]:
     blockers=[]
     if frontend.get("name") != frontend_application_name(args.product) or frontend.get("status") not in {"exists", "created"} or not frontend.get("uuid"):
         blockers.append({"resource":"frontend_deployment","reason":"frontend_application_not_verified"})
     if frontend.get("uuid") and backend.get("uuid") and str(frontend.get("uuid")) == str(backend.get("uuid")):
         blockers.append({"resource":"frontend_deployment","reason":"frontend_uuid_equals_backend_uuid"})
-    if frontend_env.get("status") != "exists":
+    if frontend_env.get("status") != "exists" and (require_live or frontend_env.get("status") != "planned"):
         blockers.append({"resource":"frontend_deployment","reason":"frontend_environment_not_verified"})
     rows = frontend_env.get("variables", []) if isinstance(frontend_env.get("variables", []), list) else []
+    observed = frontend_env.get("observed") if isinstance(frontend_env.get("observed"), dict) else {}
+    if observed.get("observed_key_counts") != {"VITE_API_URL": 1}:
+        blockers.append({"resource":"frontend_deployment","reason":"frontend_environment_not_exact", "observed_keys": observed.get("observed_keys", [])})
     vite = [r for r in rows if isinstance(r, dict) and r.get("key") == "VITE_API_URL"]
     if len(vite) != 1:
         blockers.append({"resource":"frontend_deployment","reason":"vite_api_url_missing_or_duplicate"})
+    if observed.get("vite_api_url_value") != api_domain(args.product) or observed.get("vite_api_url_value_matches") is not True:
+        blockers.append({"resource":"frontend_deployment","reason":"vite_api_url_value_invalid"})
     for row in vite:
         if row.get("status") != "exists" or row.get("value_verified") is not True or not frontend_env_flags_match(row):
             blockers.append({"resource":"frontend_deployment","reason":"vite_api_url_not_verified"})
-    if any(isinstance(r, dict) and r.get("key") == "DATABASE_URL" for r in rows):
-        blockers.append({"resource":"frontend_deployment","reason":"database_url_forbidden_in_frontend"})
-    backend_ok, backend_blockers = backend_deployment_preflight(args, postgres, readiness, backend, backend_env, actions, require_env_status=True)
+    backend_ok, backend_blockers = backend_deployment_preflight(args, postgres, readiness, backend, backend_env, actions, require_env_status=require_live)
     if not backend_ok:
         blockers.append({"resource":"frontend_deployment","reason":"backend_dependency_unverified", "details": backend_blockers})
-    if not backend_runtime.get("healthy") or not backend_runtime.get("verified"):
-        blockers.append({"resource":"frontend_deployment","reason":"backend_runtime_not_healthy"})
-    if not backend_smoke.get("body_verified"):
-        blockers.append({"resource":"frontend_deployment","reason":"backend_smoke_not_verified"})
+    if require_live:
+        if not backend_runtime.get("healthy") or not backend_runtime.get("verified"):
+            blockers.append({"resource":"frontend_deployment","reason":"backend_runtime_not_healthy"})
+        if not backend_smoke.get("body_verified"):
+            blockers.append({"resource":"frontend_deployment","reason":"backend_smoke_not_verified"})
     if any(a.get("write_outcome_unknown") for a in actions):
         blockers.append({"resource":"frontend_deployment","reason":"prior_write_outcome_unknown"})
     return (not blockers), blockers
@@ -2878,7 +2916,7 @@ def execute_frontend_deployment(client: CoolifyClient, args: argparse.Namespace,
     if not preflight_ok:
         actions.append(ActionRecord("frontend_deployment","plan","blocked_by_preconditions").to_dict()); return frontend_deployment_result("blocked_by_preconditions", user_requested=True), runtime, smoke, [{"resource":"frontend_deployment","reason":"preflight_incomplete"}]
     if not mode.is_apply:
-        actions.append(ActionRecord("frontend_deployment","plan","would_deploy").to_dict()); return frontend_deployment_result("would_deploy", user_requested=True), runtime, smoke, blockers
+        actions.append(ActionRecord("frontend_deployment","plan","would_verify_backend_then_deploy").to_dict()); return frontend_deployment_result("would_verify_backend_then_deploy", user_requested=True), runtime, smoke, blockers
     if not mode.frontend_deployment_enabled:
         return frontend_deployment_result("gates_incomplete", user_requested=True), runtime, smoke, [{"resource":"frontend_deployment","reason":"deployment_gates_incomplete"}]
     try:
@@ -2890,7 +2928,12 @@ def execute_frontend_deployment(client: CoolifyClient, args: argparse.Namespace,
         dep=frontend_deployment_result("adopted_active_deployment", user_requested=True, adopted_active=True, deployment_uuid=active[0]); actions.append(ActionRecord("frontend_deployment","adopt_active","adopted_active_deployment").to_dict())
     else:
         try:
-            resp=client.deploy_frontend(str(uuid)); du=parse_deploy_response_for_application(resp.data,str(uuid),"Frontend"); dep=frontend_deployment_result("requested", user_requested=True, requested=True, post_attempted=True, deployment_uuid=du, request_attempted=True, write_performed=True); actions.append(frontend_deployment_request_action("requested"))
+            resp=client.deploy_frontend(str(uuid))
+            try:
+                du=parse_deploy_response_for_application(resp.data,str(uuid),"Frontend")
+                dep=frontend_deployment_result("requested", user_requested=True, requested=True, post_attempted=True, deployment_uuid=du, request_attempted=True, write_performed=True); actions.append(frontend_deployment_request_action("requested"))
+            except ProvisioningError as parse_exc:
+                raise ProvisioningError("Accepted frontend deploy response shape was ambiguous after POST /deploy.", error_type="coolify_api", code=2, method="POST", path="/deploy", write_performed=True, write_outcome_unknown=True, request_attempted=True) from parse_exc
         except ProvisioningError as exc:
             if exc.http_status == 429:
                 actions.append(frontend_deployment_request_action("rate_limited", exc)); return frontend_deployment_result("rate_limited", user_requested=True, post_attempted=True, request_attempted=True), runtime, smoke, [{"resource":"frontend_deployment","reason":"rate_limited"}]
@@ -2902,7 +2945,8 @@ def execute_frontend_deployment(client: CoolifyClient, args: argparse.Namespace,
                     dep=frontend_deployment_result("recovered_after_unknown", user_requested=True, post_attempted=True, recovered_after_unknown=True, deployment_uuid=new[0], request_attempted=True, write_performed=exc.write_performed); actions.append(ActionRecord("frontend_deployment","recover_unknown","recovered_after_unknown",request_attempted=True).to_dict())
                 elif len(new)==0: return frontend_deployment_result("frontend_deployment_outcome_unknown", user_requested=True, post_attempted=True, request_attempted=True, write_performed=exc.write_performed, write_outcome_unknown=True), runtime, smoke, [{"resource":"frontend_deployment","reason":"frontend_deployment_outcome_unknown"}]
                 else: return frontend_deployment_result("ambiguous_frontend_deployment_recovery", user_requested=True, post_attempted=True, request_attempted=True, write_performed=exc.write_performed, write_outcome_unknown=True), runtime, smoke, [{"resource":"frontend_deployment","reason":"ambiguous_frontend_deployment_recovery"}]
-            actions.append(frontend_deployment_request_action("request_failed", exc)); return frontend_deployment_result("request_failed", user_requested=True, post_attempted=True, request_attempted=True), runtime, smoke, [{"resource":"frontend_deployment","reason":exc.message}]
+            if not exc.write_outcome_unknown:
+                actions.append(frontend_deployment_request_action("request_failed", exc)); return frontend_deployment_result("request_failed", user_requested=True, post_attempted=True, request_attempted=True), runtime, smoke, [{"resource":"frontend_deployment","reason":exc.message}]
     polled=poll_frontend_deployment(client,args,str(dep["deployment_uuid"]),str(uuid)); preserved={k:dep.get(k) for k in ("user_requested","post_attempted","requested","adopted_active","recovered_after_unknown","request_attempted","write_performed","write_outcome_unknown")}; dep.update(polled); dep.update({k:v for k,v in preserved.items() if v}); actions.append(ActionRecord("frontend_deployment","poll",dep["status"],verified=dep.get("verified",False)).to_dict())
     if not dep.get("verified"): return dep, runtime, smoke, [{"resource":"frontend_deployment","reason":dep.get("status")}]
     runtime=verify_frontend_runtime(client,args,str(uuid)); actions.append(ActionRecord("frontend_runtime_readiness","verify",runtime["status"],verified=runtime.get("verified",False)).to_dict())
@@ -3089,17 +3133,25 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         blockers.append({"resource": "frontend_application", "status": frontend.get("status")})
     frontend_env = reconcile_frontend_environment(client, args, frontend, backend, mode, actions) if frontend.get("status") in {"exists", "created"} else {"status": "blocked" if mode.is_apply else "planned", "variables": [], "blockers": []}
     blockers.extend(frontend_env.get("blockers", []))
-    # Frontend deployment has a conservative Backend dependency. When the Backend is not being
-    # deployed in this same apply run, verify Backend runtime and smoke read-only before allowing
-    # the Frontend POST /deploy. Tests inject fakes/mocks; no public HTTP is exercised by tests.
-    if getattr(args, "deploy_frontend", False) and mode.is_apply and not getattr(args, "deploy_backend", False) and deploy_preflight_ok:
+    frontend_structural_preflight_ok, frontend_structural_blockers = frontend_deployment_preflight(args, postgres, postgresql_readiness, backend, backend_env, frontend, frontend_env, backend_runtime_readiness, backend_smoke_check, actions, require_live=False)
+    frontend_live_preflight_ok = False
+    frontend_live_blockers: list[dict[str, Any]] = []
+    # Frontend deployment live checks are intentionally after structural checks and Frontend
+    # deployment gates. Missing gates must not trigger public Backend smoke.
+    if getattr(args, "deploy_frontend", False) and mode.is_apply and not getattr(args, "deploy_backend", False) and frontend_structural_preflight_ok and mode.frontend_deployment_enabled:
         backend_runtime_readiness = verify_backend_runtime(client, args, str(backend.get("uuid")))
         actions.append(ActionRecord("backend_runtime_readiness", "verify_for_frontend", backend_runtime_readiness["status"], verified=backend_runtime_readiness.get("verified", False)).to_dict())
         if backend_runtime_readiness.get("healthy"):
             backend_smoke_check = run_backend_smoke(args)
             actions.append(ActionRecord("backend_smoke_check", "smoke_for_frontend", backend_smoke_check["status"], verified=backend_smoke_check.get("body_verified", False)).to_dict())
-    frontend_deploy_preflight_ok, frontend_deploy_preflight_blockers = frontend_deployment_preflight(args, postgres, postgresql_readiness, backend, backend_env, frontend, frontend_env, backend_runtime_readiness, backend_smoke_check, actions)
-    blockers.extend(frontend_deploy_preflight_blockers if mode.is_apply and getattr(args, "deploy_frontend", False) else [])
+        frontend_live_preflight_ok, frontend_live_blockers = frontend_deployment_preflight(args, postgres, postgresql_readiness, backend, backend_env, frontend, frontend_env, backend_runtime_readiness, backend_smoke_check, actions, require_live=True)
+    elif getattr(args, "deploy_backend", False):
+        frontend_live_preflight_ok, frontend_live_blockers = frontend_deployment_preflight(args, postgres, postgresql_readiness, backend, backend_env, frontend, frontend_env, backend_runtime_readiness, backend_smoke_check, actions, require_live=True)
+    frontend_deploy_preflight_ok = frontend_structural_preflight_ok if (not mode.is_apply or not mode.frontend_deployment_enabled) else frontend_live_preflight_ok
+    if mode.is_apply and getattr(args, "deploy_frontend", False):
+        blockers.extend(frontend_structural_blockers)
+        if mode.frontend_deployment_enabled:
+            blockers.extend(frontend_live_blockers)
     frontend_deployment, frontend_runtime_readiness, frontend_smoke_check, frontend_deploy_blockers = execute_frontend_deployment(client, args, mode, frontend, frontend_deploy_preflight_ok, actions)
     blockers.extend(frontend_deploy_blockers)
     plan = build_plan(args, discovery)
