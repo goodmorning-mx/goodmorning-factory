@@ -2015,3 +2015,106 @@ class Stage7AuditCorrectionTests(unittest.TestCase):
         self.assertTrue(result["backend_deployment"]["user_requested"])
         self.assertTrue(result["backend_deployment"]["adopted_active"])
         self.assertEqual(result["status"], "partial")
+
+    def deploy_client_for_request(self):
+        mode=pp.ExecutionMode("apply","ledger","ledger",True,deploy_backend=True,allow_deployments=True,allow_backend_deployment=True,confirm_backend_deployment="ledger-api-dev")
+        client=pp.CoolifyClient("https://coolify.example","unit-test-token",mode=mode)
+        client.bind_backend_application_uuid("api-1", {})
+        client.bind_backend_deployment_preconditions(True)
+        return client
+
+    def test_stage7_client_request_marks_2xx_ambiguous_writes_as_performed_unknown(self):
+        class Resp:
+            def __init__(self, status, body):
+                self.status=status; self.headers={}; self.body=body
+            def __enter__(self): return self
+            def __exit__(self,*a): return False
+            def getcode(self): return self.status
+            def read(self): return self.body
+        cases=[
+            ("bad_json", lambda *_a, **_k: Resp(200,b"{"), True, True),
+            ("unexpected_202", lambda *_a, **_k: Resp(202,b'{"accepted":true}'), True, True),
+            ("http_500", lambda *_a, **_k: (_ for _ in ()).throw(pp.urllib.error.HTTPError("url",500,"boom",{},__import__("io").BytesIO(b"{}"))), False, True),
+            ("url_error", lambda *_a, **_k: (_ for _ in ()).throw(pp.urllib.error.URLError("timeout")), False, True),
+        ]
+        for name, opener, write_performed, write_unknown in cases:
+            with self.subTest(name=name), mock.patch("urllib.request.urlopen", opener):
+                with self.assertRaises(pp.ProvisioningError) as raised:
+                    self.deploy_client_for_request().deploy_backend("api-1")
+                self.assertTrue(raised.exception.request_attempted)
+                self.assertEqual(raised.exception.write_performed, write_performed)
+                self.assertEqual(raised.exception.write_outcome_unknown, write_unknown)
+
+    def test_stage7_client_request_get_bad_json_is_not_write_unknown(self):
+        class Resp:
+            status=200; headers={}
+            def __enter__(self): return self
+            def __exit__(self,*a): return False
+            def getcode(self): return 200
+            def read(self): return b"{"
+        with mock.patch("urllib.request.urlopen", lambda *_a, **_k: Resp()):
+            with self.assertRaises(pp.ProvisioningError) as raised:
+                self.deploy_client_for_request().get("/deployments/dep-1")
+        self.assertTrue(raised.exception.request_attempted)
+        self.assertFalse(raised.exception.write_performed)
+        self.assertFalse(raised.exception.write_outcome_unknown)
+
+    def test_stage7_2xx_invalid_json_and_unexpected_status_recover_without_second_post(self):
+        for name, exc in {
+            "json_invalid": pp.ProvisioningError("bad json", http_status=200, method="POST", path="/deploy", write_performed=True, write_outcome_unknown=True, request_attempted=True),
+            "unexpected_202": pp.ProvisioningError("unexpected", http_status=202, method="POST", path="/deploy", write_performed=True, write_outcome_unknown=True, request_attempted=True),
+        }.items():
+            with self.subTest(name=name):
+                client=Stage7BackendDeploymentTests().base_client(**{
+                    "POST /deploy": exc,
+                    "/deployments/applications/api-1?skip=0&take=10": [("GET", {"count":0,"deployments":[]}), ("GET", {"count":1,"deployments":[{"deployment_uuid":"dep-new","resource_uuid":"api-1"}]})],
+                    "/deployments/dep-new": {"deployment_uuid":"dep-new","resource_uuid":"api-1","application_name":"ledger-api-dev","status":"finished"},
+                })
+                with mock.patch.dict(os.environ, Stage7BackendDeploymentTests().gates(), clear=True), mock.patch.object(pp, "run_backend_smoke", return_value=pp.smoke_check_result("ledger","passed",http_status=200,body_verified=True,attempts=1)):
+                    result=pp.provision(Stage7BackendDeploymentTests().deploy_args(), client_factory=lambda: client)
+                self.assertTrue(result["backend_deployment"]["recovered_after_unknown"])
+                self.assertFalse(result["backend_deployment"]["write_outcome_unknown"])
+                self.assertEqual(len([c for c in client.calls if c[0]=="POST" and c[1]=="/deploy"]), 1)
+                request_actions=[a for a in result["actions"] if a["resource"]=="backend_deployment" and a["action"]=="request"]
+                recovery_actions=[a for a in result["actions"] if a["resource"]=="backend_deployment" and a["action"]=="recover_unknown"]
+                self.assertEqual(len(request_actions), 1)
+                self.assertTrue(request_actions[0]["write_performed"])
+                self.assertTrue(request_actions[0]["write_outcome_unknown"])
+                self.assertEqual(len(recovery_actions), 1)
+
+    def test_stage7_2xx_invalid_json_recovery_none_or_many_stays_partial_with_action(self):
+        histories={
+            "none": [("GET", {"count":0,"deployments":[]}), ("GET", {"count":0,"deployments":[]})],
+            "many": [("GET", {"count":0,"deployments":[]}), ("GET", {"count":2,"deployments":[{"deployment_uuid":"a"},{"deployment_uuid":"b"}]})],
+        }
+        for name, history in histories.items():
+            with self.subTest(name=name):
+                client=Stage7BackendDeploymentTests().base_client(**{
+                    "POST /deploy": pp.ProvisioningError("bad json", http_status=200, method="POST", path="/deploy", write_performed=True, write_outcome_unknown=True, request_attempted=True),
+                    "/deployments/applications/api-1?skip=0&take=10": history,
+                })
+                with mock.patch.dict(os.environ, Stage7BackendDeploymentTests().gates(), clear=True):
+                    result=pp.provision(Stage7BackendDeploymentTests().deploy_args(), client_factory=lambda: client)
+                self.assertEqual(result["status"], "partial")
+                self.assertTrue(result["backend_deployment"]["write_outcome_unknown"])
+                request_actions=[a for a in result["actions"] if a["resource"]=="backend_deployment" and a["action"]=="request"]
+                self.assertEqual(len(request_actions), 1)
+                self.assertTrue(request_actions[0]["write_performed"])
+                self.assertTrue(request_actions[0]["write_outcome_unknown"])
+
+    def test_stage7_action_record_preserves_write_not_performed_for_5xx_or_network(self):
+        for name, exc in {
+            "http_500": pp.ProvisioningError("500", http_status=500, method="POST", path="/deploy", write_performed=False, write_outcome_unknown=True, request_attempted=True),
+            "network": pp.ProvisioningError("url", error_type="network", method="POST", path="/deploy", write_performed=False, write_outcome_unknown=True, request_attempted=True),
+        }.items():
+            with self.subTest(name=name):
+                client=Stage7BackendDeploymentTests().base_client(**{
+                    "POST /deploy": exc,
+                    "/deployments/applications/api-1?skip=0&take=10": [("GET", {"count":0,"deployments":[]}), ("GET", {"count":0,"deployments":[]})],
+                })
+                with mock.patch.dict(os.environ, Stage7BackendDeploymentTests().gates(), clear=True):
+                    result=pp.provision(Stage7BackendDeploymentTests().deploy_args(), client_factory=lambda: client)
+                request_actions=[a for a in result["actions"] if a["resource"]=="backend_deployment" and a["action"]=="request"]
+                self.assertEqual(len(request_actions), 1)
+                self.assertFalse(request_actions[0]["write_performed"])
+                self.assertTrue(request_actions[0]["write_outcome_unknown"])

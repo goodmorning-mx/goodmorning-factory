@@ -579,21 +579,39 @@ class CoolifyClient:
         )
         try:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                response_status_value = getattr(response, "status", None)
+                if response_status_value is None:
+                    response_status_value = response.getcode()
+                response_status = int(response_status_value)
+                write_2xx = method in WRITE_METHODS and 200 <= response_status <= 299
                 raw = response.read().decode("utf-8")
-                data = json.loads(raw) if raw else None
-                if allowed_statuses is not None and response.status not in allowed_statuses:
+                try:
+                    data = json.loads(raw) if raw else None
+                except json.JSONDecodeError as exc:
                     raise ProvisioningError(
-                        f"Unexpected Coolify status {response.status} for {method} {path}.",
+                        f"Malformed JSON response for {method} {path}: {exc}",
                         error_type="coolify_api",
                         code=2,
-                        http_status=response.status,
+                        http_status=response_status,
                         method=method,
                         path=path,
-                        write_performed=False,
-                        write_outcome_unknown=method in WRITE_METHODS,
+                        write_performed=write_2xx,
+                        write_outcome_unknown=write_2xx,
+                        request_attempted=True,
+                    ) from exc
+                if allowed_statuses is not None and response_status not in allowed_statuses:
+                    raise ProvisioningError(
+                        f"Unexpected Coolify status {response_status} for {method} {path}.",
+                        error_type="coolify_api",
+                        code=2,
+                        http_status=response_status,
+                        method=method,
+                        path=path,
+                        write_performed=write_2xx,
+                        write_outcome_unknown=write_2xx,
                         request_attempted=True,
                     )
-                return Response(response.status, data, dict(response.headers))
+                return Response(response_status, data, dict(response.headers))
         except urllib.error.HTTPError as exc:
             body = safe_http_body(exc.read().decode("utf-8", errors="replace"))
             raise ProvisioningError(
@@ -611,17 +629,6 @@ class CoolifyClient:
             raise ProvisioningError(
                 f"Coolify connection failure for {method} {path}: {exc}",
                 error_type="network",
-                code=2,
-                method=method,
-                path=path,
-                write_performed=False,
-                write_outcome_unknown=(method in WRITE_METHODS),
-                request_attempted=True,
-            ) from exc
-        except json.JSONDecodeError as exc:
-            raise ProvisioningError(
-                f"Malformed JSON response for {method} {path}: {exc}",
-                error_type="coolify_api",
                 code=2,
                 method=method,
                 path=path,
@@ -2377,6 +2384,17 @@ def smoke_check_result(product: str, status: str = "not_checked", **updates: Any
     return result
 
 
+def backend_deployment_request_action(status: str, exc: ProvisioningError | None = None) -> dict[str, Any]:
+    return ActionRecord(
+        "backend_deployment",
+        "request",
+        status,
+        request_attempted=True if exc is None else exc.request_attempted,
+        write_performed=True if exc is None else exc.write_performed,
+        write_outcome_unknown=False if exc is None else exc.write_outcome_unknown,
+    ).to_dict()
+
+
 def validate_stage7_timing_args(args: argparse.Namespace) -> None:
     for name, maximum in (("backend_deployment_timeout", 3600), ("backend_deployment_interval", 30), ("backend_runtime_timeout", 600), ("backend_runtime_interval", 30), ("backend_smoke_timeout", 600), ("backend_smoke_interval", 30), ("backend_smoke_request_timeout", 30)):
         value = getattr(args, name, None)
@@ -2658,13 +2676,15 @@ def execute_backend_deployment(client: CoolifyClient, args: argparse.Namespace, 
             try:
                 du=parse_deploy_response(resp.data,str(uuid))
                 dep=backend_deployment_result("requested", user_requested=True, post_attempted=True, requested=True, deployment_uuid=du, request_attempted=True, write_performed=True)
-                actions.append(ActionRecord("backend_deployment","request","requested",request_attempted=True,write_performed=True).to_dict())
+                actions.append(backend_deployment_request_action("requested"))
             except ProvisioningError:
                 raise ProvisioningError("Accepted deploy response shape was ambiguous after POST /deploy.", error_type="coolify_api", code=2, method="POST", path="/deploy", write_performed=True, write_outcome_unknown=True, request_attempted=True)
         except ProvisioningError as exc:
             if exc.http_status == 429:
+                actions.append(backend_deployment_request_action("rate_limited", exc))
                 return backend_deployment_result("rate_limited", user_requested=True, post_attempted=True, requested=True, request_attempted=True), runtime, smoke, [{"resource":"backend_deployment","reason":"rate_limited"}]
             if exc.write_outcome_unknown:
+                actions.append(backend_deployment_request_action("write_outcome_unknown", exc))
                 try:
                     after=deployment_history(client,str(uuid))
                     new=recover_new_deployment_candidates(before_ids, after, str(uuid))
@@ -2678,6 +2698,7 @@ def execute_backend_deployment(client: CoolifyClient, args: argparse.Namespace, 
                 else:
                     return backend_deployment_result("ambiguous_deployment_recovery", user_requested=True, post_attempted=True, request_attempted=True, write_performed=exc.write_performed, write_outcome_unknown=True), runtime, smoke, [{"resource":"backend_deployment","reason":"ambiguous_deployment_recovery"}]
             else:
+                actions.append(backend_deployment_request_action("request_failed", exc))
                 return backend_deployment_result("request_failed", user_requested=True, post_attempted=True, request_attempted=True), runtime, smoke, [{"resource":"backend_deployment","reason":exc.message}]
     polled=poll_backend_deployment(client,args,str(dep["deployment_uuid"]),str(uuid)); preserved={"user_requested":dep.get("user_requested"),"post_attempted":dep.get("post_attempted"),"requested":dep.get("requested"),"adopted_active":dep.get("adopted_active"),"recovered_after_unknown":dep.get("recovered_after_unknown"),"request_attempted":dep.get("request_attempted"),"write_performed":dep.get("write_performed"),"write_outcome_unknown":dep.get("write_outcome_unknown")}; dep.update(polled); dep.update({k:v for k,v in preserved.items() if v}); actions.append(ActionRecord("backend_deployment","poll",dep["status"],verified=dep.get("verified",False)).to_dict())
     if not dep.get("verified"):
