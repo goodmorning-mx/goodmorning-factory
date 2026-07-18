@@ -670,18 +670,27 @@ def wait_for_docker_compose_raw(application_uuid: Any) -> None:
 def discover_server(
     servers: list[dict[str, Any]], server_name: str
 ) -> dict[str, Any]:
+    eligible = [
+        server for server in servers if not field(server, "is_build_server")
+    ]
     matches = [
         server
-        for server in servers
-        if not field(server, "is_build_server")
-        and str(field(server, "name", "description") or "").strip().lower()
+        for server in eligible
+        if str(field(server, "name", "description") or "").strip().lower()
         == server_name.strip().lower()
     ]
-    if len(matches) != 1:
-        raise ProvisioningError(
-            f"Expected exactly one non-build Coolify server named {server_name!r}; found {len(matches)}."
-        )
-    return matches[0]
+    if len(matches) == 1:
+        return matches[0]
+    if not matches and len(eligible) == 1:
+        return eligible[0]
+    available = sorted(
+        str(field(server, "name", "description") or "<unnamed>")
+        for server in eligible
+    )
+    raise ProvisioningError(
+        f"Expected one unambiguous non-build Coolify server named {server_name!r}; "
+        f"found {len(matches)} exact matches among {available!r}."
+    )
 
 
 def is_private_repository(repository: str) -> bool:
