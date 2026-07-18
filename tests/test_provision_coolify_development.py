@@ -1424,6 +1424,23 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             with self.assertRaisesRegex(pc.ProvisioningError, "failed"):
                 pc.wait_for_deployment("deploy-1")
 
+    def test_deployment_failure_summary_redacts_credentials(self):
+        summary = pc.deployment_failure_summary(
+            {
+                "status": "failed",
+                "logs": [
+                    "build failed: postgresql://user:super-secret@postgres/db",
+                    "TOKEN=real-token fatal error",
+                ],
+            }
+        )
+
+        self.assertIn("build failed", summary)
+        self.assertIn("postgresql://user:***@postgres/db", summary)
+        self.assertIn("TOKEN=***", summary)
+        self.assertNotIn("super-secret", summary)
+        self.assertNotIn("real-token", summary)
+
     def test_dry_run_does_not_queue_deployments_or_health_checks(self):
         with mock.patch.object(
             pc, "request", side_effect=self.api_side_effect([])
