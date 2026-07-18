@@ -43,20 +43,17 @@ class CoolifyComposeTests(unittest.TestCase):
         self.assertIn("healthcheck:", backend)
         self.assertIn("http://127.0.0.1:8000/health", backend)
 
-    def test_internal_routing_ports_are_explicit_without_public_host_ports(self):
+    def test_internal_routing_ports_use_compose_expose_without_manual_traefik(self):
         compose = (ROOT / "compose.yaml").read_text()
         frontend = self.service_block(compose, "frontend")
         backend = self.service_block(compose, "backend")
         postgres = self.service_block(compose, "postgres")
 
-        self.assertIn(
-            "traefik.http.services.frontend.loadbalancer.server.port=80", frontend
-        )
-        self.assertIn(
-            "traefik.http.services.backend.loadbalancer.server.port=8000", backend
-        )
+        self.assertIn('      - "80"', frontend)
+        self.assertIn('      - "8000"', backend)
         self.assertIn('      - "5432"', postgres)
         self.assertNotIn("ports:", frontend + backend + postgres)
+        self.assertNotIn("traefik.http.", compose)
 
     def test_backend_health_and_postgres_connectivity_are_real(self):
         compose = (ROOT / "compose.yaml").read_text()
@@ -70,18 +67,18 @@ class CoolifyComposeTests(unittest.TestCase):
         self.assertIn("condition: service_healthy", backend)
         self.assertIn("pg_isready", postgres)
 
-    def test_postgres_is_only_on_internal_data_network(self):
+    def test_postgres_is_private_and_uses_coolify_generated_secret(self):
         compose = (ROOT / "compose.yaml").read_text()
         postgres = self.service_block(compose, "postgres")
 
         self.assertIn("image: postgres:16-alpine", postgres)
         self.assertIn("/var/lib/postgresql/data", postgres)
         self.assertIn(
-            "POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set-in-coolify}", postgres
+            "POSTGRES_PASSWORD: ${SERVICE_PASSWORD_64_POSTGRES}", postgres
         )
-        self.assertIn("networks:\n      - data", postgres)
-        self.assertNotIn("- app", postgres)
-        self.assertIn("internal: true", compose)
+        self.assertNotIn("ports:", postgres)
+        self.assertNotIn("labels:", postgres)
+        self.assertNotIn("networks:", compose)
 
     def test_frontend_uses_real_nginx_configuration_without_unused_backend_url(self):
         compose = (ROOT / "compose.yaml").read_text()
