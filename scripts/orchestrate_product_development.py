@@ -194,8 +194,21 @@ def _safe_blocker(path: tuple[str, ...], node: dict[str, Any], reason: str) -> d
     return redact({key: value for key, value in safe.items() if value not in (None, "")})
 
 
+AUDIT_METADATA_KEYS = {"scope_details"}
+
+
 def _is_decision_path(path: tuple[str, ...]) -> bool:
     return any(part in DECISION_KEYS for part in path)
+
+
+def _is_audit_metadata_path(path: tuple[str, ...]) -> bool:
+    return any(part in AUDIT_METADATA_KEYS for part in path)
+
+
+def _status_requires_operational_classification(path: tuple[str, ...], status: str) -> bool:
+    if status == "api_omitted" and _is_audit_metadata_path(path):
+        return False
+    return _is_decision_path(path)
 
 
 BACKEND_PLAN_SAFE_STATUSES = {"absent", "would_create", "planned", "exists", "found", "created"}
@@ -295,7 +308,7 @@ def classify_plan_safety(result: dict[str, Any]) -> tuple[bool, list[dict[str, A
                 blockers.append(_safe_blocker(path, node, "not_requested_outside_deployment_context"))
         elif status in UNSAFE_STATUSES:
             blockers.append(_safe_blocker(path, node, status))
-        elif status and status not in SAFE_STATUSES and _is_decision_path(path):
+        elif status and status not in SAFE_STATUSES and _status_requires_operational_classification(path, status):
             blockers.append(_safe_blocker(path, node, f"unknown_status:{status}"))
         if reason and (reason in UNSAFE_REASONS or "contradiction" in reason or "ambiguous" in reason or "unverified" in reason):
             blockers.append(_safe_blocker(path, node, reason))
