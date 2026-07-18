@@ -43,6 +43,26 @@ reading or storing it. `.env.example` contains safe local placeholders only.
 
 ## Provisioning lifecycle
 
+Products are registered as reviewed JSON manifests in `products/`. A push to
+Factory's `dev` branch that changes the catalog or provisioner automatically
+reconciles every registered development product. No Coolify dashboard step or
+manual GitHub Actions dispatch is required. The manual dispatch remains only as
+an operator-safe dry-run and recovery interface.
+
+To onboard another product such as `gm-login`, an agent adds its remote-safe
+`compose.yaml` to the product repository and a manifest like this to Factory:
+
+```json
+{
+  "product": "gm-login",
+  "repository": "goodmorning-mx/gm-login",
+  "branch": "dev",
+  "compose": "/compose.yaml",
+  "development_domain": "dev.gm-login.goodmorning.mx",
+  "coolify_github_app_name": "goodmorning-mx-coolify"
+}
+```
+
 The dev provisioner:
 
 1. selects Project, Server, Destination, and GitHub App by exact identity;
