@@ -1418,10 +1418,21 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         sleep.assert_called_once_with(pc.DEPLOYMENT_POLL_SECONDS)
 
     def test_wait_for_deployment_raises_on_failure(self):
-        with mock.patch.object(
-            pc, "request", return_value=pc.Response(200, {"status": "failed"}, {})
-        ):
-            with self.assertRaisesRegex(pc.ProvisioningError, "failed"):
+        def fake_request(method, path, **kwargs):
+            if path == "/deployments/deploy-1":
+                return pc.Response(200, {"status": "failed"}, {})
+            if path == "/deployments/deploy-1/logs":
+                return pc.Response(
+                    200,
+                    {"logs": "build failed: postgresql://user:hidden@postgres/db"},
+                    {},
+                )
+            raise AssertionError((method, path))
+
+        with mock.patch.object(pc, "request", side_effect=fake_request):
+            with self.assertRaisesRegex(
+                pc.ProvisioningError, r"postgresql://user:\*\*\*@postgres/db"
+            ):
                 pc.wait_for_deployment("deploy-1")
 
     def test_deployment_failure_summary_redacts_credentials(self):
