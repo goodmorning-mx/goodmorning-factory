@@ -63,12 +63,10 @@ jobs:
               'frontend': {
                   'expose': '      - "80"',
                   'health': 'http://127.0.0.1/',
-                  'routing': 'traefik.http.services.frontend.loadbalancer.server.port=80',
               },
               'backend': {
                   'expose': '      - "8000"',
                   'health': 'http://127.0.0.1:8000/health',
-                  'routing': 'traefik.http.services.backend.loadbalancer.server.port=8000',
               },
           }
           service_markers = [
@@ -91,9 +89,13 @@ jobs:
                   raise SystemExit(f'{service} must define a container healthcheck in compose.yaml')
               if expected['health'] not in service_block:
                   raise SystemExit(f'{service} healthcheck must target {expected["health"]}')
-              if expected['routing'] not in service_block:
-                  raise SystemExit(f'{service} must define an explicit Traefik internal routing port label.')
-          print('compose.yaml avoids host port publishing and defines frontend/backend healthchecks.')
+          if '\nnetworks:' in compose or '\n    networks:' in compose:
+              raise SystemExit('compose.yaml must let Coolify own the isolated stack network.')
+          if 'SERVICE_PASSWORD_64_POSTGRES' not in compose:
+              raise SystemExit('compose.yaml must use one Coolify-generated PostgreSQL password variable.')
+          if 'traefik.http.services.' in compose:
+              raise SystemExit('compose.yaml must let Coolify generate proxy routing from docker_compose_domains.')
+          print('compose.yaml avoids host ports/custom networks and defines healthchecks plus generated secrets.')
           PY
 
       - name: Verify no destructive GitHub repository operations are implemented
