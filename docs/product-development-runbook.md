@@ -70,7 +70,7 @@ Concurrency is per product: `goodmorning-factory-dev-${{ inputs.product }}` with
 
 ## Interpreting JSON
 
-The orchestrator prints one redacted JSON document per execution. The `orchestration` object contains `target_operation`, `operation`, `phase`, `confirmation_required`, `confirmation_matches`, `plan_safe`, `apply_authorized`, `deployment_order`, and `next_action`. Runtime/smoke outputs are booleans/statuses only; secrets, tokens, `DATABASE_URL`, `internal_db_url`, HTML bodies, response bodies, and deployment logs are not printed.
+The orchestrator prints one redacted JSON document per execution. The `orchestration` object contains `target_operation`, `operation`, `phase`, `confirmation_required`, `confirmation_matches`, `plan_safe`, `apply_authorized`, `deployment_order`, and `next_action`. Runtime/smoke outputs are booleans/statuses only; secrets, tokens, `DATABASE_URL`, `internal_db_url`, HTML bodies, response bodies, and deployment logs are not printed. PostgreSQL URL readiness reports only safe booleans (`database_credentials_available`, `internal_db_url_available`, `database_url_driver_ready`) and non-secret `internal_db_url_source` values (`api_field` or `verified_components`).
 
 Successful apply states have overall status outside the non-success set and verified resource-specific states. Partial failures, unknown writes, unhealthy runtime, failed smoke, or timeouts return non-zero and must be inspected before re-running. Re-running is safe after the cause is corrected because the provisioner re-discovers resources and reuses compatible existing resources. Deployment POSTs are not automatically retried after unknown outcomes, and Stage 9 performs zero automatic rollback.
 
