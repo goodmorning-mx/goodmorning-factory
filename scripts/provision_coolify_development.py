@@ -857,13 +857,32 @@ def application_deployment_source_configured(
     coolify_environment: dict[str, Any],
     github_app: dict[str, Any],
 ) -> bool:
+    return all(
+        application_deployment_source_checks(
+            application, args, coolify_environment, github_app
+        ).values()
+    )
+
+
+def application_deployment_source_checks(
+    application: dict[str, Any],
+    args: argparse.Namespace,
+    coolify_environment: dict[str, Any],
+    github_app: dict[str, Any],
+) -> dict[str, bool]:
     data = (
         application.get("data")
         if isinstance(application.get("data"), dict)
         else application
     )
     if not isinstance(data, dict):
-        return False
+        return {
+            "repository": False,
+            "branch": False,
+            "compose": False,
+            "environment": False,
+            "github_app": False,
+        }
     values = {value.strip().lower() for value in scalar_values(data) if value.strip()}
     repository_values = {
         args.repository.lower(),
@@ -886,13 +905,13 @@ def application_deployment_source_configured(
         )
         if value
     }
-    return (
-        bool(values & repository_values)
-        and args.branch.lower() in values
-        and args.compose.lower() in values
-        and bool(values & environment_values)
-        and bool(values & github_app_values)
-    )
+    return {
+        "repository": bool(values & repository_values),
+        "branch": args.branch.lower() in values,
+        "compose": args.compose.lower() in values,
+        "environment": bool(values & environment_values),
+        "github_app": bool(values & github_app_values),
+    }
 
 
 def github_app_uuid(github_app: dict[str, Any]) -> Any:
@@ -1089,6 +1108,9 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         else:
             result["status"] = "manual_review_required"
             result["manual_review_required"] = True
+            result["source_verification"] = application_deployment_source_checks(
+                existing, args, coolify_environment, github_app
+            )
             result["reason"] = (
                 "Existing Coolify application is missing verified repository, branch, "
                 "compose path, environment, GitHub App source, and loaded "
@@ -1107,6 +1129,9 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         ):
             result["status"] = "manual_review_required"
             result["manual_review_required"] = True
+            result["source_verification"] = application_deployment_source_checks(
+                created, args, coolify_environment, github_app
+            )
             result["reason"] = (
                 "Coolify reported an application creation conflict, but the matching "
                 "application could not be verified against repository, branch, "
