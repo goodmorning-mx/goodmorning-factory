@@ -757,11 +757,8 @@ def domain_patch_payload(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def source_patch_payload(
-    args: argparse.Namespace, github_app: dict[str, Any]
-) -> dict[str, Any]:
+def source_patch_payload(args: argparse.Namespace) -> dict[str, Any]:
     return {
-        "github_app_uuid": github_app_uuid(github_app),
         "git_repository": git_repository_url(args.repository),
         "git_branch": args.branch,
         "build_pack": "dockercompose",
@@ -813,7 +810,6 @@ def reconcile_application_domains(
 def reconcile_application_source(
     application_uuid: Any,
     args: argparse.Namespace,
-    github_app: dict[str, Any],
 ) -> dict[str, Any]:
     if not application_uuid:
         raise ProvisioningError(
@@ -822,7 +818,7 @@ def reconcile_application_source(
     return request(
         "PATCH",
         f"/applications/{application_uuid}",
-        body=source_patch_payload(args, github_app),
+        body=source_patch_payload(args),
     ).data
 
 
@@ -871,20 +867,6 @@ def application_deployment_source_configured(
     )
 
 
-def application_deployment_source_adoptable(
-    application: dict[str, Any],
-    args: argparse.Namespace,
-    coolify_environment: dict[str, Any],
-    github_app: dict[str, Any],
-) -> bool:
-    checks = application_deployment_source_checks(
-        application, args, coolify_environment, github_app
-    )
-    return all(
-        checks[key] for key in ("repository", "branch", "compose", "environment")
-    )
-
-
 def application_deployment_source_checks(
     application: dict[str, Any],
     args: argparse.Namespace,
@@ -923,6 +905,7 @@ def application_deployment_source_checks(
         for value in (
             github_app_uuid(github_app),
             field(github_app, "name"),
+            field(github_app, "id"),
         )
         if value
     }
@@ -1098,7 +1081,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         result["would_create_project"] = planned_project
     if existing:
         result["application"] = application_summary(existing)
-        source_configured = application_deployment_source_adoptable(
+        source_configured = application_deployment_source_configured(
             existing, args, coolify_environment, github_app
         )
         if source_configured:
@@ -1106,13 +1089,11 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
                 result["source_configured"] = True
             if args.dry_run:
                 result["would_patch"] = {
-                    "source": source_patch_payload(args, github_app),
+                    "source": source_patch_payload(args),
                     "domains": domain_patch_payload(args),
                 }
             else:
-                reconcile_application_source(
-                    result["application"]["uuid"], args, github_app
-                )
+                reconcile_application_source(result["application"]["uuid"], args)
                 result["source_reconciled"] = True
                 result["environment_variables_configured"] = (
                     configure_application_environment_variables(
@@ -1147,7 +1128,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
     created, application_created = create_application(payload, args)
     if not application_created:
         created = hydrate_application(created)
-        if not application_deployment_source_adoptable(
+        if not application_deployment_source_configured(
             created, args, coolify_environment, github_app
         ):
             result["status"] = "manual_review_required"
