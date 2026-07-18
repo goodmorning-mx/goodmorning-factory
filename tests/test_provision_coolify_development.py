@@ -551,7 +551,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 "factory-smoke-test",
             )
 
-    def test_server_selection_requires_one_exact_name(self):
+    def test_server_selection_prefers_exact_name_and_allows_unambiguous_fallback(self):
         servers = [
             {"uuid": "server-1", "name": "development"},
             {"uuid": "server-2", "name": "development-extra"},
@@ -559,8 +559,17 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(
             pc.discover_server(servers, "development")["uuid"], "server-1"
         )
-        with self.assertRaisesRegex(pc.ProvisioningError, "found 0"):
+        self.assertEqual(
+            pc.discover_server([{"uuid": "server-3", "name": "main-server"}], "development")["uuid"],
+            "server-3",
+        )
+        with self.assertRaisesRegex(pc.ProvisioningError, "unambiguous"):
             pc.discover_server(servers, "dev")
+        with self.assertRaisesRegex(pc.ProvisioningError, "unambiguous"):
+            pc.discover_server(
+                [{"uuid": "builder", "name": "builder", "is_build_server": True}],
+                "development",
+            )
 
     def test_destination_identifier_is_required_before_api_calls(self):
         with self.assertRaisesRegex(pc.ProvisioningError, "destination identifier"):
