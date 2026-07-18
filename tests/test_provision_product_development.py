@@ -743,6 +743,48 @@ class Stage3ProvisioningTests(unittest.TestCase):
         self.assertEqual([c[1] for c in client.calls if c[0] == "POST"].count("/databases/postgresql"), 1)
         self.assertNotIn(secret, json.dumps(result))
 
+    def test_internal_db_url_recovery_from_verified_components_creates_backend(self):
+        db = self.managed_db(status="running:healthy", postgres_password="p@ss% word", internal_db_url=None)
+        api_detail = {"uuid":"api-1","name":"ledger-api-dev","type":"application","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"bk8cw0gkswgo04o0s88sk0kg","git_repository":"goodmorning-mx/ledger","git_branch":"dev","build_pack":"dockerfile","base_directory":"/backend","dockerfile_location":"/Dockerfile","ports_exposes":"8000","domains":"https://api.dev.ledger.goodmorning.mx","github_app_uuid":"app-1","health_check_enabled":True,"health_check_path":"/health","health_check_port":"8000","health_check_method":"GET","health_check_scheme":"http","health_check_return_code":200}
+        client = FakeWriteClient(self.missing_project_payloads(**{"/projects":[{"uuid":"project-1","name":"ledger"}],"/projects/project-1":{"environments":[{"uuid":"env-1","name":"dev"}]},"/databases":[db],"/databases/db-1":db,"/applications":[],"/applications/api-1":api_detail,"/applications/api-1/envs":[]}))
+        env={"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_BACKEND_ENV_WRITES":"true"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            result=pp.provision(apply_args(confirm_backend_application="ledger-api-dev", confirm_backend_environment="ledger-api-dev"), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "already_healthy")
+        self.assertTrue(result["postgresql_readiness"]["database_credentials_available"])
+        self.assertEqual(result["postgresql_readiness"]["internal_db_url_source"], "verified_components")
+        self.assertEqual(result["backend_application"]["status"], "created")
+        db_env = next(call[2] for call in client.calls if call[0] == "POST" and call[1] == "/applications/api-1/envs" and call[2]["key"] == "DATABASE_URL")
+        self.assertTrue(db_env["value"].startswith("postgresql+psycopg://ledger_dev_user:p%40ss%25%20word@db-1:5432/ledger_dev"))
+        self.assertTrue(db_env["is_runtime"]); self.assertFalse(db_env["is_buildtime"]); self.assertTrue(db_env["is_shown_once"])
+        dumped=json.dumps(result)
+        self.assertNotIn("p@ss", dumped); self.assertNotIn("postgresql+psycopg://", dumped); self.assertNotIn("internal_db_url", dumped.replace("internal_db_url_available", "").replace("internal_db_url_source", ""))
+
+    def test_missing_internal_url_component_fails_closed_without_applications(self):
+        db = self.managed_db(status="running:healthy", postgres_password="")
+        client = FakeWriteClient(self.missing_project_payloads(**{"/projects":[{"uuid":"project-1","name":"ledger"}],"/projects/project-1":{"environments":[{"uuid":"env-1","name":"dev"}]},"/databases":[db],"/databases/db-1":db,"/applications":[]}))
+        env={"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES":"true"}
+        with mock.patch.dict(os.environ, env, clear=True):
+            result=pp.provision(apply_args(confirm_backend_application="ledger-api-dev", confirm_frontend_application="ledger-frontend-dev"), client_factory=lambda: client)
+        reasons=[b.get("reason") for b in result["blockers"]]
+        self.assertIn("internal_db_url_unavailable", reasons)
+        self.assertIn("database_url_driver_not_ready", reasons)
+        self.assertFalse(any(c[0]=="POST" and c[1]=="/applications/private-github-app" for c in client.calls))
+        self.assertEqual(result["frontend_application"]["status"], "blocked")
+
+    def test_internal_url_api_field_and_redaction_recursive(self):
+        raw="postgres://user:p%40ss@db-1:5432/ledger_dev"
+        self.assertEqual(pp.prepare_psycopg_database_url(raw), "postgresql+psycopg://user:p%40ss@db-1:5432/ledger_dev")
+        flags=pp.verify_internal_db_url_flags({"uuid":"db-1","internal_db_url":raw}, "db-1")
+        self.assertTrue(flags["internal_db_url_available"]); self.assertEqual(flags["internal_db_url_source"], "api_field")
+        red=pp.redact({"outer":[{"DATABASE_URL":"postgresql+psycopg://user:secret@db/db","nested":{"internal_db_url":raw,"postgres_password":"secret"}}]})
+        self.assertNotIn("secret", json.dumps(red)); self.assertNotIn(raw, json.dumps(red))
+
+    def test_verified_component_derivation_rejects_uuid_contradiction(self):
+        db={"uuid":"other","postgres_user":"u","postgres_password":"p","postgres_db":"d"}
+        url, source = pp.derived_internal_postgres_url(db, "db-1")
+        self.assertIsNone(url); self.assertIsNone(source)
+
     def test_apply_gates_fail_before_any_post(self):
         for confirm, env in (("ledger", {}), (None, {"COOLIFY_ALLOW_RESOURCE_WRITES": "true"}), ("other", {"COOLIFY_ALLOW_RESOURCE_WRITES": "true"})):
             client = FakeWriteClient(self.missing_project_payloads())
@@ -1486,7 +1528,7 @@ class Stage4ReviewCorrectionTests(unittest.TestCase):
             with self.assertRaises(pp.ProvisioningError) as raised:
                 pp.prepare_psycopg_database_url(bad)
             self.assertNotIn(bad, raised.exception.message)
-        self.assertEqual(pp.verify_internal_db_url_flags({"internal_db_url":"   "}), {"internal_db_url_available": False, "database_url_driver_ready": False})
+        self.assertEqual(pp.verify_internal_db_url_flags({"internal_db_url":"   "}), {"database_credentials_available": False, "internal_db_url_available": False, "database_url_driver_ready": False, "internal_db_url_source": None})
 
 class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
     def healthy_client(self, **overrides):

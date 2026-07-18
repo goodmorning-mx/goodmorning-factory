@@ -267,7 +267,7 @@ def sanitize_string(text: str) -> str:
 def sanitize_for_output(value: Any) -> Any:
     if isinstance(value, dict):
         return {
-            key: item if str(key) in {"observed_variable_name_counts", "observed_variable_names"} else (sanitize_for_output(item) if str(key) in {"internal_db_url_available", "database_url_driver_ready"} else ("[REDACTED]" if SECRET_KEY_RE.search(str(key)) else sanitize_for_output(item)))
+            key: item if str(key) in {"observed_variable_name_counts", "observed_variable_names"} else (sanitize_for_output(item) if str(key) in {"database_credentials_available", "internal_db_url_available", "database_url_driver_ready", "internal_db_url_source"} else ("[REDACTED]" if SECRET_KEY_RE.search(str(key)) else sanitize_for_output(item)))
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -1815,17 +1815,46 @@ def readiness_result(status: str, uuid: Any = None, **updates: Any) -> dict[str,
     return result
 
 
-def verify_internal_db_url_flags(item: dict[str, Any]) -> dict[str, bool]:
-    url = nested_field(item, "internal_db_url")
-    available = isinstance(url, str) and bool(url.strip())
+def database_credentials_available(item: dict[str, Any]) -> bool:
+    return all(isinstance(nested_field(item, key), str) and bool(str(nested_field(item, key))) for key in ("postgres_user", "postgres_password", "postgres_db"))
+
+
+def derived_internal_postgres_url(item: dict[str, Any], expected_uuid: Any) -> tuple[str | None, str | None]:
+    raw = nested_field(item, "internal_db_url")
+    if isinstance(raw, str) and raw.strip():
+        prepare_psycopg_database_url(raw)
+        return raw, "api_field"
+    uuid = field(item, "uuid", "id")
+    if not is_real_identifier(uuid) or str(uuid) != str(expected_uuid):
+        return None, None
+    user = nested_field(item, "postgres_user")
+    password = nested_field(item, "postgres_password")
+    database = nested_field(item, "postgres_db")
+    if not all(isinstance(value, str) and value != "" for value in (user, password, database)):
+        return None, None
+    encoded_user = urllib.parse.quote(user, safe="")
+    encoded_password = urllib.parse.quote(password, safe="")
+    encoded_database = urllib.parse.quote(database, safe="")
+    return f"postgresql://{encoded_user}:{encoded_password}@{uuid}:5432/{encoded_database}", "verified_components"
+
+
+def verify_internal_db_url_flags(item: dict[str, Any], expected_uuid: Any | None = None) -> dict[str, Any]:
+    expected_uuid = expected_uuid if expected_uuid is not None else field(item, "uuid", "id")
+    credentials = database_credentials_available(item)
+    available = False
     ready = False
-    if available:
-        try:
+    source = None
+    try:
+        url, source = derived_internal_postgres_url(item, expected_uuid)
+        available = bool(url)
+        if url:
             prepare_psycopg_database_url(url)
             ready = True
-        except ProvisioningError:
-            ready = False
-    return {"internal_db_url_available": available, "database_url_driver_ready": ready}
+    except ProvisioningError:
+        available = isinstance(nested_field(item, "internal_db_url"), str) and bool(str(nested_field(item, "internal_db_url")).strip())
+        ready = False
+        source = "api_field" if available else None
+    return {"database_credentials_available": credentials, "internal_db_url_available": available, "database_url_driver_ready": ready, "internal_db_url_source": source}
 
 
 def postgresql_start_preconditions(args: argparse.Namespace, postgres: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1862,14 +1891,14 @@ def poll_postgresql_readiness(client: CoolifyClient, uuid: str, *, timeout: floa
         last_item = item
         classified = classify_database_readiness_status(database_raw_status(item))
         if classified == "healthy":
-            return readiness_result("healthy", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(item))
+            return readiness_result("healthy", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(item, uuid))
         if classified == "unhealthy":
-            return readiness_result("unhealthy", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(item))
+            return readiness_result("unhealthy", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(item, uuid))
         if classified == "readiness_unverified":
-            return readiness_result("readiness_unverified", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(item))
+            return readiness_result("readiness_unverified", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(item, uuid))
         if attempt < max_attempts - 1:
             sleeper(interval)
-    return readiness_result("timeout", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(last_item))
+    return readiness_result("timeout", uuid, poll_attempts=attempts, **verify_internal_db_url_flags(last_item, uuid))
 
 
 def ensure_postgresql_ready(client: CoolifyClient, args: argparse.Namespace, postgres: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]], *, sleeper: Callable[[float], None] | None = None) -> dict[str, Any]:
@@ -1913,7 +1942,7 @@ def ensure_postgresql_ready(client: CoolifyClient, args: argparse.Namespace, pos
                 rediscovered = hydrate_database_by_uuid(client, uuid, postgres)
                 recovered_state = classify_database_readiness_status(database_raw_status(rediscovered))
                 if recovered_state in {"starting", "healthy"}:
-                    return poll_postgresql_readiness(client, str(uuid), timeout=getattr(args, "postgres_readiness_timeout", 300.0), interval=getattr(args, "postgres_readiness_interval", 5.0), sleeper=sleeper) if recovered_state == "starting" else readiness_result("healthy", uuid, poll_attempts=1, **verify_internal_db_url_flags(rediscovered))
+                    return poll_postgresql_readiness(client, str(uuid), timeout=getattr(args, "postgres_readiness_timeout", 300.0), interval=getattr(args, "postgres_readiness_interval", 5.0), sleeper=sleeper) if recovered_state == "starting" else readiness_result("healthy", uuid, poll_attempts=1, **verify_internal_db_url_flags(rediscovered, uuid))
                 return readiness_result("blocked", uuid, start_requested=True, request_attempted=True, **flags)
             raise
         actions.append(ActionRecord("postgresql", "start", "start_accepted", request_attempted=True, write_performed=True, verified=False).to_dict())
@@ -2078,9 +2107,9 @@ def postgres_driver_url(client: CoolifyClient, postgres: dict[str, Any]) -> str 
     uuid=postgres.get("uuid")
     if not uuid: return None
     detail=hydrate_database_by_uuid(client, uuid, postgres)
-    raw=nested_field(detail,"internal_db_url")
-    if not isinstance(raw,str): return None
-    return prepare_psycopg_database_url(raw)
+    url, _source = derived_internal_postgres_url(detail, uuid)
+    if not url: return None
+    return prepare_psycopg_database_url(url)
 
 
 def postgresql_backend_plan_precondition(args: argparse.Namespace, postgres: dict[str, Any], readiness: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
