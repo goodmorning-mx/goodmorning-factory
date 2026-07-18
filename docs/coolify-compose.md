@@ -1,68 +1,67 @@
-# Coolify-safe Docker Compose
+# Canonical Coolify Docker Compose contract
 
-`compose.yaml` is the deployment default for Coolify development environments. It is a single Docker Compose application with exactly these services: `frontend`, `backend`, and `postgres`. The file is consumed from GitHub by Coolify; no SSH, rsync, SCP, local server services, or manual file copy is part of the supported flow.
+Each GoodMorning product deploys as one private GitHub-backed Docker Compose
+Application inside each Coolify Environment. Coolify reads `/compose.yaml`
+directly from the configured branch; SSH, rsync, SCP, server-local files, and
+manual dashboard configuration are outside the supported path.
 
-## Routing mechanism
+## Required services
 
-Coolify's current Docker Compose documentation says the compose file is the source of truth and that domain assignment normally routes to container port `80`; for non-80 services, Coolify's domain field can include a port to tell the proxy which container port to target. The current OpenAPI schema exposes `docker_compose_domains[].name` and `docker_compose_domains[].domain`, but no separate per-service port field for Docker Compose domain routing.
+The canonical service names are `frontend`, `backend`, and `postgres`.
 
-Because GoodMorning public URLs must never contain `:80` or `:8000`, this repository keeps `docker_compose_domains` as clean public URLs and uses explicit Traefik service-port labels in `compose.yaml` for internal routing:
+- `frontend` exposes container port `80` and has a healthcheck.
+- `backend` exposes container port `8000`, serves `GET /health`, depends on the
+  healthy PostgreSQL service, and uses `postgres:5432` through Compose DNS.
+- `postgres` uses PostgreSQL 16, a named persistent volume, a healthcheck, no
+  host `ports`, and no public domain.
 
-- `frontend` public domain: `https://dev.<product>.goodmorning.mx`.
-- `frontend` internal target: service `frontend`, port `80`, label `traefik.http.services.frontend.loadbalancer.server.port=80`.
-- `backend` public domain: `https://api.dev.<product>.goodmorning.mx`.
-- `backend` internal target: service `backend`, port `8000`, label `traefik.http.services.backend.loadbalancer.server.port=8000`.
+Do not define custom Compose networks. Coolify creates one isolated network for
+the stack and connects its reverse proxy to it. A service without a domain or
+host port remains private inside that network.
 
-The `domain:port` form is therefore treated only as a Coolify internal routing hint documented by Coolify, not as a public URL format that GoodMorning exposes in logs, smoke checks, docs, or result JSON.
+## Domains
 
-## Services
+Factory assigns domains by service with `docker_compose_domains`:
 
-### frontend
+- frontend: `https://dev.<product>.goodmorning.mx`;
+- backend: `https://api.dev.<product>.goodmorning.mx:8000`.
 
-- Exact service name: `frontend`.
-- Image: `nginx:1.27-alpine` by default.
-- Real Nginx config: `frontend/nginx.conf`.
-- Listens on `0.0.0.0:80` / `[::]:80` through Nginx.
-- `expose: ["80"]`.
-- No `ports:`.
-- Healthcheck uses `http://127.0.0.1/`.
-- No unused `BACKEND_URL`; stock Nginx does not consume it.
-- Network: `app` only.
+The Backend `:8000` suffix is Coolify's documented internal container-port
+routing hint. The public browser URL and smoke-check URL remain clean:
+`https://api.dev.<product>.goodmorning.mx`.
 
-### backend
+## Variables and secrets
 
-- Exact service name: `backend`.
-- Listens on `0.0.0.0:8000`.
-- `expose: ["8000"]`.
-- No `ports:`.
-- Real `GET /health` endpoint returns HTTP 200.
-- Healthcheck uses `http://127.0.0.1:8000/health`.
-- Connects to PostgreSQL through Compose DNS at `postgres:5432`.
-- Networks: `app` and `data`.
-- Depends on PostgreSQL with `condition: service_healthy`.
+`compose.yaml` declares variables; Coolify stores environment-specific values.
+Factory derives only non-secret configuration such as `APP_ENV`, `CORS_ORIGINS`,
+and the public frontend API URL.
 
-### postgres
+Internal secrets use Coolify magic variables directly in Compose. For example,
+both Backend and PostgreSQL reference `SERVICE_PASSWORD_64_POSTGRES`, so Coolify
+generates one stable random value per Compose Application without Factory ever
+reading or storing it. `.env.example` contains safe local placeholders only.
 
-- Exact service name: `postgres`.
-- Image: `postgres:16-alpine`.
-- Persistent volume mounted at `/var/lib/postgresql/data`.
-- `expose: ["5432"]` for internal Compose connectivity only.
-- No `ports:` and no public domain.
-- Network: `data` only.
-- `data` is `internal: true`.
-- Healthcheck uses `pg_isready`.
-- Credentials are read from Coolify-provided environment variables; no real password is committed.
+## Provisioning lifecycle
 
-## expose vs ports
+The dev provisioner:
 
-- `expose` documents and enables container-network access only. It does not publish the container port on the Docker host.
-- `ports` publishes a host port and bypasses the intended Coolify/Traefik ingress path. Host `ports` are forbidden in this deployment baseline.
+1. selects Project, Server, Destination, and GitHub App by exact identity;
+2. creates the Project and `dev` Environment when absent;
+3. creates `<product>-dev` with `build_pack=dockercompose`, branch `dev`, and
+   `/compose.yaml`;
+4. reconciles domains and public/non-secret variables;
+5. queues the first authorized deployment, waits for completion, and runs smoke
+   checks;
+6. leaves native GitHub App Auto Deploy enabled for subsequent pushes.
 
-## Review checklist
+The operation is idempotent and never deletes, stops, restarts, or recreates an
+ambiguous existing resource.
 
-1. `compose.yaml` has no `ports` key for any service.
-2. Public domains are configured through Coolify domains and contain no ports.
-3. Traefik service labels identify `frontend:80` and `backend:8000` for internal routing.
-4. PostgreSQL remains reachable only from backend containers over the internal `data` network.
-5. Frontend, backend, and PostgreSQL health checks are present before provisioning.
-6. Provisioning keeps `instant_deploy=false`; deployment is queued only by the explicit API deployment step after reconciliation and authorization.
+## Local development
+
+Production-safe `compose.yaml` must not publish host ports. Repositories may add
+`compose.local.yaml` containing only local port mappings and run:
+
+```bash
+docker compose -f compose.yaml -f compose.local.yaml up --build --wait
+```
