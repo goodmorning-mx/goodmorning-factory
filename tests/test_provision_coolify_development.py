@@ -131,10 +131,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 self.assertIn(
                     kwargs["body"],
                     [
-                        pc.source_patch_payload(
-                            args(),
-                            {"uuid": "github-app-7", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME},
-                        ),
+                        pc.source_patch_payload(args()),
                         pc.domain_patch_payload(args()),
                     ],
                 )
@@ -820,7 +817,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(hydrated["git_repository"], pc.DEFAULT_REPOSITORY)
         self.assertEqual(hydrated["docker_compose_raw"], "services: {}")
 
-    def test_matching_source_without_github_app_is_safely_adoptable(self):
+    def test_numeric_source_id_verifies_github_app_association(self):
         application = {
             "uuid": "app-1",
             "name": "factory-smoke-test-dev",
@@ -828,26 +825,19 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             "git_branch": pc.DEFAULT_BRANCH,
             "docker_compose_location": pc.DEFAULT_COMPOSE,
             "environment_name": "dev",
+            "source_id": 4283761,
         }
         environment = {"uuid": "env-dev", "name": "dev"}
         github_app = {
             "uuid": "github-app-7",
+            "id": 4283761,
             "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME,
         }
 
-        self.assertFalse(
+        self.assertTrue(
             pc.application_deployment_source_configured(
                 application, args(), environment, github_app
             )
-        )
-        self.assertTrue(
-            pc.application_deployment_source_adoptable(
-                application, args(), environment, github_app
-            )
-        )
-        self.assertEqual(
-            pc.source_patch_payload(args(), github_app)["github_app_uuid"],
-            "github-app-7",
         )
 
     def test_real_creation_posts_once_when_dry_run_false(self):
