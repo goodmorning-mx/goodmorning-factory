@@ -4,5 +4,6 @@
   "branch": "dev",
   "compose": "/compose.yaml",
   "development_domain": "dev.factory-smoke-test.goodmorning.mx",
-  "coolify_github_app_name": "goodmorning-mx-coolify"
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "reconcile_revision": 2
 }
