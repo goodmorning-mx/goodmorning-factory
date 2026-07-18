@@ -7,6 +7,7 @@ import json
 import os
 import re
 import sys
+import urllib.parse
 from typing import Any, Callable
 
 try:
@@ -43,7 +44,7 @@ APPLY_TRUE_GATES = {
 ALLOWED_TRUE_GATES = APPLY_TRUE_GATES
 SAFE_STATUSES = {
     "absent", "would_create", "would_start", "would_deploy", "would_verify_backend_then_deploy",
-    "planned", "planned_after_backend", "dry_run", "exists", "found", "matched", "healthy", "already_healthy", "not_requested",
+    "planned", "planned_after_backend", "dry_run", "exists", "found", "matched", "healthy", "already_healthy",
     "present", "compatible", "verified", "passed", "finished", "running:healthy",
 }
 UNSAFE_STATUSES = {
@@ -70,6 +71,8 @@ DECISION_KEYS = {
 SUCCESSFUL_APPLY_STATUSES = {"exists", "created", "ready"}
 NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
 SLUG_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
+COOLIFY_IDENTIFIER_MAX_LENGTH = 64
+COOLIFY_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def truthy_env(name: str) -> bool:
@@ -78,6 +81,29 @@ def truthy_env(name: str) -> bool:
 
 def expected_confirmation(operation: str, product: str) -> str:
     return f"{operation}:{product}:{ENVIRONMENT}"
+
+
+def validate_coolify_destination_identifier(value: Any) -> str:
+    if value is None:
+        raise ProvisioningError("--destination-uuid is required.", error_type="validation", code=2)
+    if not isinstance(value, str):
+        raise ProvisioningError("--destination-uuid must be exactly one opaque Coolify identifier string.", error_type="validation", code=2)
+    if value == "" or value != value.strip():
+        raise ProvisioningError("--destination-uuid must not be empty or padded with whitespace.", error_type="validation", code=2)
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ProvisioningError("--destination-uuid must not contain control characters.", error_type="validation", code=2)
+    if any(char.isspace() for char in value):
+        raise ProvisioningError("--destination-uuid must not contain whitespace.", error_type="validation", code=2)
+    if len(value) > COOLIFY_IDENTIFIER_MAX_LENGTH:
+        raise ProvisioningError("--destination-uuid exceeds the defensive Coolify identifier length limit.", error_type="validation", code=2)
+    if "," in value or value[0] in "[{" or value[-1] in "]}":
+        raise ProvisioningError("--destination-uuid must be one identifier, not a list or JSON value.", error_type="validation", code=2)
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme or parsed.netloc or any(marker in value for marker in ("/", "?", "#", ":", "@")):
+        raise ProvisioningError("--destination-uuid must be an opaque identifier, not a URL, path, query, fragment, or credential-bearing value.", error_type="validation", code=2)
+    if not COOLIFY_IDENTIFIER_RE.fullmatch(value):
+        raise ProvisioningError("--destination-uuid must be an opaque Coolify identifier using only safe lowercase URL identifier characters.", error_type="validation", code=2)
+    return value
 
 
 def validate_orchestration_inputs(args: argparse.Namespace) -> dict[str, str]:
@@ -91,6 +117,7 @@ def validate_orchestration_inputs(args: argparse.Namespace) -> dict[str, str]:
         raise ProvisioningError("phase=apply requires a mutating target operation.", error_type="validation", code=2)
     if not SLUG_RE.fullmatch(args.product or ""):
         raise ProvisioningError("--product must be a lowercase DNS-safe slug.", error_type="validation", code=2)
+    validate_coolify_destination_identifier(getattr(args, "destination_uuid", None))
     return {
         "product": args.product,
         "repository": f"{OWNER}/{args.product}",
@@ -125,8 +152,7 @@ def build_provisioner_argv(args: argparse.Namespace) -> list[str]:
         "--github-app", args.github_app,
         "--dry-run" if args.phase == "plan" else "--apply",
     ]
-    if args.destination_uuid:
-        argv += ["--destination-uuid", args.destination_uuid]
+    argv += ["--destination-uuid", validate_coolify_destination_identifier(args.destination_uuid)]
     if args.phase == "apply":
         argv += [
             "--confirm-product", args.product,
@@ -198,11 +224,19 @@ def classify_plan_safety(result: dict[str, Any]) -> tuple[bool, list[dict[str, A
             blockers.append(_safe_blocker(path + ("blockers",), node, "blockers_present"))
         if status == "planned_after_backend":
             dependency_reason = str(node.get("reason") or "")
-            if not dependency_reason or "backend" not in dependency_reason.lower():
+            if dependency_reason != "backend_dependency_planned":
                 blockers.append(_safe_blocker(path, node, "planned_after_backend_reason_unverified"))
             if node.get("blockers") or not _backend_plan_safe_for_frontend(result):
                 blockers.append(_safe_blocker(path, node, "planned_after_backend_backend_not_safe"))
-        if status in UNSAFE_STATUSES:
+        if status == "not_checked":
+            deployment_key = "backend_deployment" if path and path[0].startswith("backend_") else "frontend_deployment" if path and path[0].startswith("frontend_") else None
+            deployment = result.get(deployment_key) if deployment_key else None
+            if not isinstance(deployment, dict) or deployment.get("user_requested") or deployment.get("status") not in {"not_requested", "planned"}:
+                blockers.append(_safe_blocker(path, node, "not_checked_without_unrequested_deployment"))
+        elif status == "not_requested":
+            if not (path and path[-1] in {"backend_deployment", "frontend_deployment"}):
+                blockers.append(_safe_blocker(path, node, "not_requested_outside_deployment_context"))
+        elif status in UNSAFE_STATUSES:
             blockers.append(_safe_blocker(path, node, status))
         elif status and status not in SAFE_STATUSES and _is_decision_path(path):
             blockers.append(_safe_blocker(path, node, f"unknown_status:{status}"))
@@ -274,7 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--product", required=True)
     parser.add_argument("--server", required=True)
     parser.add_argument("--github-app", required=True)
-    parser.add_argument("--destination-uuid")
+    parser.add_argument("--destination-uuid", required=True)
     parser.add_argument("--confirmation")
     return parser
 

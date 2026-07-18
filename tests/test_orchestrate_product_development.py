@@ -11,7 +11,7 @@ import scripts.provision_product_development as pp
 
 
 def oargs(**kw):
-    base=dict(operation="plan", phase="plan", product="ledger", server="development", github_app="goodmorning-mx-coolify", destination_uuid=None, confirmation=None)
+    base=dict(operation="plan", phase="plan", product="ledger", server="localhost", github_app="goodmorning-mx-coolify", destination_uuid='bk8cw0gkswgo04o0s88sk0kg', confirmation=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -77,7 +77,7 @@ class Stage9OrchestratorTests(unittest.TestCase):
             "deploy-full": ["--deploy-backend", "--deploy-frontend"],
         }
         for oper, flags in plan_cases.items():
-            argv=op.build_provisioner_argv(oargs(operation=oper, phase="plan", destination_uuid="dest-1"))
+            argv=op.build_provisioner_argv(oargs(operation=oper, phase="plan", destination_uuid="bk8cw0gkswgo04o0s88sk0kg"))
             self.assertIn("--dry-run", argv); self.assertNotIn("--apply", argv)
             for flag in flags: self.assertIn(flag, argv)
             if oper != "deploy-full": self.assertNotIn("--deploy-frontend", argv)
@@ -140,6 +140,49 @@ class Stage9OrchestratorTests(unittest.TestCase):
             self.assertTrue(blockers)
             self.assertNotIn("postgres://", repr(blockers))
             self.assertNotIn("secret-value", repr(blockers).lower())
+
+
+    def test_destination_identifier_validation_and_workflow_required(self):
+        for valid in ("xs8e9kfps9c7dmes414gyt05", "bk8cw0gkswgo04o0s88sk0kg", "rowwocok08sgg800ogkogkc4"):
+            self.assertEqual(op.validate_coolify_destination_identifier(valid), valid)
+        bad_values = (
+            None,
+            "",
+            "   ",
+            " bk8cw0gkswgo04o0s88sk0kg",
+            "bk8cw0gkswgo04o0s88sk0kg ",
+            "bk8cw0gkswgo04o0s88sk0kg rowwocok08sgg800ogkogkc4",
+            "bk8cw0gkswgo04o0s88sk0kg,rowwocok08sgg800ogkogkc4",
+            '["bk8cw0gkswgo04o0s88sk0kg"]',
+            '{"destination_uuid":"bk8cw0gkswgo04o0s88sk0kg"}',
+            "https://coolify.example/destinations/bk8cw0gkswgo04o0s88sk0kg",
+            "/destinations/bk8cw0gkswgo04o0s88sk0kg",
+            "bk8cw0gkswgo04o0s88sk0kg?foo=bar",
+            "bk8cw0gkswgo04o0s88sk0kg#fragment",
+            "user:pass@bk8cw0gkswgo04o0s88sk0kg",
+            "bk8cw0gkswgo04o0s88sk0kg\n",
+            "bk8cw0gkswgo04o0s88sk0kg\t",
+            "bk8cw0gkswgo04o0s88sk0kg" + chr(1),
+            "a" * (op.COOLIFY_IDENTIFIER_MAX_LENGTH + 1),
+        )
+        for bad in bad_values:
+            with self.subTest(bad=bad):
+                with self.assertRaises(pp.ProvisioningError):
+                    op.validate_coolify_destination_identifier(bad)
+        text=Path(".github/workflows/product-development.yml").read_text()
+        self.assertRegex(text, r"destination_uuid:\n\s+required: true")
+        self.assertIn("default: localhost", text)
+        self.assertNotIn("default: development", text)
+
+    def test_not_checked_is_contextual_for_unrequested_deployments(self):
+        safe={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"not_requested","user_requested":False},"backend_runtime_readiness":{"status":"not_checked"},"backend_smoke_check":{"status":"not_checked"},"frontend_deployment":{"status":"not_requested","user_requested":False},"frontend_runtime_readiness":{"status":"not_checked"},"frontend_smoke_check":{"status":"not_checked"},"blockers":[]}
+        self.assertTrue(op.classify_plan_safety(safe)[0])
+        unsafe=dict(safe)
+        unsafe["backend_deployment"]={"status":"would_deploy","user_requested":True}
+        ok, blockers=op.classify_plan_safety(unsafe)
+        self.assertFalse(ok)
+        self.assertTrue(any(b.get("reason") == "not_checked_without_unrequested_deployment" for b in blockers))
+        self.assertNotIn("not_checked", op.SAFE_STATUSES)
 
     def test_execution_metadata_and_exit_codes(self):
         with mock.patch.dict(os.environ, env_for("deploy-backend","plan"), clear=True), mock.patch.object(op,"provision",return_value={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"would_deploy"}}):

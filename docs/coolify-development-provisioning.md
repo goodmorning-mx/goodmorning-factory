@@ -68,10 +68,12 @@ Stage 5 sets `instant_deploy=false`, `is_auto_deploy_enabled=false`, and `autoge
 
 Destination selection is conservative:
 
-- zero destinations on the selected server is a blocker;
-- exactly one destination is selected automatically;
-- multiple destinations require `--destination-uuid <uuid>`;
-- an explicit destination must belong to the selected server.
+- Stage 9 requires an explicit `--destination-uuid <coolify-destination-identifier>`;
+- obtain it from Coolify → Destinations → open the destination → copy the destination identifier from the URL;
+- do not infer it from `server.destinations`;
+- the current public Coolify API has no documented `GET /destinations`;
+- when `/servers` omits destinations, the identifier is treated as explicit operator input with `destination_scope_api_verified=false`;
+- when `/servers` includes a destinations collection, the explicit identifier must match that collection exactly.
 
 ## PostgreSQL precondition
 
@@ -286,3 +288,9 @@ Frontend deployment polling uses `GET /api/v1/deployments/{deployment_uuid}` wit
 Frontend smoke runs only after healthy runtime and targets exactly `https://dev.<product>.goodmorning.mx/`. Redirect final URL must remain HTTPS, same host, no port, path `/`, no query, no fragment, no credentials, no IP, and no localhost. TLS is not disabled. A valid response is HTTP 200, HTML Content-Type, non-empty bounded body, parseable HTML document, an actual `<html>` element, and an element with `id="root"`. `html_verified` means the document contains an HTML element; it is not merely a Content-Type check, and a fragment such as `<div id="root"></div>` fails. Output may include clean URL, status, HTTP status, `html_verified`, `root_element_verified`, attempts, and timeout, but never HTML body, fragments, full headers, deployment logs, `DATABASE_URL`, `internal_db_url`, tokens, or secrets.
 
 Stage 8 JSON output preserves Backend deployment, Backend runtime readiness, and Backend smoke fields and adds `frontend_deployment`, `frontend_runtime_readiness`, and `frontend_smoke_check`. Apply with `--deploy-frontend` succeeds only when Frontend deployment is `finished` and verified, Frontend runtime is healthy and verified, and Frontend smoke verifies HTML plus the root element. All other apply results are non-zero/partial or blocked. Dry-run performs zero POST/PATCH, zero public smoke, and zero live runtime verification; when structural preflight passes it may report `would_deploy` or `would_verify_backend_then_deploy` while leaving live checks planned/not checked and keeping the global status `dry_run`. Legacy Coolify Compose deployment documentation remains deprecated; Compose is local/CI-only.
+
+## Stage 9 live destination contract
+
+The first real Stage 9 `workflow_dispatch` against GoodMorning observed Coolify v4.1.2, while current upstream `v4.x` remains the moving HEAD used for API research. Primary-source review of upstream `v4.x` confirms that Application creation accepts `destination_uuid`, but the public API does not currently document `GET /destinations`; `GET /servers` and `GET /servers/{uuid}` are not relied on to provide a destinations collection. Therefore Stage 9 must not invent automatic destination discovery through undocumented endpoints.
+
+The manual workflow requires the operator to provide exactly one explicit opaque Coolify destination identifier in the `destination_uuid` field. Empty values, whitespace, comma-separated values, list/JSON shapes, URLs, paths, queries, fragments, credential-bearing values, control characters, excessive length, and unsafe identifier characters fail closed before planning. The length limit is defensive and is not a formal upstream guarantee. The same validated identifier is bound into both Backend and Frontend Application payload previews. Plan mode remains GET-only, performs zero POST/PATCH/PUT/DELETE calls, and an unsafe plan never passes to apply. `not_checked` runtime readiness and smoke statuses are acceptable only when the corresponding deployment was not requested; requested deployments with `not_checked` remain unsafe.

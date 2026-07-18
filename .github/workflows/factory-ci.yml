@@ -232,7 +232,7 @@ jobs:
               raise SystemExit('Backend env payload fields changed without updating CI contract')
           mode = pp.ExecutionMode('apply', 'ledger', 'ledger', True, True, 'ledger-postgres-dev', True, 'ledger-api-dev', True, 'ledger-api-dev')
           client = pp.CoolifyClient('https://coolify.example', 'unit-test-token', mode=mode)
-          client.bind_backend_application_uuid('api-1', {'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','destination_uuid':'dest-1','github_app_uuid':'app-1','git_repository':'goodmorning-mx/ledger'})
+          client.bind_backend_application_uuid('api-1', {'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','destination_uuid':'bk8cw0gkswgo04o0s88sk0kg','github_app_uuid':'app-1','git_repository':'goodmorning-mx/ledger'})
           client.bind_backend_env_contract(pp.desired_backend_env('ledger', 'postgresql+psycopg://user:pass@host/db'))
           client._check_request('POST', '/databases/db-1/start', post_kind='postgresql_start')
           for bad in ['/databases/db-1/restart', '/databases/db-1/stop', '/databases/db-1/start/extra']:
@@ -242,7 +242,7 @@ jobs:
                   pass
               else:
                   raise SystemExit(f'forbidden database lifecycle path was allowed: {bad}')
-          client.bind_backend_application_bindings({'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','destination_uuid':'dest-1','github_app_uuid':'app-1','git_repository':'goodmorning-mx/ledger'})
+          client.bind_backend_application_bindings({'project_uuid':'project-1','environment_uuid':'env-1','server_uuid':'server-1','destination_uuid':'bk8cw0gkswgo04o0s88sk0kg','github_app_uuid':'app-1','git_repository':'goodmorning-mx/ledger'})
           app_payload = pp.backend_create_payload(type('Args', (), {'product':'ledger', 'repository':'goodmorning-mx/ledger'})(), client.backend_application_bindings)
           client._check_request('POST', '/applications/private-github-app', post_kind='backend_application_create', json_body=app_payload)
           client._check_request('POST', '/applications/api-1/envs', post_kind='backend_env_create', json_body={'key':'APP_ENV','value':'dev','is_runtime':True,'is_buildtime':False,'is_preview':False,'is_literal':True,'is_multiline':False})
@@ -560,19 +560,19 @@ jobs:
           if op.expected_confirmation('deploy-full','ledger') != 'deploy-full:ledger:dev':
               raise SystemExit('confirmation contract changed')
           for operation in op.OPERATIONS:
-              argv = op.build_provisioner_argv(type('A', (), {'operation': operation, 'phase': 'plan', 'product': 'ledger', 'server': 'development', 'github_app': 'goodmorning-mx-coolify', 'destination_uuid': None, 'confirmation': None})())
+              argv = op.build_provisioner_argv(type('A', (), {'operation': operation, 'phase': 'plan', 'product': 'ledger', 'server': 'localhost', 'github_app': 'goodmorning-mx-coolify', 'destination_uuid': 'bk8cw0gkswgo04o0s88sk0kg', 'confirmation': None})())
               if '--dry-run' not in argv or '--apply' in argv:
                   raise SystemExit(f'phase=plan did not build dry-run for {operation}: {argv}')
-          if '--deploy-backend' not in op.build_provisioner_argv(type('A', (), {'operation': 'deploy-backend', 'phase': 'plan', 'product': 'ledger', 'server': 'development', 'github_app': 'goodmorning-mx-coolify', 'destination_uuid': None, 'confirmation': None})()):
+          if '--deploy-backend' not in op.build_provisioner_argv(type('A', (), {'operation': 'deploy-backend', 'phase': 'plan', 'product': 'ledger', 'server': 'localhost', 'github_app': 'goodmorning-mx-coolify', 'destination_uuid': 'bk8cw0gkswgo04o0s88sk0kg', 'confirmation': None})()):
               raise SystemExit('deploy-backend plan is not target-specific')
-          full_plan = op.build_provisioner_argv(type('A', (), {'operation': 'deploy-full', 'phase': 'plan', 'product': 'ledger', 'server': 'development', 'github_app': 'goodmorning-mx-coolify', 'destination_uuid': None, 'confirmation': None})())
+          full_plan = op.build_provisioner_argv(type('A', (), {'operation': 'deploy-full', 'phase': 'plan', 'product': 'ledger', 'server': 'localhost', 'github_app': 'goodmorning-mx-coolify', 'destination_uuid': 'bk8cw0gkswgo04o0s88sk0kg', 'confirmation': None})())
           if '--deploy-backend' not in full_plan or '--deploy-frontend' not in full_plan:
               raise SystemExit('deploy-full plan is not target-specific')
           if op.APPLY_TRUE_GATES['plan']:
               raise SystemExit('operation=plan must not allow apply gates')
           if 'COOLIFY_ALLOW_FRONTEND_DEPLOYMENT' in op.APPLY_TRUE_GATES['deploy-backend']:
               raise SystemExit('deploy-backend must not allow frontend deployment')
-          ok, _ = op.classify_plan_safety({'status':'dry_run','selected_destination':{'status':'found'},'resources':[{'status':'absent'}]})
+          ok, _ = op.classify_plan_safety({'status':'dry_run','selected_destination':{'status':'found'},'backend_deployment':{'status':'not_requested','user_requested':False},'backend_runtime_readiness':{'status':'not_checked'},'backend_smoke_check':{'status':'not_checked'},'resources':[{'status':'absent'}]})
           bad_blocker, _ = op.classify_plan_safety({'status':'dry_run','selected_destination':{'status':'found'},'blockers':[{'reason':'future_unknown'}]})
           bad_status, _ = op.classify_plan_safety({'status':'partial','selected_destination':{'status':'found'}})
           if not ok or bad_blocker or bad_status:
