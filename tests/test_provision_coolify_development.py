@@ -793,6 +793,27 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             ("POST", "/applications/private-github-app"), [(m, p) for m, p, _ in calls]
         )
 
+    def test_hydrate_application_merges_list_and_detail_fields(self):
+        with mock.patch.object(
+            pc,
+            "request",
+            return_value=pc.Response(
+                200,
+                {"uuid": "app-1", "docker_compose_raw": "services: {}"},
+                {},
+            ),
+        ):
+            hydrated = pc.hydrate_application(
+                {
+                    "uuid": "app-1",
+                    "name": "factory-smoke-test-dev",
+                    "git_repository": pc.DEFAULT_REPOSITORY,
+                }
+            )
+
+        self.assertEqual(hydrated["git_repository"], pc.DEFAULT_REPOSITORY)
+        self.assertEqual(hydrated["docker_compose_raw"], "services: {}")
+
     def test_real_creation_posts_once_when_dry_run_false(self):
         calls = []
         with mock.patch.object(
