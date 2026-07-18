@@ -141,6 +141,57 @@ class Stage9OrchestratorTests(unittest.TestCase):
             self.assertNotIn("postgres://", repr(blockers))
             self.assertNotIn("secret-value", repr(blockers).lower())
 
+    def test_stage9_real_plan_fixture_preserves_context_and_completes(self):
+        fixture={"status":"dry_run","selected_destination":{"status":"found"},"postgresql":{"status":"would_create","uuid":"${postgres.uuid}"},"postgresql_readiness":{"status":"would_start","reason":"postgresql_creation_planned"},"backend_application":{"status":"would_create","reason":"postgresql_dependency_planned"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"},"resources":[{"name":"ledger-postgres-dev","status":"would_create","provisioning":{"status":"would_create"}},{"name":"ledger-api-dev","status":"would_create","reason":"postgresql_dependency_planned","provisioning":{"status":"would_create","reason":"postgresql_dependency_planned"}},{"name":"ledger-frontend-dev","status":"planned_after_backend","reason":"backend_dependency_planned","provisioning":{"status":"planned_after_backend","reason":"backend_dependency_planned"}}],"backend_deployment":{"status":"not_requested","user_requested":False,"request_attempted":False,"write_performed":False,"write_outcome_unknown":False,"verified":False},"frontend_deployment":{"status":"not_requested","user_requested":False,"request_attempted":False,"write_performed":False,"write_outcome_unknown":False,"verified":False},"actions":[{"resource":"backend_deployment","action":"plan","status":"not_requested","request_attempted":False,"write_performed":False,"write_outcome_unknown":False,"verified":False},{"resource":"frontend_deployment","action":"plan","status":"not_requested","request_attempted":False,"write_performed":False,"write_outcome_unknown":False,"verified":False}],"blockers":[]}
+        ok, blockers=op.classify_plan_safety(fixture)
+        self.assertTrue(ok, blockers)
+        self.assertEqual(fixture["resources"][2]["reason"], "backend_dependency_planned")
+        with mock.patch.dict(os.environ, env_for("plan","plan"), clear=True), mock.patch.object(op,"provision",return_value=fixture):
+            code,result=op.orchestrate(oargs(operation="plan", phase="plan"), client_factory=lambda: object())
+        self.assertEqual(code,0)
+        self.assertEqual(result["plan_blockers"], [])
+        self.assertTrue(result["orchestration"]["plan_safe"])
+        self.assertEqual(result["orchestration"]["next_action"], "complete")
+
+    def test_stage9_frontend_resource_reason_must_be_exact_and_noncontradictory(self):
+        base={"status":"dry_run","selected_destination":{"status":"found"},"postgresql":{"status":"would_create","uuid":"${postgres.uuid}"},"postgresql_readiness":{"status":"would_start","reason":"postgresql_creation_planned"},"backend_application":{"status":"would_create","reason":"postgresql_dependency_planned"},"resources":[{"name":"ledger-frontend-dev","status":"planned_after_backend","provisioning":{"status":"planned_after_backend","reason":"backend_dependency_planned"}}],"blockers":[]}
+        for reason in (None, "", "application_dependency_planned"):
+            fixture={**base, "resources":[{**base["resources"][0]}]}
+            if reason is not None:
+                fixture["resources"][0]["reason"] = reason
+            ok, blockers=op.classify_plan_safety(fixture)
+            self.assertFalse(ok)
+            self.assertTrue(any(b.get("reason") == "planned_after_backend_reason_unverified" for b in blockers))
+        contradictory={**base, "resources":[{**base["resources"][0], "reason":"application_dependency_planned"}]}
+        ok, blockers=op.classify_plan_safety(contradictory)
+        self.assertFalse(ok)
+        self.assertTrue(blockers)
+
+    def test_stage9_deployment_action_not_requested_context_is_fail_closed(self):
+        def fixture(resource="backend_deployment", **action_updates):
+            top={"status":"not_requested","user_requested":False,"request_attempted":False,"write_performed":False,"write_outcome_unknown":False,"verified":False}
+            action={"resource":resource,"action":"plan","status":"not_requested","request_attempted":False,"write_performed":False,"write_outcome_unknown":False,"verified":False}
+            action.update(action_updates)
+            return {"status":"dry_run","selected_destination":{"status":"found"},resource:dict(top),"actions":[action],"blockers":[]}
+        self.assertTrue(op.classify_plan_safety(fixture("backend_deployment"))[0])
+        self.assertTrue(op.classify_plan_safety(fixture("frontend_deployment"))[0])
+        for bad in (
+            {"resource":"arbitrary_deployment"},
+            {"request_attempted":True},
+            {"write_performed":True},
+            {"write_outcome_unknown":True},
+        ):
+            ok, blockers=op.classify_plan_safety(fixture(**bad))
+            self.assertFalse(ok)
+            self.assertTrue(any(b.get("reason") == "not_requested_outside_deployment_context" for b in blockers))
+        requested=fixture()
+        requested["backend_deployment"]["user_requested"] = True
+        self.assertFalse(op.classify_plan_safety(requested)[0])
+        missing=fixture()
+        del missing["backend_deployment"]
+        self.assertFalse(op.classify_plan_safety(missing)[0])
+        outside={"status":"dry_run","selected_destination":{"status":"found"},"some_node":{"resource":"backend_deployment","status":"not_requested","request_attempted":False,"write_performed":False,"write_outcome_unknown":False,"verified":False},"backend_deployment":{"status":"not_requested","user_requested":False},"blockers":[]}
+        self.assertFalse(op.classify_plan_safety(outside)[0])
 
     def test_destination_identifier_validation_and_workflow_required(self):
         for valid in ("xs8e9kfps9c7dmes414gyt05", "bk8cw0gkswgo04o0s88sk0kg", "rowwocok08sgg800ogkogkc4"):
