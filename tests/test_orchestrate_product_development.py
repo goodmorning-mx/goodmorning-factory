@@ -90,7 +90,7 @@ class Stage9OrchestratorTests(unittest.TestCase):
             if oper == "deploy-full": self.assertLess(argv.index("--deploy-backend"), argv.index("--deploy-frontend"))
 
     def test_plan_classification_safe_and_fail_closed_fixtures(self):
-        safe={"status":"dry_run","selected_destination":{"status":"found"},"backend_application":{"status":"would_create"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"},"resources":[{"status":"absent"},{"status":"would_create"}],"blockers":[]}
+        safe={"status":"dry_run","selected_destination":{"status":"found"},"postgresql":{"status":"would_create","uuid":"${postgres.uuid}"},"postgresql_readiness":{"status":"would_start","reason":"postgresql_creation_planned"},"backend_application":{"status":"would_create","reason":"postgresql_dependency_planned"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"},"resources":[{"status":"absent"},{"status":"would_create"}],"blockers":[]}
         self.assertTrue(op.classify_plan_safety(safe)[0])
         safe_matched={"status":"dry_run","selected_destination":{"status":"found"},"project":{"status":"found","scope_details":[{"status":"matched"}]},"blockers":[]}
         self.assertTrue(op.classify_plan_safety(safe_matched)[0])
@@ -111,7 +111,7 @@ class Stage9OrchestratorTests(unittest.TestCase):
             {"status":"dry_run","selected_destination":{"status":"found"},"actions":[{"status":"write_outcome_unknown","write_outcome_unknown":True}]},
             {"status":"dry_run","selected_destination":{"status":"found"},"frontend_deployment":{"status":"blocked","blockers":[{"reason":"preflight_new"}]}},
             {"status":"dry_run","selected_destination":{"status":"found"},"resources":[{"status":"mystery"}]},
-            {"status":"dry_run","selected_destination":{"status":"found"},"backend_application":{"status":"incompatible"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"}},
+            {"status":"dry_run","selected_destination":{"status":"found"},"postgresql":{"status":"would_create","uuid":"${postgres.uuid}"},"postgresql_readiness":{"status":"would_start","reason":"postgresql_creation_planned"},"backend_application":{"status":"incompatible"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"}},
             {"status":"dry_run","selected_destination":{"status":"found"},"project":{"status":"found","scope_details":[{"status":"matched"},{"status":"mismatch"}]}},
             {"status":"exists","selected_destination":{"status":"found"}},
             {"status":"created","selected_destination":{"status":"found"}},
@@ -124,7 +124,7 @@ class Stage9OrchestratorTests(unittest.TestCase):
 
 
     def test_planned_after_backend_requires_explicit_safe_backend_evidence(self):
-        positive={"status":"dry_run","selected_destination":{"status":"found"},"backend_application":{"status":"would_create"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"},"blockers":[]}
+        positive={"status":"dry_run","selected_destination":{"status":"found"},"postgresql":{"status":"would_create","uuid":"${postgres.uuid}"},"postgresql_readiness":{"status":"would_start","reason":"postgresql_creation_planned"},"backend_application":{"status":"would_create","reason":"postgresql_dependency_planned"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"},"blockers":[]}
         self.assertTrue(op.classify_plan_safety(positive)[0])
         negative_cases=[
             {"status":"dry_run","selected_destination":{"status":"found"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"}},

@@ -1751,6 +1751,9 @@ def poll_postgresql_readiness(client: CoolifyClient, uuid: str, *, timeout: floa
 
 def ensure_postgresql_ready(client: CoolifyClient, args: argparse.Namespace, postgres: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]], *, sleeper: Callable[[float], None] | None = None) -> dict[str, Any]:
     uuid = postgres.get("uuid")
+    if not mode.is_apply and postgres.get("status") == "would_create" and postgres.get("name") == f"{args.product}-postgres-dev" and uuid:
+        actions.append(ActionRecord("postgresql", "plan_start", "would_start", verified=False).to_dict())
+        return readiness_result("would_start", uuid, reason="postgresql_creation_planned")
     blockers = postgresql_start_preconditions(args, postgres)
     if blockers:
         return readiness_result("blocked", uuid)
@@ -1955,9 +1958,33 @@ def postgres_driver_url(client: CoolifyClient, postgres: dict[str, Any]) -> str 
     return prepare_psycopg_database_url(raw)
 
 
-def postgres_backend_precondition(client: CoolifyClient, args: argparse.Namespace, postgres: dict[str, Any], readiness: dict[str, Any]) -> tuple[bool, list[dict[str, Any]], str | None]:
+def postgresql_backend_plan_precondition(args: argparse.Namespace, postgres: dict[str, Any], readiness: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
+    blockers = []
+    expected_name = f"{args.product}-postgres-dev"
+    pg_status = postgres.get("status")
+    ready_status = readiness.get("status")
+    if postgres.get("name") != expected_name or not postgres.get("uuid"):
+        blockers.append({"resource": "postgresql", "reason": "identity_or_compatibility_unverified"})
+    if pg_status == "would_create":
+        if ready_status != "would_start" or readiness.get("reason") != "postgresql_creation_planned":
+            blockers.append({"resource": "postgresql_readiness", "reason": "postgresql_creation_plan_unverified"})
+    elif pg_status in {"exists", "created"}:
+        if ready_status in {"unhealthy", "readiness_unverified", "timeout", "partial", "blocked"}:
+            blockers.append({"resource": "postgresql_readiness", "reason": ready_status})
+    else:
+        blockers.append({"resource": "postgresql", "reason": f"postgresql_status_{pg_status}"})
+    if postgres.get("write_outcome_unknown") or readiness.get("write_outcome_unknown"):
+        blockers.append({"resource": "postgresql", "reason": "write_outcome_unknown"})
+    if postgres.get("blockers") or readiness.get("blockers"):
+        blockers.append({"resource": "postgresql", "reason": "blockers_present"})
+    if not all(postgres.get(key) for key in ("uuid",)):
+        blockers.append({"resource": "postgresql", "reason": "identity_or_compatibility_unverified"})
+    return (not blockers), blockers
+
+
+def postgres_backend_live_precondition(client: CoolifyClient, args: argparse.Namespace, postgres: dict[str, Any], readiness: dict[str, Any]) -> tuple[bool, list[dict[str, Any]], str | None]:
     blockers=[]; url=None
-    if postgres.get("name") != f"{args.product}-postgres-dev" or postgres.get("status") not in {"exists","created"}:
+    if postgres.get("name") != f"{args.product}-postgres-dev" or postgres.get("status") not in {"exists","created"} or not postgres.get("uuid"):
         blockers.append({"resource":"postgresql","reason":"identity_or_compatibility_unverified"})
     if readiness.get("status") not in {"healthy","already_healthy"}:
         blockers.append({"resource":"postgresql","reason":"not_healthy"})
@@ -1965,10 +1992,16 @@ def postgres_backend_precondition(client: CoolifyClient, args: argparse.Namespac
         blockers.append({"resource":"postgresql","reason":"internal_db_url_unavailable"})
     if not readiness.get("database_url_driver_ready"):
         blockers.append({"resource":"postgresql","reason":"database_url_driver_not_ready"})
+    if readiness.get("write_outcome_unknown") or postgres.get("write_outcome_unknown"):
+        blockers.append({"resource":"postgresql","reason":"write_outcome_unknown"})
     if not blockers:
         try: url=postgres_driver_url(client, postgres)
         except ProvisioningError: blockers.append({"resource":"postgresql","reason":"database_url_driver_not_ready"})
     return (not blockers), blockers, url
+
+
+def postgres_backend_precondition(client: CoolifyClient, args: argparse.Namespace, postgres: dict[str, Any], readiness: dict[str, Any]) -> tuple[bool, list[dict[str, Any]], str | None]:
+    return postgres_backend_live_precondition(client, args, postgres, readiness)
 
 
 def ensure_backend_application(client: CoolifyClient, args: argparse.Namespace, context: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]], precondition_ok: bool) -> dict[str, Any]:
@@ -1993,7 +2026,7 @@ def ensure_backend_application(client: CoolifyClient, args: argparse.Namespace, 
         return {"name": backend_application_name(args.product), "status":"blocked"}
     if not mode.is_apply:
         actions.append(ActionRecord("backend_application","plan_create","would_create").to_dict())
-        return {"name": backend_application_name(args.product), "status":"would_create", "create_payload_preview": backend_payload_preview(backend_create_payload(args,context))}
+        return {"name": backend_application_name(args.product), "status":"would_create", "reason": "postgresql_dependency_planned", "create_payload_preview": backend_payload_preview(backend_create_payload(args,context))}
     if not mode.backend_application_writes_enabled:
         return {"name": backend_application_name(args.product), "status":"blocked", "reason":"backend_application_gates_incomplete"}
     payload=backend_create_payload(args,context); actions.append(ActionRecord("backend_application","attempt_create","attempted").to_dict())
@@ -3144,8 +3177,23 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         "bindings": context,
         "existing_resources": discover_existing_resources(client, args.product, context, args),
     }
-    precondition_ok, pg_blockers, database_url = postgres_backend_precondition(client, args, postgres, postgresql_readiness)
-    blockers.extend(pg_blockers if mode.is_apply else [])
+    if mode.is_apply:
+        precondition_ok, pg_blockers, database_url = postgres_backend_live_precondition(client, args, postgres, postgresql_readiness)
+        blockers.extend(pg_blockers)
+    else:
+        precondition_ok, pg_blockers = postgresql_backend_plan_precondition(args, postgres, postgresql_readiness)
+        database_url = None
+        if precondition_ok and postgres.get("status") in {"exists", "created"} and postgresql_readiness.get("internal_db_url_available") and postgresql_readiness.get("database_url_driver_ready"):
+            try:
+                database_url = postgres_driver_url(client, postgres)
+            except ProvisioningError:
+                precondition_ok = False
+                pg_blockers.append({"resource": "postgresql", "reason": "database_url_driver_not_ready"})
+        blockers.extend(pg_blockers)
+    if not all(context.get(key) for key in ("project_uuid", "environment_uuid", "server_uuid", "github_app_uuid", "destination_uuid")):
+        precondition_ok = False
+        if not mode.is_apply:
+            blockers.append({"resource": "backend_application", "reason": "binding_unverified"})
     backend = ensure_backend_application(client, args, context, mode, actions, precondition_ok)
     if backend.get("status") in {"duplicate", "compatibility_unverified", "scope_unverified", "recreate_required", "blocked", "created_unverified", "write_outcome_unknown"}:
         blockers.append({"resource": "backend_application", "status": backend.get("status")})
