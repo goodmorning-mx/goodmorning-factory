@@ -19,7 +19,7 @@ Compose remains local/CI-only for the factory baseline and legacy migration cont
 
 ## Operations
 
-- `plan`: dry-run only. It is GET-only against Coolify, performs no public runtime/smoke checks, and exits successfully only when the structural plan is safe.
+- `plan`: dry-run only. It is GET-only against Coolify, performs no public runtime/smoke checks, and exits successfully only when the structural plan is safe. For a new product, this can include future dependency states such as PostgreSQL `would_create`, PostgreSQL readiness `would_start`, Backend `would_create`, Backend env `planned`, and Frontend `planned_after_backend`; it does not mean PostgreSQL is already healthy or running.
 - `provision`: converges Project, `dev` environment, PostgreSQL, PostgreSQL readiness, Backend Application/env, and Frontend Application/env. It does not deploy Backend or Frontend.
 - `deploy-backend`: runs all provisioning convergence, then deploys Backend, waits for deployment/runtime readiness, and performs Backend smoke. It never deploys Frontend.
 - `deploy-full`: runs all provisioning convergence, deploys Backend first, verifies Backend runtime/smoke, deploys Frontend second, and verifies Frontend runtime/smoke.
@@ -51,7 +51,7 @@ Unexpected true gates fail closed; required missing gates fail closed.
 
 A plan is safe when resources are compatible/existing or absent with planned `would_create`, `would_start`, or `would_deploy` actions. It is unsafe for duplicates, incompatible resources, recreate requirements, out-of-scope resources, scope or compatibility unverified states, legacy Compose migration requirements, ambiguous/missing destinations, ambiguous project/environment/server/GitHub App identity, identity contradictions, UUID ambiguity, created-unverified or write-outcome-unknown states.
 
-Mutating workflow runs always execute a separate `--phase plan` for the selected target operation before `--phase apply`. The apply phase re-discovers current state and fails closed independently; it does not trust the previous JSON blindly.
+Mutating workflow runs always execute a separate `--phase plan` for the selected target operation before `--phase apply`. The apply phase re-discovers current state and fails closed independently; it does not trust the previous JSON blindly. Apply keeps the live sequence strict: create/reuse PostgreSQL, start it when explicitly authorized, wait for healthy readiness, verify the private internal DB URL, derive the driver URL only in memory, then create/configure Backend and finally Frontend.
 
 ## GitHub Environment `dev`
 

@@ -199,12 +199,30 @@ def _is_decision_path(path: tuple[str, ...]) -> bool:
 
 
 BACKEND_PLAN_SAFE_STATUSES = {"absent", "would_create", "planned", "exists", "found", "created"}
+POSTGRESQL_BACKEND_PLAN_STATUSES = {"would_create", "exists", "created"}
+POSTGRESQL_READINESS_PLAN_STATUSES = {"would_start", "healthy", "already_healthy"}
+
+
+def _postgresql_plan_safe_for_backend(result: dict[str, Any]) -> bool:
+    postgres = result.get("postgresql")
+    readiness = result.get("postgresql_readiness")
+    if not isinstance(postgres, dict) or not isinstance(readiness, dict):
+        return False
+    if postgres.get("blockers") or readiness.get("blockers"):
+        return False
+    if postgres.get("status") not in POSTGRESQL_BACKEND_PLAN_STATUSES:
+        return False
+    if postgres.get("status") == "would_create":
+        return bool(postgres.get("uuid")) and readiness.get("status") == "would_start" and readiness.get("reason") == "postgresql_creation_planned"
+    return readiness.get("status") in POSTGRESQL_READINESS_PLAN_STATUSES
 
 
 def _backend_plan_safe_for_frontend(result: dict[str, Any]) -> bool:
     backend = result.get("backend_application")
     if isinstance(backend, dict):
-        return backend.get("status") in BACKEND_PLAN_SAFE_STATUSES and not backend.get("blockers")
+        if backend.get("status") == "would_create" and backend.get("reason") != "postgresql_dependency_planned":
+            return False
+        return backend.get("status") in BACKEND_PLAN_SAFE_STATUSES and not backend.get("blockers") and _postgresql_plan_safe_for_backend(result)
     for resource in result.get("resources", []) if isinstance(result.get("resources"), list) else []:
         if isinstance(resource, dict) and str(resource.get("name", "")).endswith("-api-dev"):
             return resource.get("status") in BACKEND_PLAN_SAFE_STATUSES and not resource.get("blockers")
@@ -222,6 +240,11 @@ def classify_plan_safety(result: dict[str, Any]) -> tuple[bool, list[dict[str, A
         reason = str(node.get("reason", "")) if "reason" in node else ""
         if isinstance(node.get("blockers"), list) and node.get("blockers"):
             blockers.append(_safe_blocker(path + ("blockers",), node, "blockers_present"))
+        if path and path[-1] == "backend_application" and status == "would_create":
+            if reason != "postgresql_dependency_planned":
+                blockers.append(_safe_blocker(path, node, "backend_postgresql_dependency_reason_unverified"))
+            if not _postgresql_plan_safe_for_backend(result):
+                blockers.append(_safe_blocker(path, node, "backend_postgresql_dependency_not_safe"))
         if status == "planned_after_backend":
             dependency_reason = str(node.get("reason") or "")
             if dependency_reason != "backend_dependency_planned":

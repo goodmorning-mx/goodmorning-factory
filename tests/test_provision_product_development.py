@@ -2430,3 +2430,51 @@ class Stage8FrontendDeploymentTests(Stage6FrontendApplicationTests):
                             self.assertEqual(r["frontend_deployment"]["status"], "not_requested")
                 backend_smoke.assert_not_called(); frontend_smoke.assert_not_called()
                 self.assertFalse(any(call[0]=="POST" and call[1]=="/deploy" for call in c.calls))
+
+class Stage9PostgresqlDependencyPlanningTests(unittest.TestCase):
+    def new_product_client(self, **overrides):
+        payloads = {
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"bk8cw0gkswgo04o0s88sk0kg", "name":"docker"}]}],
+            "/github-apps": {"github_apps": [{"uuid": "app-1", "name": "goodmorning-mx-coolify"}]},
+            "/applications": [],
+            "/databases": [],
+        }
+        payloads.update(overrides)
+        return FakeClient(payloads)
+
+    def test_stage9_new_product_dry_run_plans_postgresql_backend_frontend_get_only(self):
+        client = self.new_product_client()
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["status"], "dry_run")
+        self.assertEqual(result["blockers"], [])
+        self.assertEqual(result["postgresql"]["status"], "would_create")
+        self.assertEqual(result["postgresql_readiness"]["status"], "would_start")
+        self.assertEqual(result["postgresql_readiness"]["reason"], "postgresql_creation_planned")
+        self.assertFalse(result["postgresql_readiness"]["request_attempted"])
+        self.assertFalse(result["postgresql_readiness"]["write_performed"])
+        self.assertFalse(result["postgresql_readiness"]["internal_db_url_available"])
+        self.assertFalse(result["postgresql_readiness"]["database_url_driver_ready"])
+        self.assertEqual(result["backend_application"]["status"], "would_create")
+        self.assertEqual(result["backend_application"]["reason"], "postgresql_dependency_planned")
+        self.assertEqual(result["backend_application"]["create_payload_preview"]["destination_uuid"], "bk8cw0gkswgo04o0s88sk0kg")
+        self.assertEqual(result["backend_environment"], {"status": "planned", "variables": [], "blockers": []})
+        self.assertEqual(result["frontend_application"]["status"], "planned_after_backend")
+        self.assertEqual(result["frontend_application"]["reason"], "backend_dependency_planned")
+        self.assertFalse(any(call[0] in {"POST", "PATCH"} for call in client.calls))
+        self.assertFalse(any(call[1] == "/databases/${postgres.uuid}" for call in client.calls))
+        self.assertFalse(any(call[1].endswith("/start") for call in client.calls))
+
+    def test_stage9_postgresql_unsafe_plan_statuses_block_backend(self):
+        db = {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"running:unhealthy"}
+        unsafe_cases = ([db, {**db, "uuid":"db-2"}], [{**db, "version":"15"}], [{**db, "project_uuid":"other"}], [db])
+        for databases in unsafe_cases:
+            client = self.new_product_client(**{"/databases": databases, "/databases/db-1": db})
+            if len(databases) > 1:
+                with self.assertRaises(pp.ProvisioningError):
+                    pp.provision(args(), client_factory=lambda: client)
+                continue
+            result = pp.provision(args(), client_factory=lambda: client)
+            self.assertNotEqual(result["backend_application"].get("status"), "would_create")
+            self.assertTrue(result["blockers"])
