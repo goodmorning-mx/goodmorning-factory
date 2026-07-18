@@ -153,6 +153,37 @@ class Stage9OrchestratorTests(unittest.TestCase):
         self.assertTrue(result["orchestration"]["plan_safe"])
         self.assertEqual(result["orchestration"]["next_action"], "complete")
 
+
+    def test_stage9_scope_details_api_omitted_is_audit_metadata_only(self):
+        fixture={"status":"dry_run","selected_destination":{"status":"found"},"postgresql":{"name":"ledger-postgres-dev","uuid":"db123","status":"exists","scope_api_verified":False,"project_scope_api_present":False,"environment_scope_api_present":False,"server_scope_api_matched":True,"scope_details":[{"field":"project_uuid","status":"api_omitted"},{"field":"environment_uuid","status":"api_omitted"},{"field":"server_uuid","status":"matched"}]},"postgresql_readiness":{"status":"would_start","reason":"verified_factory_postgresql_requires_start"},"backend_application":{"status":"would_create","reason":"postgresql_dependency_planned"},"frontend_application":{"status":"planned_after_backend","reason":"backend_dependency_planned"},"plan_blockers":[],"blockers":[]}
+        ok, blockers=op.classify_plan_safety(fixture)
+        self.assertTrue(ok, blockers)
+        self.assertEqual(fixture["postgresql"]["status"], "exists")
+        self.assertFalse(fixture["postgresql"]["scope_api_verified"])
+        self.assertEqual(fixture["postgresql"]["scope_details"][0]["status"], "api_omitted")
+        with mock.patch.dict(os.environ, env_for("provision","plan"), clear=True), mock.patch.object(op,"provision",return_value=fixture):
+            code,result=op.orchestrate(oargs(operation="provision", phase="plan"), client_factory=lambda: object())
+        self.assertEqual(code,0)
+        self.assertEqual(result["plan_blockers"], [])
+        self.assertTrue(result["orchestration"]["plan_safe"])
+        self.assertEqual(result["orchestration"]["next_action"], "apply")
+        self.assertNotIn("api_omitted", op.SAFE_STATUSES)
+
+    def test_stage9_api_omitted_blocks_operational_statuses(self):
+        base={"status":"dry_run","selected_destination":{"status":"found"},"blockers":[]}
+        cases=(
+            {"resources":[{"name":"ledger-postgres-dev","status":"api_omitted"}]},
+            {"actions":[{"resource":"postgresql","action":"create","status":"api_omitted"}]},
+            {"postgresql_readiness":{"status":"api_omitted"}},
+            {"backend_deployment":{"status":"api_omitted"}},
+            {"resources":[{"name":"ledger-postgres-dev","status":"exists","provisioning":{"status":"api_omitted"}}]},
+        )
+        for update in cases:
+            fixture={**base, **update}
+            ok, blockers=op.classify_plan_safety(fixture)
+            self.assertFalse(ok, fixture)
+            self.assertTrue(any(b.get("reason") == "unknown_status:api_omitted" for b in blockers), blockers)
+
     def test_stage9_frontend_resource_reason_must_be_exact_and_noncontradictory(self):
         base={"status":"dry_run","selected_destination":{"status":"found"},"postgresql":{"status":"would_create","uuid":"${postgres.uuid}"},"postgresql_readiness":{"status":"would_start","reason":"postgresql_creation_planned"},"backend_application":{"status":"would_create","reason":"postgresql_dependency_planned"},"resources":[{"name":"ledger-frontend-dev","status":"planned_after_backend","provisioning":{"status":"planned_after_backend","reason":"backend_dependency_planned"}}],"blockers":[]}
         for reason in (None, "", "application_dependency_planned"):
