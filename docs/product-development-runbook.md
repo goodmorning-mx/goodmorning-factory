@@ -101,3 +101,9 @@ Stage 9 requires an explicit opaque Coolify destination identifier in `destinati
 The plan output records `selection_source=explicit_operator_input`, `destination_uuid_present=true`, and, when the API response cannot prove server scope, `destination_scope_api_verified=false` with `scope_verification_reason=public_api_does_not_expose_destination_listing`. That explicit operator confirmation is enough to build a dry-run plan, but it is not reported as API scope verification.
 
 `operation=plan` is always GET-only and never performs provisioning, deployment, start/restart/stop/cancel/rollback, or other writes. An unsafe plan never proceeds to apply. Runtime readiness and smoke statuses of `not_checked` are safe only when the corresponding deployment was not requested; if deployment was requested, `not_checked` remains unsafe.
+
+### PostgreSQL discovery and first-start readiness
+
+For product development provisioning, discovery and provisioning now share the same canonical PostgreSQL classification. If Coolify omits project/environment scope for a Factory-managed private PostgreSQL 16 database, the plan may still classify the same UUID as `exists` everywhere when server identity and Factory metadata are verified; omitted scope is documented with explicit audit booleans instead of nested `status=unverified` entries.
+
+If a freshly created native PostgreSQL appears as exactly `exited:unhealthy`, operators should treat the dry-run `would_start` result as a planned first controlled start, not as a live write. Apply is allowed to send one `POST /databases/{uuid}/start` only when all identity and start gates are complete. If that start fails, times out, or remains `exited:unhealthy`, do not retry automatically and do not rollback/delete/recreate the database; investigate manually. `running:unhealthy` and `failed` remain terminal blockers.
