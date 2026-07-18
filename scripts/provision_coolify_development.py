@@ -777,6 +777,24 @@ def application_summary(application: dict[str, Any]) -> dict[str, Any]:
     return {"uuid": field(data, "uuid", "id"), "name": field(data, "name")}
 
 
+def hydrate_application(application: dict[str, Any]) -> dict[str, Any]:
+    application_uuid = field(application, "uuid", "id")
+    if not application_uuid:
+        raise ProvisioningError(
+            "Coolify application listing omitted the identifier required to load its full configuration."
+        )
+    response = request("GET", f"/applications/{application_uuid}")
+    details = (
+        response.data.get("data")
+        if isinstance(response.data, dict)
+        and isinstance(response.data.get("data"), dict)
+        else response.data
+    )
+    if not isinstance(details, dict):
+        raise ProvisioningError("Malformed Coolify application details response.")
+    return {**application, **details}
+
+
 def reconcile_application_domains(
     application_uuid: Any, args: argparse.Namespace
 ) -> dict[str, Any]:
@@ -999,6 +1017,8 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         github_apps, args.coolify_github_app_name, args.repository
     )
     existing = existing_application(applications, args)
+    if existing is not None and not args.dry_run:
+        existing = hydrate_application(existing)
     payload = creation_payload(args, project, coolify_environment, server, github_app)
     result = {
         "status": "exists" if existing else ("dry_run" if args.dry_run else "created"),
@@ -1081,6 +1101,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         return result
     created, application_created = create_application(payload, args)
     if not application_created:
+        created = hydrate_application(created)
         if not application_deployment_source_configured(
             created, args, coolify_environment, github_app
         ):
