@@ -54,6 +54,8 @@ jobs:
     env:
       COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
       COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_DESTINATION_UUID }}
       DEVELOPMENT_DOMAIN: ${{ inputs.domain }}
       COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
     steps:
@@ -72,6 +74,16 @@ jobs:
 
           if [ -z "${COOLIFY_API_TOKEN:-}" ]; then
             echo "COOLIFY_API_TOKEN repository secret is required."
+            exit 1
+          fi
+
+          if [ -z "${COOLIFY_SERVER_NAME:-}" ]; then
+            echo "COOLIFY_SERVER_NAME repository variable is required."
+            exit 1
+          fi
+
+          if [ -z "${COOLIFY_DESTINATION_UUID:-}" ]; then
+            echo "COOLIFY_DESTINATION_UUID repository variable is required."
             exit 1
           fi
 
@@ -107,6 +119,8 @@ jobs:
             --compose "${{ inputs.compose }}" \
             --domain "${{ inputs.domain }}" \
             --coolify-github-app-name "${{ inputs.coolify_github_app_name }}" \
+            --server "${COOLIFY_SERVER_NAME}" \
+            --destination-uuid "${COOLIFY_DESTINATION_UUID}" \
             --deploy "${{ inputs.deploy }}" | tee "${output_file}"
 
           if python - "${output_file}" <<'PY'
