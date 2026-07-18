@@ -1,6 +1,13 @@
 name: Provision Coolify development environment
 
 on:
+  push:
+    branches:
+      - dev
+    paths:
+      - 'products/*.json'
+      - 'scripts/provision_coolify_development.py'
+      - '.github/workflows/provision-coolify-development.yml'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -54,8 +61,8 @@ jobs:
     env:
       COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
       COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
-      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME }}
-      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_DESTINATION_UUID }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'development' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_DESTINATION_UUID || 'bk8cw0gkswgo04o0s88sk0kg' }}
       DEVELOPMENT_DOMAIN: ${{ inputs.domain }}
       COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
     steps:
@@ -77,34 +84,25 @@ jobs:
             exit 1
           fi
 
-          if [ -z "${COOLIFY_SERVER_NAME:-}" ]; then
-            echo "COOLIFY_SERVER_NAME repository variable is required."
-            exit 1
-          fi
-
-          if [ -z "${COOLIFY_DESTINATION_UUID:-}" ]; then
-            echo "COOLIFY_DESTINATION_UUID repository variable is required."
-            exit 1
-          fi
-
           echo "::add-mask::${COOLIFY_API_TOKEN}"
 
-          if [ "${{ inputs.branch }}" != "dev" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.branch }}" != "dev" ]; then
             echo "This workflow only provisions development from the dev branch."
             exit 1
           fi
 
-          if [[ "${DEVELOPMENT_DOMAIN}" != dev.* ]]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [[ "${DEVELOPMENT_DOMAIN}" != dev.* ]]; then
             echo "Development domains must start with dev.; production domains are not allowed."
             exit 1
           fi
 
-          if [ "${{ inputs.deploy }}" = "true" ] && [ "${COOLIFY_ALLOW_REAL_DEPLOYMENT:-}" != "true" ]; then
+          if { [ "${{ github.event_name }}" = "push" ] || [ "${{ inputs.deploy }}" = "true" ]; } && [ "${COOLIFY_ALLOW_REAL_DEPLOYMENT:-}" != "true" ]; then
             echo "Set repository variable COOLIFY_ALLOW_REAL_DEPLOYMENT=true before requesting a real Coolify deployment."
             exit 1
           fi
 
       - name: Discover and optionally provision Coolify resource
+        if: github.event_name == 'workflow_dispatch'
         shell: bash
         run: |
           set -euo pipefail
@@ -143,3 +141,39 @@ jobs:
             echo "Coolify provisioning returned status=recreate_required or manual_review_required; failing workflow."
             exit 1
           fi
+
+      - name: Reconcile development products from catalog
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+
+          shopt -s nullglob
+          manifests=(products/*.json)
+          if [ "${#manifests[@]}" -eq 0 ]; then
+            echo "No product manifests found."
+            exit 1
+          fi
+
+          for manifest in "${manifests[@]}"; do
+            product="$(jq -er '.product' "${manifest}")"
+            repository="$(jq -er '.repository' "${manifest}")"
+            branch="$(jq -er '.branch // "dev"' "${manifest}")"
+            compose="$(jq -er '.compose // "/compose.yaml"' "${manifest}")"
+            domain="$(jq -er '.development_domain' "${manifest}")"
+            github_app="$(jq -er '.coolify_github_app_name // "goodmorning-mx-coolify"' "${manifest}")"
+
+            echo "Reconciling ${product} from ${manifest}"
+            python scripts/provision_coolify_development.py \
+              --dry-run false \
+              --product "${product}" \
+              --repository "${repository}" \
+              --branch "${branch}" \
+              --compose "${compose}" \
+              --domain "${domain}" \
+              --coolify-github-app-name "${github_app}" \
+              --server "${COOLIFY_SERVER_NAME}" \
+              --destination-uuid "${COOLIFY_DESTINATION_UUID}" \
+              --deploy true
+          done
