@@ -744,8 +744,17 @@ def is_private_repository(repository: str) -> bool:
     return repository.lower().startswith("goodmorning-mx/")
 
 
-def git_repository_url(repository: str) -> str:
-    return f"https://github.com/{repository.strip().removesuffix('.git')}"
+def git_repository_slug(repository: str) -> str:
+    """Return the owner/repository identifier expected by Coolify's GitHub App."""
+    value = repository.strip().removesuffix(".git")
+    for prefix in (
+        "https://github.com/",
+        "http://github.com/",
+        "git@github.com:",
+    ):
+        if value.startswith(prefix):
+            return value.removeprefix(prefix).strip("/")
+    return value.strip("/")
 
 
 def is_public_github_source(source: dict[str, Any]) -> bool:
@@ -806,7 +815,7 @@ def domain_patch_payload(args: argparse.Namespace) -> dict[str, Any]:
 
 def source_patch_payload(args: argparse.Namespace) -> dict[str, Any]:
     return {
-        "git_repository": git_repository_url(args.repository),
+        "git_repository": git_repository_slug(args.repository),
         "git_branch": args.branch,
         "build_pack": "dockercompose",
         "base_directory": "/",
@@ -988,7 +997,7 @@ def creation_payload(
         "environment_uuid": field(coolify_environment, "uuid", "id"),
         "destination_uuid": args.destination_uuid,
         "github_app_uuid": github_app_uuid(github_app),
-        "git_repository": git_repository_url(args.repository),
+        "git_repository": git_repository_slug(args.repository),
         "git_branch": args.branch,
         "build_pack": "dockercompose",
         "base_directory": "/",
