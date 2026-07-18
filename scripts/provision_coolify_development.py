@@ -393,6 +393,39 @@ def deployment_failed(status: str) -> bool:
     return status in {"failed", "failure", "error", "cancelled", "canceled"}
 
 
+def deployment_failure_summary(data: Any) -> str | None:
+    token = os.environ.get("COOLIFY_API_TOKEN", "")
+    error_lines: list[str] = []
+    for value in scalar_values(data):
+        for line in value.splitlines():
+            lowered = line.lower()
+            if not any(
+                marker in lowered
+                for marker in ("error", "failed", "failure", "fatal", "exit code")
+            ):
+                continue
+            sanitized = line.strip()
+            if token:
+                sanitized = sanitized.replace(token, "***")
+            sanitized = re.sub(
+                r"([a-z][a-z0-9+.-]*://[^:/\s]+:)[^@\s]+(@)",
+                r"\1***\2",
+                sanitized,
+                flags=re.IGNORECASE,
+            )
+            sanitized = re.sub(
+                r"((?:password|token|secret|private[_-]?key)\s*[=:]\s*)\S+",
+                r"\1***",
+                sanitized,
+                flags=re.IGNORECASE,
+            )
+            if sanitized and sanitized not in error_lines:
+                error_lines.append(sanitized)
+    if not error_lines:
+        return None
+    return "\n".join(error_lines[-20:])[-4000:]
+
+
 def queue_deployment(application_uuid: Any) -> dict[str, Any]:
     if not application_uuid:
         raise ProvisioningError(
@@ -413,8 +446,10 @@ def wait_for_deployment(deployment_uuid: Any) -> dict[str, Any]:
         if deployment_succeeded(last_status):
             return {"uuid": deployment_uuid, "status": last_status}
         if deployment_failed(last_status):
+            summary = deployment_failure_summary(data)
+            detail = f"\n{summary}" if summary else ""
             raise ProvisioningError(
-                f"Coolify deployment {deployment_uuid} failed with status {last_status}.",
+                f"Coolify deployment {deployment_uuid} failed with status {last_status}.{detail}",
                 code=2,
             )
         if time.monotonic() >= deadline:
