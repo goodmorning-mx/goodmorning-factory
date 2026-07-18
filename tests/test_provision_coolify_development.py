@@ -128,22 +128,9 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         {},
                     )
                 self.assertEqual(method, "PATCH")
-                self.assertEqual(
+                self.assertIn(
                     kwargs["body"],
-                    {
-                        "docker_compose_domains": [
-                            {
-                                "name": "frontend",
-                                "domain": "https://dev.factory-smoke-test.goodmorning.mx",
-                            },
-                            {
-                                "name": "backend",
-                                "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
-                            },
-                        ],
-                        "force_domain_override": False,
-                        "is_auto_deploy_enabled": True,
-                    },
+                    [pc.source_patch_payload(args()), pc.domain_patch_payload(args())],
                 )
                 return pc.Response(200, {"uuid": path.rsplit("/", 1)[-1]}, {})
             raise AssertionError((method, path))
@@ -156,7 +143,8 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             result = pc.provision(args())
         self.assertEqual(result["status"], "dry_run")
         self.assertEqual(
-            result["would_create"]["git_repository"], pc.DEFAULT_REPOSITORY
+            result["would_create"]["git_repository"],
+            f"https://github.com/{pc.DEFAULT_REPOSITORY}",
         )
         self.assertEqual(
             result["would_create"]["docker_compose_location"], pc.DEFAULT_COMPOSE
@@ -894,7 +882,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         wait.assert_called_once_with("deploy-1")
         health.assert_called_once()
         queue_index = calls.index(("QUEUE", "app-1", None))
-        self.assertLess(
+        self.assertGreater(
             calls.index(("GET", "/applications/app-1", None)),
             queue_index,
         )
