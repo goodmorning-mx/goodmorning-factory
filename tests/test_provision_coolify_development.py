@@ -22,6 +22,8 @@ def args(**kw):
         dry_run=True,
         deploy=False,
         coolify_github_app_name=pc.DEFAULT_COOLIFY_GITHUB_APP_NAME,
+        server=pc.DEFAULT_SERVER_NAME,
+        destination_uuid="bk8cw0gkswgo04o0s88sk0kg",
     )
     base.update(kw)
     return argparse.Namespace(**base)
@@ -92,6 +94,13 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 return pc.Response(201, kwargs["body"], {})
             if path == "/applications/private-github-app":
                 self.assertFalse(kwargs["body"]["instant_deploy"])
+                self.assertTrue(kwargs["body"]["is_auto_deploy_enabled"])
+                self.assertFalse(kwargs["body"]["autogenerate_domain"])
+                self.assertEqual(kwargs["body"]["environment_uuid"], "env-dev")
+                self.assertEqual(
+                    kwargs["body"]["destination_uuid"],
+                    "bk8cw0gkswgo04o0s88sk0kg",
+                )
                 self.assertEqual(
                     kwargs["body"]["docker_compose_domains"],
                     [
@@ -101,7 +110,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                         },
                         {
                             "name": "backend",
-                            "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                            "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
                         },
                     ],
                 )
@@ -129,10 +138,11 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                             },
                             {
                                 "name": "backend",
-                                "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                                "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
                             },
                         ],
                         "force_domain_override": False,
+                        "is_auto_deploy_enabled": True,
                     },
                 )
                 return pc.Response(200, {"uuid": path.rsplit("/", 1)[-1]}, {})
@@ -160,7 +170,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.factory-smoke-test.goodmorning.mx",
+                    "domain": "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
                 },
             ],
         )
@@ -184,7 +194,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.example.goodmorning.mx",
+                    "domain": "https://api.dev.example.goodmorning.mx:8000",
                 },
             ],
         )
@@ -203,7 +213,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 },
                 {
                     "name": "backend",
-                    "domain": "https://api.dev.example.goodmorning.mx",
+                    "domain": "https://api.dev.example.goodmorning.mx:8000",
                 },
             ],
         )
@@ -215,14 +225,12 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 {
                     "service": "frontend",
                     "internal_port": 80,
-                    "mechanism": "compose_traefik_label",
-                    "label": "traefik.http.services.frontend.loadbalancer.server.port=80",
+                    "mechanism": "coolify_compose_domain",
                 },
                 {
                     "service": "backend",
                     "internal_port": 8000,
-                    "mechanism": "compose_traefik_label",
-                    "label": "traefik.http.services.backend.loadbalancer.server.port=8000",
+                    "mechanism": "coolify_compose_domain_port_hint",
                 },
             ],
         )
@@ -237,7 +245,6 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 "APP_ENV": "dev",
                 "POSTGRES_DB": "goodmorning",
                 "POSTGRES_USER": "goodmorning",
-                "POSTGRES_PASSWORD": "${SERVICE_PASSWORD_POSTGRES}",
             },
         )
 
@@ -267,10 +274,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 pc.desired_environment_variables(args(product="ledger"))
             ),
         )
-        self.assertIn(
-            {"key": "POSTGRES_PASSWORD", "value": "[REDACTED]", "secret": True},
-            result,
-        )
+        self.assertNotIn("POSTGRES_PASSWORD", {item["key"] for item in result})
         written_keys = [call[2]["key"] for call in calls[1:]]
         self.assertEqual(
             written_keys, list(pc.desired_environment_variables(args(product="ledger")))
@@ -319,7 +323,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(methods_by_key["VITE_API_URL"], "PATCH")
         self.assertEqual(methods_by_key["CORS_ORIGINS"], "PATCH")
         self.assertEqual(methods_by_key["APP_ENV"], "POST")
-        self.assertEqual(methods_by_key["POSTGRES_PASSWORD"], "POST")
+        self.assertNotIn("POSTGRES_PASSWORD", methods_by_key)
 
     def test_configure_application_environment_variables_handles_post_409_by_reloading_and_patching(
         self,
@@ -377,7 +381,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             calls,
         )
         posted_keys = [call[2]["key"] for call in calls if call[0] == "POST"]
-        self.assertIn("POSTGRES_PASSWORD", posted_keys)
+        self.assertNotIn("POSTGRES_PASSWORD", posted_keys)
 
     def test_configure_application_environment_variables_refuses_duplicate_without_identifier(
         self,
@@ -518,6 +522,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
             pc.creation_payload(
                 args(),
                 {"uuid": "project-1"},
+                {"uuid": "env-dev", "name": "dev"},
                 {"uuid": "server-1"},
                 {"id": 123, "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME},
             )
@@ -529,6 +534,37 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 pc.DEFAULT_COOLIFY_GITHUB_APP_NAME,
                 pc.DEFAULT_REPOSITORY,
             )
+
+    def test_project_selection_is_exact_and_rejects_duplicates(self):
+        self.assertIsNone(
+            pc.discover_project(
+                [{"uuid": "project-old", "name": "factory-smoke-test-old"}],
+                "factory-smoke-test",
+            )
+        )
+        with self.assertRaisesRegex(pc.ProvisioningError, "duplicated"):
+            pc.discover_project(
+                [
+                    {"uuid": "project-1", "name": "factory-smoke-test"},
+                    {"uuid": "project-2", "name": "factory-smoke-test"},
+                ],
+                "factory-smoke-test",
+            )
+
+    def test_server_selection_requires_one_exact_name(self):
+        servers = [
+            {"uuid": "server-1", "name": "development"},
+            {"uuid": "server-2", "name": "development-extra"},
+        ]
+        self.assertEqual(
+            pc.discover_server(servers, "development")["uuid"], "server-1"
+        )
+        with self.assertRaisesRegex(pc.ProvisioningError, "found 0"):
+            pc.discover_server(servers, "dev")
+
+    def test_destination_identifier_is_required_before_api_calls(self):
+        with self.assertRaisesRegex(pc.ProvisioningError, "destination identifier"):
+            pc.validate_inputs(args(destination_uuid=None))
 
     def test_github_app_selection_rejects_duplicate_exact_names(self):
         with self.assertRaisesRegex(pc.ProvisioningError, "duplicated"):
@@ -727,7 +763,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         calls = []
         existing = {
             "uuid": "existing-app",
-            "name": "factory-smoke-test",
+            "name": "factory-smoke-test-dev",
             "domains": pc.DEFAULT_DOMAIN,
             "git_repository": pc.DEFAULT_REPOSITORY,
             "git_branch": pc.DEFAULT_BRANCH,
@@ -797,9 +833,15 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         )
         self.assertEqual(
             posts[0][2]["docker_compose_domains"][1]["domain"],
-            "https://api.dev.factory-smoke-test.goodmorning.mx",
+            "https://api.dev.factory-smoke-test.goodmorning.mx:8000",
         )
         self.assertFalse(posts[0][2]["force_domain_override"])
+        self.assertTrue(posts[0][2]["is_auto_deploy_enabled"])
+        self.assertFalse(posts[0][2]["autogenerate_domain"])
+        self.assertEqual(posts[0][2]["environment_uuid"], "env-dev")
+        self.assertEqual(
+            posts[0][2]["destination_uuid"], "bk8cw0gkswgo04o0s88sk0kg"
+        )
         self.assertEqual(posts[0][2]["base_directory"], "/")
         self.assertEqual(posts[0][2]["docker_compose_location"], "/compose.yaml")
         self.assertEqual(posts[0][2]["environment_name"], "dev")
@@ -902,7 +944,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         calls = []
         existing = {
             "uuid": "existing-app",
-            "name": "factory-smoke-test",
+            "name": "factory-smoke-test-dev",
             "domains": pc.DEFAULT_DOMAIN,
             "docker_compose_raw": "",
         }
@@ -927,7 +969,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         calls = []
         existing = {
             "uuid": "existing-app",
-            "name": "factory-smoke-test",
+            "name": "factory-smoke-test-dev",
             "domains": pc.DEFAULT_DOMAIN,
             "git_repository": pc.DEFAULT_REPOSITORY,
             "git_branch": pc.DEFAULT_BRANCH,
@@ -961,7 +1003,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         calls = []
         existing = {
             "uuid": "existing-app",
-            "name": "factory-smoke-test",
+            "name": "factory-smoke-test-dev",
             "domains": pc.DEFAULT_DOMAIN,
             "git_repository": f"https://github.com/{pc.DEFAULT_REPOSITORY}",
             "git_branch": pc.DEFAULT_BRANCH,
@@ -995,7 +1037,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         calls = []
         existing = {
             "uuid": "existing-app",
-            "name": "factory-smoke-test",
+            "name": "factory-smoke-test-dev",
             "domains": pc.DEFAULT_DOMAIN,
             "git_repository": pc.DEFAULT_REPOSITORY,
             "git_branch": pc.DEFAULT_BRANCH,
@@ -1396,8 +1438,34 @@ class ProvisionCoolifyWorkflowTests(unittest.TestCase):
             '--coolify-github-app-name "${{ inputs.coolify_github_app_name }}"', text
         )
         self.assertIn("DEVELOPMENT_DOMAIN: ${{ inputs.domain }}", text)
+        self.assertIn(
+            "COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'development' }}",
+            text,
+        )
+        self.assertIn(
+            "COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_DESTINATION_UUID || '",
+            text,
+        )
+        self.assertIn('--server "${COOLIFY_SERVER_NAME}"', text)
+        self.assertIn('--destination-uuid "${COOLIFY_DESTINATION_UUID}"', text)
         self.assertIn('[[ "${DEVELOPMENT_DOMAIN}" != dev.* ]]', text)
         self.assertNotIn('"${{ inputs.domain }}" != dev.*', text)
+
+    def test_push_to_dev_reconciles_catalog_without_manual_dispatch(self):
+        text = self.workflow_text()
+        manifest = (
+            Path(__file__).resolve().parents[1]
+            / "products"
+            / "factory-smoke-test.json"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("push:", text)
+        self.assertIn("branches:\n      - dev", text)
+        self.assertIn("products/*.json", text)
+        self.assertIn("--dry-run false", text)
+        self.assertIn("--deploy true", text)
+        self.assertIn('"development_domain": "dev.factory-smoke-test.goodmorning.mx"', manifest)
+        self.assertNotIn('"production_domain"', manifest)
 
     def test_workflow_fails_on_recreate_required_status(self):
         text = self.workflow_text()

@@ -1,14 +1,39 @@
 # GoodMorning Factory
 
-## Coolify-safe Compose baseline
+GoodMorning Factory provisions each product as one private GitHub-backed Docker
+Compose application per Coolify environment.
 
-This repository includes a Coolify-safe `compose.yaml` baseline for frontend, backend, and PostgreSQL services. The baseline deploys as one Docker Compose application from GitHub through the private GoodMorning Coolify GitHub App. The deployment file never publishes host `ports`; Coolify/Traefik owns public ingress and reaches services through container-only `expose` ports and explicit Traefik service-port labels.
+## Canonical deployment model
 
-The factory smoke-test pattern uses branch `dev`, compose path `/compose.yaml`, public domains `https://dev.factory-smoke-test.goodmorning.mx` and `https://api.dev.factory-smoke-test.goodmorning.mx`, `instant_deploy=false`, API-based reconciliation, and an explicit authorized Coolify API deployment step.
+One Coolify Project represents one product. The `dev` environment contains one
+Compose Application sourced from branch `dev`; production will reuse the same
+provisioner with branch `main` after the development path is verified and Abel
+explicitly approves production enablement.
 
-See `docs/coolify-compose.md` and `docs/coolify-development-provisioning.md` for the deployment and review checklists.
+The product repository owns the runtime contract:
 
+- `frontend`, `backend`, and `postgres` are the standard service names;
+- `/compose.yaml` is the single source of truth;
+- Coolify owns the isolated network, proxy, domains, generated secrets, and
+  deployment lifecycle;
+- PostgreSQL has no host port and no public domain;
+- the native Coolify GitHub App enables automatic redeployments after the first
+  provisioned deployment.
 
-## Stage 9 controlled development operations
+Factory owns only the thin installation path: exact resource discovery, Project
+and Environment creation, Compose Application creation, environment-variable
+reconciliation, initial deployment, polling, and smoke verification.
 
-Stage 9 is the current operational interface for product development provisioning and delivery. Use the manual `Product development operations` workflow or `scripts/orchestrate_product_development.py` to run `plan`, `provision`, `deploy-backend`, or `deploy-full` against branch `dev`. Mutating operations require an exact `<operation>:<product>:dev` confirmation and a safe dry-run plan first; there is no automatic deployment on push. See `docs/product-development-runbook.md`.
+Development onboarding is catalog-driven: a reviewed manifest in `products/`
+is reconciled automatically when it reaches `dev`. After the first deployment,
+the native Coolify GitHub App redeploys product changes directly from GitHub.
+
+See `docs/coolify-compose.md` for the contract and
+`scripts/provision_coolify_development.py` for the current dev implementation.
+
+## Previous resource-by-resource provisioner
+
+The Stage 9 PostgreSQL/Backend/Frontend provisioner remains in the repository as
+audited predecessor code and migration context. It is not the canonical path for
+new GoodMorning products. New work must not extend it with additional resource
+stages when the capability belongs in a product's Compose contract.

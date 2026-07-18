@@ -24,6 +24,8 @@ DEFAULT_ENVIRONMENT = "dev"
 COOLIFY_DEFAULT_ENVIRONMENT = "production"
 COOLIFY_DEVELOPMENT_ENVIRONMENT = "dev"
 DEFAULT_COOLIFY_GITHUB_APP_NAME = "goodmorning-mx-coolify"
+DEFAULT_SERVER_NAME = "development"
+DESTINATION_ENV = "COOLIFY_DESTINATION_UUID"
 TIMEOUT_SECONDS = 30
 COMPOSE_READY_TIMEOUT_SECONDS = 120
 COMPOSE_READY_POLL_SECONDS = 5
@@ -163,11 +165,17 @@ def field(item: dict[str, Any], *names: str) -> Any:
 def discover_project(
     projects: list[dict[str, Any]], product: str
 ) -> dict[str, Any] | None:
-    for project in projects:
-        name = str(field(project, "name", "slug", "uuid") or "").lower()
-        if name == product.lower() or product.lower() in name:
-            return project
-    return None
+    matches = [
+        project
+        for project in projects
+        if str(field(project, "name", "slug") or "").strip().lower()
+        == product.strip().lower()
+    ]
+    if len(matches) > 1:
+        raise ProvisioningError(
+            f"Coolify project named {product!r} is duplicated; exact selection is ambiguous."
+        )
+    return matches[0] if matches else None
 
 
 def project_environment(
@@ -503,7 +511,9 @@ def frontend_compose_domain(development_domain: str) -> str:
 
 
 def backend_compose_domain(development_domain: str) -> str:
-    return backend_url(development_domain)
+    # Coolify treats the suffix as an internal container-port routing hint. The
+    # public URL remains the clean HTTPS URL returned by backend_url().
+    return f"{backend_url(development_domain)}:8000"
 
 
 def verify_development_health(args: argparse.Namespace) -> list[dict[str, Any]]:
@@ -528,7 +538,6 @@ def desired_environment_variables(args: argparse.Namespace) -> dict[str, str]:
         "APP_ENV": "dev",
         "POSTGRES_DB": "goodmorning",
         "POSTGRES_USER": "goodmorning",
-        "POSTGRES_PASSWORD": "${SERVICE_PASSWORD_POSTGRES}",
     }
 
 
@@ -658,25 +667,21 @@ def wait_for_docker_compose_raw(application_uuid: Any) -> None:
         time.sleep(COMPOSE_READY_POLL_SECONDS)
 
 
-def discover_server(servers: list[dict[str, Any]]) -> dict[str, Any]:
-    candidates = [
-        s
-        for s in servers
-        if not field(s, "is_build_server")
-        and str(field(s, "name", "description", "uuid") or "").lower() != "production"
+def discover_server(
+    servers: list[dict[str, Any]], server_name: str
+) -> dict[str, Any]:
+    matches = [
+        server
+        for server in servers
+        if not field(server, "is_build_server")
+        and str(field(server, "name", "description") or "").strip().lower()
+        == server_name.strip().lower()
     ]
-    if len(candidates) == 1:
-        return candidates[0]
-    for server in candidates:
-        if str(field(server, "name", "description") or "").lower() in {
-            "development",
-            "dev",
-            "staging",
-        }:
-            return server
-    raise ProvisioningError(
-        "Unable to identify one non-production Coolify server unambiguously."
-    )
+    if len(matches) != 1:
+        raise ProvisioningError(
+            f"Expected exactly one non-build Coolify server named {server_name!r}; found {len(matches)}."
+        )
+    return matches[0]
 
 
 def is_private_repository(repository: str) -> bool:
@@ -721,14 +726,12 @@ def internal_routing() -> list[dict[str, Any]]:
         {
             "service": "frontend",
             "internal_port": 80,
-            "mechanism": "compose_traefik_label",
-            "label": "traefik.http.services.frontend.loadbalancer.server.port=80",
+            "mechanism": "coolify_compose_domain",
         },
         {
             "service": "backend",
             "internal_port": 8000,
-            "mechanism": "compose_traefik_label",
-            "label": "traefik.http.services.backend.loadbalancer.server.port=8000",
+            "mechanism": "coolify_compose_domain_port_hint",
         },
     ]
 
@@ -737,6 +740,7 @@ def domain_patch_payload(args: argparse.Namespace) -> dict[str, Any]:
     return {
         "docker_compose_domains": docker_compose_domains(args.domain),
         "force_domain_override": False,
+        "is_auto_deploy_enabled": True,
     }
 
 
@@ -764,21 +768,17 @@ def reconcile_application_domains(
 def existing_application(
     applications: list[dict[str, Any]], args: argparse.Namespace
 ) -> dict[str, Any] | None:
-    repo_url = f"https://github.com/{args.repository}"
-    for app in applications:
-        values = {
-            str(v).lower()
-            for v in app.values()
-            if isinstance(v, (str, int, float, bool))
-        }
-        text = " ".join(values)
-        if (
-            args.domain.lower() in text
-            or (args.repository.lower() in text and args.branch.lower() in text)
-            or repo_url.lower() in text
-        ):
-            return app
-    return None
+    expected_name = f"{args.product}-{args.environment}"
+    matches = [
+        app
+        for app in applications
+        if str(field(app, "name") or "").strip() == expected_name
+    ]
+    if len(matches) > 1:
+        raise ProvisioningError(
+            f"Coolify application named {expected_name!r} is duplicated; exact selection is ambiguous."
+        )
+    return matches[0] if matches else None
 
 
 def scalar_values(data: Any) -> list[str]:
@@ -853,6 +853,7 @@ def github_app_uuid(github_app: dict[str, Any]) -> Any:
 def creation_payload(
     args: argparse.Namespace,
     project: dict[str, Any],
+    coolify_environment: dict[str, Any],
     server: dict[str, Any],
     github_app: dict[str, Any],
 ) -> dict[str, Any]:
@@ -860,6 +861,8 @@ def creation_payload(
         "project_uuid": field(project, "uuid", "id"),
         "server_uuid": field(server, "uuid", "id"),
         "environment_name": COOLIFY_DEVELOPMENT_ENVIRONMENT,
+        "environment_uuid": field(coolify_environment, "uuid", "id"),
+        "destination_uuid": args.destination_uuid,
         "github_app_uuid": github_app_uuid(github_app),
         "git_repository": args.repository,
         "git_branch": args.branch,
@@ -870,6 +873,8 @@ def creation_payload(
         "force_domain_override": False,
         "name": f"{args.product}-{args.environment}",
         "instant_deploy": False,
+        "is_auto_deploy_enabled": True,
+        "autogenerate_domain": False,
     }
 
 
@@ -912,6 +917,13 @@ def validate_inputs(args: argparse.Namespace) -> None:
         raise ProvisioningError(
             "Development domain must be a host name without a path."
         )
+    if not str(getattr(args, "server", "") or "").strip():
+        raise ProvisioningError("An exact Coolify server name is required.")
+    destination_uuid = str(getattr(args, "destination_uuid", "") or "").strip()
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,63}", destination_uuid):
+        raise ProvisioningError(
+            f"A valid opaque Coolify destination identifier is required through --destination-uuid or {DESTINATION_ENV}."
+        )
 
 
 def provision(args: argparse.Namespace) -> dict[str, Any]:
@@ -946,12 +958,12 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
             )
     else:
         coolify_environment = {"name": COOLIFY_DEVELOPMENT_ENVIRONMENT}
-    server = discover_server(servers)
+    server = discover_server(servers, args.server)
     github_app = discover_github_app(
         github_apps, args.coolify_github_app_name, args.repository
     )
     existing = existing_application(applications, args)
-    payload = creation_payload(args, project, server, github_app)
+    payload = creation_payload(args, project, coolify_environment, server, github_app)
     result = {
         "status": "exists" if existing else ("dry_run" if args.dry_run else "created"),
         "dry_run": args.dry_run,
@@ -979,6 +991,7 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
             "uuid": field(server, "uuid", "id"),
             "name": field(server, "name", "description"),
         },
+        "destination": {"uuid": args.destination_uuid},
         "github_app": {
             "uuid": github_app_uuid(github_app),
             "name": field(github_app, "name"),
@@ -1082,6 +1095,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--domain", default=DEFAULT_DOMAIN)
     p.add_argument("--environment", default=DEFAULT_ENVIRONMENT)
     p.add_argument("--coolify-github-app-name", default=DEFAULT_COOLIFY_GITHUB_APP_NAME)
+    p.add_argument("--server", default=DEFAULT_SERVER_NAME)
+    p.add_argument("--destination-uuid", default=os.environ.get(DESTINATION_ENV))
     p.add_argument("--dry-run", default="true", choices=("true", "false"))
     p.add_argument("--deploy", default="false", choices=("true", "false"))
     return p
