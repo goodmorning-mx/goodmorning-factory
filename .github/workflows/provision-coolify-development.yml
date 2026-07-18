@@ -53,6 +53,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   provision-coolify-development:
@@ -148,6 +149,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "::add-mask::${COOLIFY_API_TOKEN}"
+          status_file="${RUNNER_TEMP}/coolify-reconcile.log"
+          : > "${status_file}"
 
           shopt -s nullglob
           manifests=(products/*.json)
@@ -165,6 +168,7 @@ jobs:
             github_app="$(jq -er '.coolify_github_app_name // "goodmorning-mx-coolify"' "${manifest}")"
 
             echo "Reconciling ${product} from ${manifest}"
+            set +e
             python scripts/provision_coolify_development.py \
               --dry-run false \
               --product "${product}" \
@@ -175,5 +179,42 @@ jobs:
               --coolify-github-app-name "${github_app}" \
               --server "${COOLIFY_SERVER_NAME}" \
               --destination-uuid "${COOLIFY_DESTINATION_UUID}" \
-              --deploy true
+              --deploy true 2>&1 | tee -a "${status_file}"
+            provision_status="${PIPESTATUS[0]}"
+            set -e
+            if [ "${provision_status}" -ne 0 ]; then
+              exit "${provision_status}"
+            fi
           done
+
+      - name: Report sanitized reconciliation failure
+        if: failure() && github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          status_file="${RUNNER_TEMP}/coolify-reconcile.log"
+          issue_body="${RUNNER_TEMP}/coolify-reconcile-issue.md"
+          {
+            echo "The automatic Coolify development reconciliation failed."
+            echo
+            echo "- Commit: ${{ github.sha }}"
+            echo "- Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo '```text'
+            if [ -s "${status_file}" ]; then
+              tail -n 200 "${status_file}"
+            else
+              echo "The workflow failed before the provisioner produced output. Check repository variables and secrets."
+            fi
+            echo '```'
+          } > "${issue_body}"
+
+          title="[automation] Coolify development reconciliation failed"
+          existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file "${issue_body}"
+          else
+            gh issue create --title "${title}" --body-file "${issue_body}"
+          fi
