@@ -446,7 +446,14 @@ def wait_for_deployment(deployment_uuid: Any) -> dict[str, Any]:
         if deployment_succeeded(last_status):
             return {"uuid": deployment_uuid, "status": last_status}
         if deployment_failed(last_status):
-            summary = deployment_failure_summary(data)
+            logs_response = request(
+                "GET",
+                f"/deployments/{deployment_uuid}/logs",
+                allowed_statuses=(200, 403, 404),
+            )
+            summary = deployment_failure_summary(
+                {"deployment": data, "logs": logs_response.data}
+            )
             detail = f"\n{summary}" if summary else ""
             raise ProvisioningError(
                 f"Coolify deployment {deployment_uuid} failed with status {last_status}.{detail}",
