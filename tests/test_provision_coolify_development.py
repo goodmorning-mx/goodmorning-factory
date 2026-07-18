@@ -1438,14 +1438,34 @@ class ProvisionCoolifyWorkflowTests(unittest.TestCase):
             '--coolify-github-app-name "${{ inputs.coolify_github_app_name }}"', text
         )
         self.assertIn("DEVELOPMENT_DOMAIN: ${{ inputs.domain }}", text)
-        self.assertIn("COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME }}", text)
         self.assertIn(
-            "COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_DESTINATION_UUID }}", text
+            "COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'development' }}",
+            text,
+        )
+        self.assertIn(
+            "COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_DESTINATION_UUID || '",
+            text,
         )
         self.assertIn('--server "${COOLIFY_SERVER_NAME}"', text)
         self.assertIn('--destination-uuid "${COOLIFY_DESTINATION_UUID}"', text)
         self.assertIn('[[ "${DEVELOPMENT_DOMAIN}" != dev.* ]]', text)
         self.assertNotIn('"${{ inputs.domain }}" != dev.*', text)
+
+    def test_push_to_dev_reconciles_catalog_without_manual_dispatch(self):
+        text = self.workflow_text()
+        manifest = (
+            Path(__file__).resolve().parents[1]
+            / "products"
+            / "factory-smoke-test.json"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("push:", text)
+        self.assertIn("branches:\n      - dev", text)
+        self.assertIn("products/*.json", text)
+        self.assertIn("--dry-run false", text)
+        self.assertIn("--deploy true", text)
+        self.assertIn('"development_domain": "dev.factory-smoke-test.goodmorning.mx"', manifest)
+        self.assertNotIn('"production_domain"', manifest)
 
     def test_workflow_fails_on_recreate_required_status(self):
         text = self.workflow_text()
