@@ -697,6 +697,10 @@ def is_private_repository(repository: str) -> bool:
     return repository.lower().startswith("goodmorning-mx/")
 
 
+def git_repository_url(repository: str) -> str:
+    return f"https://github.com/{repository.strip().removesuffix('.git')}"
+
+
 def is_public_github_source(source: dict[str, Any]) -> bool:
     name = str(field(source, "name") or "").strip().lower()
     source_type = str(field(source, "type") or "").strip().lower()
@@ -753,6 +757,17 @@ def domain_patch_payload(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
+def source_patch_payload(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        "git_repository": git_repository_url(args.repository),
+        "git_branch": args.branch,
+        "build_pack": "dockercompose",
+        "base_directory": "/",
+        "docker_compose_location": args.compose,
+        "is_auto_deploy_enabled": True,
+    }
+
+
 def application_summary(application: dict[str, Any]) -> dict[str, Any]:
     data = (
         application.get("data")
@@ -771,6 +786,18 @@ def reconcile_application_domains(
         )
     return request(
         "PATCH", f"/applications/{application_uuid}", body=domain_patch_payload(args)
+    ).data
+
+
+def reconcile_application_source(
+    application_uuid: Any, args: argparse.Namespace
+) -> dict[str, Any]:
+    if not application_uuid:
+        raise ProvisioningError(
+            "Coolify application response did not include an identifier required to configure its Git source."
+        )
+    return request(
+        "PATCH", f"/applications/{application_uuid}", body=source_patch_payload(args)
     ).data
 
 
@@ -873,7 +900,7 @@ def creation_payload(
         "environment_uuid": field(coolify_environment, "uuid", "id"),
         "destination_uuid": args.destination_uuid,
         "github_app_uuid": github_app_uuid(github_app),
-        "git_repository": args.repository,
+        "git_repository": git_repository_url(args.repository),
         "git_branch": args.branch,
         "build_pack": "dockercompose",
         "base_directory": "/",
@@ -1018,12 +1045,13 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
             if source_configured:
                 result["source_configured"] = True
             if args.dry_run:
-                result["would_patch"] = domain_patch_payload(args)
+                result["would_patch"] = {
+                    "source": source_patch_payload(args),
+                    "domains": domain_patch_payload(args),
+                }
             else:
-                wait_for_docker_compose_raw(result["application"]["uuid"])
-                result["docker_compose_raw_loaded"] = True
-                reconcile_application_domains(result["application"]["uuid"], args)
-                result["domain_reconciled"] = True
+                reconcile_application_source(result["application"]["uuid"], args)
+                result["source_reconciled"] = True
                 result["environment_variables_configured"] = (
                     configure_application_environment_variables(
                         result["application"]["uuid"], args
@@ -1032,6 +1060,10 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
                 result["deployment"] = deployment_result(
                     result["application"]["uuid"], args
                 )
+                wait_for_docker_compose_raw(result["application"]["uuid"])
+                result["docker_compose_raw_loaded"] = True
+                reconcile_application_domains(result["application"]["uuid"], args)
+                result["domain_reconciled"] = True
                 if result["deployment"].get("queued"):
                     result["health_checks"] = verify_development_health(args)
         else:
@@ -1064,13 +1096,13 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
         result["status"] = "exists"
         result["application_reused_after_conflict"] = True
     result["application"] = application_summary(created)
-    wait_for_docker_compose_raw(result["application"]["uuid"])
-    result["docker_compose_raw_loaded"] = True
-    result["domain_reconciled"] = True
     result["environment_variables_configured"] = (
         configure_application_environment_variables(result["application"]["uuid"], args)
     )
     result["deployment"] = deployment_result(result["application"]["uuid"], args)
+    wait_for_docker_compose_raw(result["application"]["uuid"])
+    result["docker_compose_raw_loaded"] = True
+    result["domain_reconciled"] = True
     if result["deployment"].get("queued"):
         result["health_checks"] = verify_development_health(args)
     return result
