@@ -68,12 +68,12 @@ Stage 5 sets `instant_deploy=false`, `is_auto_deploy_enabled=false`, and `autoge
 
 Destination selection is conservative:
 
-- Stage 9 requires an explicit `--destination-uuid <uuid>`;
-- obtain it from Coolify → Destinations → open the destination → copy the UUID from the URL;
+- Stage 9 requires an explicit `--destination-uuid <coolify-destination-identifier>`;
+- obtain it from Coolify → Destinations → open the destination → copy the destination identifier from the URL;
 - do not infer it from `server.destinations`;
 - the current public Coolify API has no documented `GET /destinations`;
-- when `/servers` omits destinations, the UUID is treated as explicit operator input with `destination_scope_api_verified=false`;
-- when `/servers` includes a destinations collection, the explicit UUID must match that collection exactly.
+- when `/servers` omits destinations, the identifier is treated as explicit operator input with `destination_scope_api_verified=false`;
+- when `/servers` includes a destinations collection, the explicit identifier must match that collection exactly.
 
 ## PostgreSQL precondition
 
@@ -293,4 +293,4 @@ Stage 8 JSON output preserves Backend deployment, Backend runtime readiness, and
 
 The first real Stage 9 `workflow_dispatch` against GoodMorning observed Coolify v4.1.2, while current upstream `v4.x` remains the moving HEAD used for API research. Primary-source review of upstream `v4.x` confirms that Application creation accepts `destination_uuid`, but the public API does not currently document `GET /destinations`; `GET /servers` and `GET /servers/{uuid}` are not relied on to provide a destinations collection. Therefore Stage 9 must not invent automatic destination discovery through undocumented endpoints.
 
-The manual workflow requires the operator to provide exactly one RFC 4122 `destination_uuid`. Empty values, whitespace, comma-separated values, list shapes, URLs, and non-UUID strings fail closed before planning. The same validated UUID is bound into both Backend and Frontend Application payload previews. Plan mode remains GET-only, performs zero POST/PATCH/PUT/DELETE calls, and an unsafe plan never passes to apply. `not_checked` runtime readiness and smoke statuses are acceptable only when the corresponding deployment was not requested; requested deployments with `not_checked` remain unsafe.
+The manual workflow requires the operator to provide exactly one explicit opaque Coolify destination identifier in the `destination_uuid` field. Empty values, whitespace, comma-separated values, list/JSON shapes, URLs, paths, queries, fragments, credential-bearing values, control characters, excessive length, and unsafe identifier characters fail closed before planning. The length limit is defensive and is not a formal upstream guarantee. The same validated identifier is bound into both Backend and Frontend Application payload previews. Plan mode remains GET-only, performs zero POST/PATCH/PUT/DELETE calls, and an unsafe plan never passes to apply. `not_checked` runtime readiness and smoke statuses are acceptable only when the corresponding deployment was not requested; requested deployments with `not_checked` remain unsafe.

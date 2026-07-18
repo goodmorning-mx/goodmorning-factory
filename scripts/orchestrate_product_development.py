@@ -71,7 +71,8 @@ DECISION_KEYS = {
 SUCCESSFUL_APPLY_STATUSES = {"exists", "created", "ready"}
 NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
 SLUG_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+COOLIFY_IDENTIFIER_MAX_LENGTH = 64
+COOLIFY_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def truthy_env(name: str) -> bool:
@@ -82,16 +83,26 @@ def expected_confirmation(operation: str, product: str) -> str:
     return f"{operation}:{product}:{ENVIRONMENT}"
 
 
-def validate_destination_uuid(value: Any) -> str:
-    if value is None or not isinstance(value, str) or value == "" or value != value.strip():
-        raise ProvisioningError("--destination-uuid is required and must not be empty or whitespace.", error_type="validation", code=2)
-    if "," in value or "[" in value or "]" in value or " " in value or "\n" in value or "\t" in value:
-        raise ProvisioningError("--destination-uuid must be a single UUID, not a list.", error_type="validation", code=2)
+def validate_coolify_destination_identifier(value: Any) -> str:
+    if value is None:
+        raise ProvisioningError("--destination-uuid is required.", error_type="validation", code=2)
+    if not isinstance(value, str):
+        raise ProvisioningError("--destination-uuid must be exactly one opaque Coolify identifier string.", error_type="validation", code=2)
+    if value == "" or value != value.strip():
+        raise ProvisioningError("--destination-uuid must not be empty or padded with whitespace.", error_type="validation", code=2)
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ProvisioningError("--destination-uuid must not contain control characters.", error_type="validation", code=2)
+    if any(char.isspace() for char in value):
+        raise ProvisioningError("--destination-uuid must not contain whitespace.", error_type="validation", code=2)
+    if len(value) > COOLIFY_IDENTIFIER_MAX_LENGTH:
+        raise ProvisioningError("--destination-uuid exceeds the defensive Coolify identifier length limit.", error_type="validation", code=2)
+    if "," in value or value[0] in "[{" or value[-1] in "]}":
+        raise ProvisioningError("--destination-uuid must be one identifier, not a list or JSON value.", error_type="validation", code=2)
     parsed = urllib.parse.urlparse(value)
-    if parsed.scheme or parsed.netloc or "/" in value or "?" in value or "#" in value:
-        raise ProvisioningError("--destination-uuid must be a UUID, not a URL.", error_type="validation", code=2)
-    if not UUID_RE.fullmatch(value):
-        raise ProvisioningError("--destination-uuid must be exactly one RFC 4122 UUID.", error_type="validation", code=2)
+    if parsed.scheme or parsed.netloc or any(marker in value for marker in ("/", "?", "#", ":", "@")):
+        raise ProvisioningError("--destination-uuid must be an opaque identifier, not a URL, path, query, fragment, or credential-bearing value.", error_type="validation", code=2)
+    if not COOLIFY_IDENTIFIER_RE.fullmatch(value):
+        raise ProvisioningError("--destination-uuid must be an opaque Coolify identifier using only safe lowercase URL identifier characters.", error_type="validation", code=2)
     return value
 
 
@@ -106,7 +117,7 @@ def validate_orchestration_inputs(args: argparse.Namespace) -> dict[str, str]:
         raise ProvisioningError("phase=apply requires a mutating target operation.", error_type="validation", code=2)
     if not SLUG_RE.fullmatch(args.product or ""):
         raise ProvisioningError("--product must be a lowercase DNS-safe slug.", error_type="validation", code=2)
-    validate_destination_uuid(getattr(args, "destination_uuid", None))
+    validate_coolify_destination_identifier(getattr(args, "destination_uuid", None))
     return {
         "product": args.product,
         "repository": f"{OWNER}/{args.product}",
@@ -141,7 +152,7 @@ def build_provisioner_argv(args: argparse.Namespace) -> list[str]:
         "--github-app", args.github_app,
         "--dry-run" if args.phase == "plan" else "--apply",
     ]
-    argv += ["--destination-uuid", validate_destination_uuid(args.destination_uuid)]
+    argv += ["--destination-uuid", validate_coolify_destination_identifier(args.destination_uuid)]
     if args.phase == "apply":
         argv += [
             "--confirm-product", args.product,

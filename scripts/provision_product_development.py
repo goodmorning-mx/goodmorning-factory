@@ -29,7 +29,8 @@ TIMEOUT_SECONDS = 30
 SENSITIVE_ENV = ("COOLIFY_API_TOKEN",)
 SECRET_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL|DATABASE_URL|AUTHORIZATION|INTERNAL_DB_URL)", re.I)
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
-UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
+COOLIFY_IDENTIFIER_MAX_LENGTH = 64
+COOLIFY_IDENTIFIER_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 READ_ONLY_METHODS = {"GET"}
 WRITE_METHODS = {"POST", "PATCH"}
@@ -1807,25 +1808,31 @@ def frontend_domain(product: str) -> str:
     return f"https://dev.{product}.goodmorning.mx"
 
 
-def validate_destination_uuid(value: Any) -> str:
+def validate_coolify_destination_identifier(value: Any) -> str:
     if value is None:
         raise ProvisioningError("--destination-uuid is required for Stage 9 Application planning and creation.", error_type="validation", code=2)
     if not isinstance(value, str):
-        raise ProvisioningError("--destination-uuid must be exactly one UUID string.", error_type="validation", code=2)
+        raise ProvisioningError("--destination-uuid must be exactly one opaque Coolify identifier string.", error_type="validation", code=2)
     if value != value.strip() or not value:
         raise ProvisioningError("--destination-uuid must not be empty or padded with whitespace.", error_type="validation", code=2)
-    if "," in value or "[" in value or "]" in value or " " in value or "\n" in value or "\t" in value:
-        raise ProvisioningError("--destination-uuid must be a single UUID, not a list.", error_type="validation", code=2)
+    if any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ProvisioningError("--destination-uuid must not contain control characters.", error_type="validation", code=2)
+    if any(char.isspace() for char in value):
+        raise ProvisioningError("--destination-uuid must not contain whitespace.", error_type="validation", code=2)
+    if len(value) > COOLIFY_IDENTIFIER_MAX_LENGTH:
+        raise ProvisioningError("--destination-uuid exceeds the defensive Coolify identifier length limit.", error_type="validation", code=2)
+    if "," in value or value[0] in "[{" or value[-1] in "]}":
+        raise ProvisioningError("--destination-uuid must be one identifier, not a list or JSON value.", error_type="validation", code=2)
     parsed = urllib.parse.urlparse(value)
-    if parsed.scheme or parsed.netloc or "/" in value or "?" in value or "#" in value:
-        raise ProvisioningError("--destination-uuid must be a UUID, not a URL.", error_type="validation", code=2)
-    if not UUID_RE.fullmatch(value):
-        raise ProvisioningError("--destination-uuid must be exactly one RFC 4122 UUID.", error_type="validation", code=2)
+    if parsed.scheme or parsed.netloc or any(marker in value for marker in ("/", "?", "#", ":", "@")):
+        raise ProvisioningError("--destination-uuid must be an opaque identifier, not a URL, path, query, fragment, or credential-bearing value.", error_type="validation", code=2)
+    if not COOLIFY_IDENTIFIER_RE.fullmatch(value):
+        raise ProvisioningError("--destination-uuid must be an opaque Coolify identifier using only safe lowercase URL identifier characters.", error_type="validation", code=2)
     return value
 
 
 def select_destination(server: dict[str, Any], args: argparse.Namespace, blockers: list[Any]) -> dict[str, Any] | None:
-    selected = validate_destination_uuid(getattr(args, "destination_uuid", None))
+    selected = validate_coolify_destination_identifier(getattr(args, "destination_uuid", None))
     destinations = item_list(server.get("destinations") if isinstance(server, dict) else [])
     if destinations:
         matches = [d for d in destinations if str(field(d, "uuid", "id") or "") == selected]
