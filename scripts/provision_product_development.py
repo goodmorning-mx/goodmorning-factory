@@ -811,6 +811,7 @@ def discover(client: CoolifyClient, args: argparse.Namespace) -> dict[str, Any]:
     server_summary = summary(server, "name", "uuid", "id")
     github_app_summary = summary(github_app, "name", "uuid", "id")
     context = {
+        "product": args.product,
         "project_uuid": project_summary.get("uuid") or project_summary.get("id"),
         "environment_uuid": environment_summary.get("uuid") or environment_summary.get("id"),
         "environment_name": args.environment,
@@ -1038,6 +1039,40 @@ def application_differences(item: dict[str, Any], expected: dict[str, Any], cont
 def classify_expected_resource(name: str, expected: dict[str, Any], matches: list[dict[str, Any]], context: dict[str, Any]) -> dict[str, Any]:
     if not matches:
         return {"name": name, "status": "absent"}
+
+    if expected["kind"] == "database":
+        reports = []
+        scoped = []
+        for item in matches:
+            classification = postgres_classification_from_detail(item, {**context, "name": name})
+            scope_status = "in_scope" if classification["status"] not in {"out_of_scope", "scope_unverified"} else classification["status"]
+            report = {
+                "resource": operational_summary(item),
+                "scope": scope_status,
+                "scope_details": classification.get("scope_details", []),
+            }
+            for key in (
+                "uuid",
+                "scope_api_verified",
+                "project_scope_api_present",
+                "environment_scope_api_present",
+                "server_scope_api_matched",
+                "scope_verification_source",
+                "scope_verification_reason",
+            ):
+                if key in classification:
+                    report[key] = classification[key]
+            if scope_status != "in_scope":
+                report["status"] = scope_status
+            else:
+                scoped.append((item, classification))
+            reports.append(report)
+        if not scoped:
+            status = "out_of_scope" if all(report.get("status") == "out_of_scope" for report in reports) else "scope_unverified"
+            return {"name": name, "status": status, "matches": reports}
+        if len(scoped) > 1:
+            return {"name": name, "status": "duplicate", "matches": [operational_summary(item) for item, _ in scoped]}
+        return {**scoped[0][1], "matches": reports}
 
     scoped = []
     reports = []
@@ -1401,16 +1436,28 @@ def postgresql_scope_identity(item: dict[str, Any], context: dict[str, Any]) -> 
     """
 
     scope_status, details = resource_scope(item, context)
-    if scope_status != "scope_unverified":
-        return scope_status, details, {"scope_api_verified": scope_status == "in_scope"}
     missing = {detail["field"] for detail in details if detail["status"] == "unverified"}
+    meta = {
+        "project_scope_api_present": "project_uuid" not in missing,
+        "environment_scope_api_present": "environment_uuid" not in missing,
+        "server_scope_api_matched": any(detail["field"] == "server_uuid" and detail["status"] == "matched" for detail in details),
+    }
+    if scope_status != "scope_unverified":
+        return scope_status, details, {**meta, "scope_api_verified": scope_status == "in_scope"}
     if {"project_uuid", "environment_uuid"}.issubset(missing) and "server_uuid" not in missing:
-        return "in_scope", details, {
+        fallback_details = [
+            {**detail, "status": "api_omitted"}
+            if detail["field"] in {"project_uuid", "environment_uuid"} and detail["status"] == "unverified"
+            else detail
+            for detail in details
+        ]
+        return "in_scope", fallback_details, {
+            **meta,
             "scope_api_verified": False,
             "scope_verification_source": POSTGRES_SCOPE_FALLBACK_SOURCE,
             "scope_verification_reason": POSTGRES_SCOPE_FALLBACK_REASON,
         }
-    return scope_status, details, {"scope_api_verified": False}
+    return scope_status, details, {**meta, "scope_api_verified": False}
 
 
 def postgresql_provenance(expected_name: str, returned_uuid: Any, project: dict[str, Any], environment: dict[str, Any], server: dict[str, Any], *, request_attempted: bool, write_performed: bool) -> dict[str, Any]:
@@ -1783,12 +1830,18 @@ def verify_internal_db_url_flags(item: dict[str, Any]) -> dict[str, bool]:
 
 def postgresql_start_preconditions(args: argparse.Namespace, postgres: dict[str, Any]) -> list[dict[str, Any]]:
     blockers = []
-    if postgres.get("name") != f"{args.product}-postgres-dev" or not postgres.get("uuid"):
+    if postgres.get("name") != f"{args.product}-postgres-dev" or not is_real_identifier(postgres.get("uuid")):
         blockers.append({"reason": "identity_unverified"})
     if postgres.get("status") not in {"exists", "created"}:
         blockers.append({"reason": f"postgresql_status_{postgres.get('status')}"})
     if postgres.get("write_outcome_unknown"):
         blockers.append({"reason": "prior_write_outcome_unknown"})
+    if postgres.get("scope_api_verified") is not True and postgres.get("scope_verification_source") != POSTGRES_SCOPE_FALLBACK_SOURCE:
+        blockers.append({"reason": "scope_unverified"})
+    if postgres.get("server_scope_api_matched") is not True:
+        blockers.append({"reason": "server_scope_unverified"})
+    if postgres.get("differences") or postgres.get("unverified_fields") or postgres.get("blockers"):
+        blockers.append({"reason": "identity_or_compatibility_unverified"})
     return blockers
 
 
@@ -1833,7 +1886,8 @@ def ensure_postgresql_ready(client: CoolifyClient, args: argparse.Namespace, pos
         if mode.is_apply:
             return readiness_result("readiness_unverified", uuid)
         detail = postgres
-    state = classify_database_readiness_status(database_raw_status(detail))
+    raw_state = str(database_raw_status(detail) or "").strip().lower()
+    state = "stopped" if raw_state == "exited:unhealthy" else classify_database_readiness_status(raw_state)
     flags = verify_internal_db_url_flags(detail)
     if state == "healthy":
         return readiness_result("already_healthy", uuid, **flags)
@@ -1845,7 +1899,8 @@ def ensure_postgresql_ready(client: CoolifyClient, args: argparse.Namespace, pos
         return poll_postgresql_readiness(client, str(uuid), timeout=getattr(args, "postgres_readiness_timeout", 300.0), interval=getattr(args, "postgres_readiness_interval", 5.0), sleeper=sleeper)
     if state == "stopped":
         if not mode.is_apply:
-            return readiness_result("would_start", uuid, **flags)
+            reason = "verified_factory_postgresql_requires_start" if raw_state == "exited:unhealthy" else None
+            return readiness_result("would_start", uuid, **({"reason": reason} if reason else {}), **flags)
         if not mode.database_start_enabled:
             return readiness_result("blocked", uuid, **flags)
         try:
@@ -3231,6 +3286,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
     if postgres.get("status") == "incompatible":
         blockers.append({"message": "Existing PostgreSQL contradicts desired state; manual recreation required.", "write_performed": False})
     context = {
+        "product": args.product,
         "project_uuid": project.get("uuid"),
         "environment_uuid": environment.get("uuid"),
         "environment_name": "dev",
@@ -3342,6 +3398,10 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
     return redact({
         **plan,
         "status": status,
+        "plan_safe": status == "dry_run" and not blockers,
+        "plan_blockers": blockers,
+        "next_action": "apply" if status == "dry_run" and not blockers else "resolve_blockers",
+        "exit_code": 0 if status in {"dry_run", "applied"} and not any(action.get("write_outcome_unknown") for action in actions) else 2,
         "mode": mode.name,
         "safety_gates": mode.gates(),
         "selected_server": server_summary,

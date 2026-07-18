@@ -507,7 +507,7 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
             return next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-postgres-dev")
 
         compatible = status_for({"uuid": "db", "name": "ledger-postgres-dev", "type": "postgres", "version": "16", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
-        self.assertEqual(compatible["status"], "found")
+        self.assertEqual(compatible["status"], "exists")
         mysql = status_for({"uuid": "db", "name": "ledger-postgres-dev", "type": "mysql", "version": "16", "is_public": False, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
         self.assertEqual(mysql["status"], "incompatible")
         public = status_for({"uuid": "db", "name": "ledger-postgres-dev", "type": "postgresql", "version": "16", "is_public": True, "project_uuid": "project-1", "environment_uuid": "env-1", "server_uuid": "server-1"})
@@ -1140,6 +1140,117 @@ class Stage3WriteOutcomeTests(unittest.TestCase):
         self.assertIn("Legacy Compose provisioning", canonical)
         self.assertIn("deprecated for new products", canonical)
         self.assertIn("Docker Compose", legacy)
+
+class Stage9PostgresqlDiscoveryReadinessFixTests(unittest.TestCase):
+    def client(self, db, **overrides):
+        payloads = {
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"bk8cw0gkswgo04o0s88sk0kg", "name":"docker"}]}],
+            "/github-apps": {"github_apps": [{"uuid": "app-1", "name": "goodmorning-mx-coolify"}]},
+            "/applications": [],
+            "/databases": [{k:v for k,v in db.items() if k != "detail_only"}],
+            f"/databases/{db['uuid']}": dict(db),
+        }
+        payloads.update(overrides)
+        return FakeClient(payloads)
+
+    def factory_db(self, **overrides):
+        db = {"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","server_uuid":"server-1","version":"16","is_public":False,"status":"exited:unhealthy","postgres_user":"ledger_dev_user","postgres_db":"ledger_dev","description":pp.FACTORY_POSTGRES_DESCRIPTION}
+        db.update(overrides)
+        return db
+
+    def pg_resource(self, result):
+        return next(resource for resource in result["resources"] if resource["name"] == "ledger-postgres-dev")
+
+    def discovery_pg(self, result):
+        return next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-postgres-dev")
+
+    def test_managed_postgresql_omitted_scope_is_exists_everywhere(self):
+        client = self.client(self.factory_db(status="running:healthy"))
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql"]["status"], "exists")
+        self.assertEqual(self.pg_resource(result)["status"], "exists")
+        discovery = self.discovery_pg(result)
+        self.assertEqual(discovery["status"], "exists")
+        self.assertEqual(result["postgresql"]["uuid"], discovery["uuid"])
+        self.assertFalse(result["postgresql"]["scope_api_verified"])
+        self.assertFalse(discovery["scope_api_verified"])
+        self.assertNotIn("scope_unverified", json.dumps([result["postgresql"], self.pg_resource(result), discovery]))
+
+    def test_omitted_scope_metadata_uses_unambiguous_fields(self):
+        result = pp.provision(args(), client_factory=lambda: self.client(self.factory_db(status="running:healthy")))
+        postgresql = result["postgresql"]
+        self.assertFalse(postgresql["scope_api_verified"])
+        self.assertFalse(postgresql["project_scope_api_present"])
+        self.assertFalse(postgresql["environment_scope_api_present"])
+        self.assertTrue(postgresql["server_scope_api_matched"])
+        self.assertNotIn('"status": "unverified"', json.dumps(postgresql))
+
+    def test_contradictory_project_or_environment_is_out_of_scope_everywhere(self):
+        for field_name in ("project_uuid", "environment_uuid"):
+            with self.subTest(field_name=field_name):
+                db = self.factory_db(**{field_name: "other"})
+                result = pp.provision(args(), client_factory=lambda: self.client(db))
+                self.assertEqual(result["postgresql"]["status"], "out_of_scope")
+                self.assertEqual(self.pg_resource(result)["status"], "out_of_scope")
+                self.assertEqual(self.discovery_pg(result)["status"], "out_of_scope")
+
+    def test_exited_unhealthy_verified_factory_dry_run_would_start_safe_zero_post(self):
+        client = self.client(self.factory_db())
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql_readiness"]["status"], "would_start")
+        self.assertEqual(result["postgresql_readiness"]["reason"], "verified_factory_postgresql_requires_start")
+        self.assertTrue(result["plan_safe"])
+        self.assertFalse(any(call[0] == "POST" for call in client.calls))
+
+    def test_exited_unhealthy_unverified_never_would_start(self):
+        result = pp.provision(args(), client_factory=lambda: self.client(self.factory_db(description="not-factory")))
+        self.assertIn(result["postgresql_readiness"]["status"], {"blocked", "unhealthy"})
+        self.assertNotEqual(result["postgresql_readiness"]["status"], "would_start")
+
+    def test_running_unhealthy_and_failed_remain_terminal(self):
+        for raw_status in ("running:unhealthy", "failed"):
+            with self.subTest(raw_status=raw_status):
+                result = pp.provision(args(), client_factory=lambda: self.client(self.factory_db(status=raw_status)))
+                self.assertEqual(result["postgresql_readiness"]["status"], "unhealthy")
+
+    def test_apply_exited_unhealthy_posts_once_then_polls(self):
+        db = self.factory_db()
+        client = self.client(db, **{"/databases/db-1": [("GET", db), ("GET", {**db, "status":"exited:unhealthy"}), ("GET", {**db, "status":"running:healthy", "internal_db_url":"postgresql://u:p@h:5432/d"})]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_DATABASE_START":"true"},clear=True):
+            result = pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_database_start="ledger-postgres-dev"), client_factory=lambda: client)
+        self.assertEqual([call for call in client.calls if call[0] == "POST"], [("POST", "/databases/db-1/start")])
+        self.assertGreaterEqual(len([call for call in client.calls if call == ("GET", "/databases/db-1")]), 2)
+        self.assertEqual(result["postgresql_readiness"]["status"], "healthy")
+
+    def test_start_accepted_but_still_exited_unhealthy_no_second_start(self):
+        db = self.factory_db()
+        client = self.client(db, **{"/databases/db-1": [("GET", db), ("GET", {**db, "status":"exited:unhealthy"}), ("GET", {**db, "status":"exited:unhealthy"})]})
+        with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_DATABASE_START":"true"},clear=True):
+            result = pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_database_start="ledger-postgres-dev"), client_factory=lambda: client)
+        self.assertNotIn(result["postgresql_readiness"]["status"], {"healthy", "already_healthy"})
+        self.assertEqual(len([call for call in client.calls if call[0] == "POST"]), 1)
+
+    def test_start_5xx_or_timeout_unknown_zero_retry(self):
+        for exc in (pp.ProvisioningError("boom", http_status=500, method="POST", path="/databases/db-1/start", write_outcome_unknown=True), pp.ProvisioningError("timeout", error_type="network", method="POST", path="/databases/db-1/start", write_outcome_unknown=True)):
+            with self.subTest(exc=exc.message):
+                client = self.client(self.factory_db(), **{"POST /databases/db-1/start": exc})
+                with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_DATABASE_START":"true"},clear=True):
+                    result = pp.provision(args(dry_run=False,apply=True,confirm_product="ledger",confirm_database_start="ledger-postgres-dev"), client_factory=lambda: client)
+                self.assertTrue(result["postgresql_readiness"]["write_outcome_unknown"])
+                self.assertEqual(len([call for call in client.calls if call[0] == "POST"]), 1)
+
+    def test_real_stage9_provision_plan_fixture_is_safe_and_redacted(self):
+        client = self.client(self.factory_db())
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertTrue(result["plan_safe"])
+        self.assertEqual(result["exit_code"], 0)
+        self.assertEqual(result["backend_application"]["status"], "would_create")
+        self.assertEqual(result["frontend_application"]["status"], "planned_after_backend")
+        rendered = json.dumps(result)
+        self.assertNotIn("DATABASE_URL", rendered)
+        self.assertNotIn("postgresql://", rendered)
 
 
 if __name__ == "__main__":
