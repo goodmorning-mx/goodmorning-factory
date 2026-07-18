@@ -53,6 +53,10 @@ A plan is safe when resources are compatible/existing or absent with planned `wo
 
 Mutating workflow runs always execute a separate `--phase plan` for the selected target operation before `--phase apply`. The apply phase re-discovers current state and fails closed independently; it does not trust the previous JSON blindly. Apply keeps the live sequence strict: create/reuse PostgreSQL, start it when explicitly authorized, wait for healthy readiness, verify the private internal DB URL, derive the driver URL only in memory, then create/configure Backend and finally Frontend.
 
+For Coolify v4.1.2 PostgreSQL discovery, `GET /databases/{uuid}` can omit Project and Environment scope. If those fields are present, they must match exactly. If both are absent, the provisioner may reuse exactly one Factory-managed PostgreSQL only through the conservative managed-identity fallback: exact name, real UUID, selected server UUID, PostgreSQL 16, private/no public port, deterministic SQL user and database, matching Factory description marker, no contradictions, no unknown write outcome, and unambiguous selected Project plus `dev` Environment. Such output explicitly says `scope_api_verified=false` and uses `scope_verification_source=factory_managed_identity_and_explicit_selected_scope` with reason `public_api_omits_project_and_environment_scope`; it must not be described as API scope verification.
+
+Post-create verification is equally fail-closed. Only a successful create response with a real UUID followed by `GET /databases/{same_uuid}` can become verified `created`. Contradictory UUIDs, invalid JSON, 5xx, timeouts, or `write_outcome_unknown` stay `created_unverified`/`partial`, perform no create retry, and keep Backend and Frontend blocked until the next idempotent run can safely rediscover and verify the existing database.
+
 ## GitHub Environment `dev`
 
 Configure GitHub Environment `dev` before enabling mutating operations:
