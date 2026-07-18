@@ -79,12 +79,21 @@ python scripts/orchestrate_product_development.py \
   --operation deploy-full \
   --phase plan \
   --product ledger \
-  --server development \
-  --github-app goodmorning-mx-coolify
+  --server localhost \
+  --github-app goodmorning-mx-coolify \
+  --destination-uuid <coolify-destination-uuid>
 ```
 
 For apply operations, use the same target operation with `--phase apply`, set only the exact gates for the operation, and pass the exact confirmation. Abort before apply by running `plan` only or by not approving the GitHub Environment reviewer gate.
 
 ## Manual workflow use
 
-Open **Actions → Product development operations → Run workflow** from branch `dev`, enter product, operation, optional destination UUID, server, GitHub App, and the exact confirmation for mutating operations. For `operation=plan`, leave confirmation empty. Do not dispatch from feature branches.
+Open **Actions → Product development operations → Run workflow** from branch `dev`, enter product, operation, required destination UUID, server, GitHub App, and the exact confirmation for mutating operations. For `operation=plan`, leave confirmation empty. Do not dispatch from feature branches.
+
+## Stage 9 destination UUID contract
+
+Stage 9 requires an explicit `destination_uuid` for every plan or apply because the current public Coolify API does not expose a documented `GET /destinations` listing, and the server listing/detail shapes do not guarantee a `destinations` collection. Get the value in the Coolify UI by opening **Coolify → Destinations**, opening the intended destination, and copying the UUID from the URL. Do not infer it from `server.destinations`, do not call an undocumented `/destinations` endpoint, and do not use SSH, the internal Coolify database, server-local paths, or UI scraping.
+
+The plan output records `selection_source=explicit_operator_input`, `destination_uuid_present=true`, and, when the API response cannot prove server scope, `destination_scope_api_verified=false` with `scope_verification_reason=public_api_does_not_expose_destination_listing`. That explicit operator confirmation is enough to build a dry-run plan, but it is not reported as API scope verification.
+
+`operation=plan` is always GET-only and never performs provisioning, deployment, start/restart/stop/cancel/rollback, or other writes. An unsafe plan never proceeds to apply. Runtime readiness and smoke statuses of `not_checked` are safe only when the corresponding deployment was not requested; if deployment was requested, `not_checked` remains unsafe.

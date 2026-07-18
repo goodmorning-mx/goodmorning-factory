@@ -11,7 +11,7 @@ import scripts.provision_product_development as pp
 
 
 def oargs(**kw):
-    base=dict(operation="plan", phase="plan", product="ledger", server="development", github_app="goodmorning-mx-coolify", destination_uuid=None, confirmation=None)
+    base=dict(operation="plan", phase="plan", product="ledger", server="localhost", github_app="goodmorning-mx-coolify", destination_uuid='11111111-1111-4111-8111-111111111111', confirmation=None)
     base.update(kw)
     return argparse.Namespace(**base)
 
@@ -77,7 +77,7 @@ class Stage9OrchestratorTests(unittest.TestCase):
             "deploy-full": ["--deploy-backend", "--deploy-frontend"],
         }
         for oper, flags in plan_cases.items():
-            argv=op.build_provisioner_argv(oargs(operation=oper, phase="plan", destination_uuid="dest-1"))
+            argv=op.build_provisioner_argv(oargs(operation=oper, phase="plan", destination_uuid="11111111-1111-4111-8111-111111111111"))
             self.assertIn("--dry-run", argv); self.assertNotIn("--apply", argv)
             for flag in flags: self.assertIn(flag, argv)
             if oper != "deploy-full": self.assertNotIn("--deploy-frontend", argv)
@@ -140,6 +140,28 @@ class Stage9OrchestratorTests(unittest.TestCase):
             self.assertTrue(blockers)
             self.assertNotIn("postgres://", repr(blockers))
             self.assertNotIn("secret-value", repr(blockers).lower())
+
+
+    def test_destination_uuid_validation_and_workflow_required(self):
+        valid = "11111111-1111-4111-8111-111111111111"
+        self.assertEqual(op.validate_destination_uuid(valid), valid)
+        for bad in (None, "", "   ", " 11111111-1111-4111-8111-111111111111", "11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222", "[11111111-1111-4111-8111-111111111111]", "https://coolify.example/destinations/11111111-1111-4111-8111-111111111111", "not-a-uuid"):
+            with self.assertRaises(pp.ProvisioningError):
+                op.validate_destination_uuid(bad)
+        text=Path(".github/workflows/product-development.yml").read_text()
+        self.assertRegex(text, r"destination_uuid:\n\s+required: true")
+        self.assertIn("default: localhost", text)
+        self.assertNotIn("default: development", text)
+
+    def test_not_checked_is_contextual_for_unrequested_deployments(self):
+        safe={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"not_requested","user_requested":False},"backend_runtime_readiness":{"status":"not_checked"},"backend_smoke_check":{"status":"not_checked"},"frontend_deployment":{"status":"not_requested","user_requested":False},"frontend_runtime_readiness":{"status":"not_checked"},"frontend_smoke_check":{"status":"not_checked"},"blockers":[]}
+        self.assertTrue(op.classify_plan_safety(safe)[0])
+        unsafe=dict(safe)
+        unsafe["backend_deployment"]={"status":"would_deploy","user_requested":True}
+        ok, blockers=op.classify_plan_safety(unsafe)
+        self.assertFalse(ok)
+        self.assertTrue(any(b.get("reason") == "not_checked_without_unrequested_deployment" for b in blockers))
+        self.assertNotIn("not_checked", op.SAFE_STATUSES)
 
     def test_execution_metadata_and_exit_codes(self):
         with mock.patch.dict(os.environ, env_for("deploy-backend","plan"), clear=True), mock.patch.object(op,"provision",return_value={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"would_deploy"}}):

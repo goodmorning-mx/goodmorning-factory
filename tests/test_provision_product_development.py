@@ -16,6 +16,7 @@ def args(**overrides):
         environment="dev",
         server="development",
         github_app="goodmorning-mx-coolify",
+        destination_uuid="11111111-1111-4111-8111-111111111111",
         dry_run=True,
         apply=False,
         confirm_product=None,
@@ -183,7 +184,7 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
                 "name": "ledger",
                 "environments": [{"uuid": "env-1", "name": "dev"}],
             },
-            "/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"dest-1", "name":"docker"}]}],
+            "/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"11111111-1111-4111-8111-111111111111", "name":"docker"}]}],
             "/github-apps": {
                 "github_apps": [
                     {"uuid": "app-1", "name": "goodmorning-mx-coolify", "token": "hidden"}
@@ -218,7 +219,7 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
         self.assertIsNone(postgres["desired_state"]["domain"])
         self.assertEqual(backend["create_payload_preview"]["name"], "ledger-api-dev")
         self.assertEqual(backend["create_payload_preview"]["git_repository"], "goodmorning-mx/ledger")
-        self.assertEqual(backend["create_payload_preview"]["destination_uuid"], "dest-1")
+        self.assertEqual(backend["create_payload_preview"]["destination_uuid"], "11111111-1111-4111-8111-111111111111")
         self.assertFalse(backend["create_payload_preview"]["instant_deploy"])
         self.assertFalse(backend["create_payload_preview"]["is_auto_deploy_enabled"])
         self.assertFalse(backend["create_payload_preview"]["autogenerate_domain"])
@@ -592,7 +593,7 @@ class Stage3ProvisioningTests(unittest.TestCase):
     def missing_project_payloads(self, **overrides):
         payloads = {
             "/projects": [],
-            "/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"dest-1", "name":"docker"}]}],
+            "/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"11111111-1111-4111-8111-111111111111", "name":"docker"}]}],
             "/github-apps": {"github_apps": [{"uuid": "app-1", "name": "goodmorning-mx-coolify"}]},
             "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": []},
             "/projects/project-1/environments": [],
@@ -800,7 +801,7 @@ class Stage3ProvisioningTests(unittest.TestCase):
 class Stage3FinalCorrectionsTests(unittest.TestCase):
     def client_for_dry_run(self, **overrides):
         payloads = {
-            "/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"dest-1", "name":"docker"}]}],
+            "/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"11111111-1111-4111-8111-111111111111", "name":"docker"}]}],
             "/github-apps": {"github_apps": [{"uuid": "app-1", "name": "goodmorning-mx-coolify"}]},
             "/projects": [{"uuid": "project-1", "name": "ledger"}],
             "/projects/project-1": {"uuid": "project-1", "name": "ledger", "environments": [{"uuid": "env-1", "name": "dev"}]},
@@ -1277,7 +1278,7 @@ class Stage4ReviewCorrectionTests(unittest.TestCase):
 
 class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
     def healthy_client(self, **overrides):
-        app = {"uuid":"api-1","name":"ledger-api-dev","type":"application","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1","git_repository":"https://github.com/goodmorning-mx/ledger.git","git_branch":"dev","build_pack":"dockerfile","base_directory":"/backend","dockerfile_location":"/Dockerfile","ports_exposes":"8000","domains":"https://api.dev.ledger.goodmorning.mx","instant_deploy":False,"is_auto_deploy_enabled":False,"autogenerate_domain":False,"health_check_enabled":True,"health_check_path":"/health","health_check_port":"8000","health_check_method":"GET","health_check_scheme":"http","health_check_return_code":200}
+        app = {"uuid":"api-1","name":"ledger-api-dev","type":"application","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"11111111-1111-4111-8111-111111111111","github_app_uuid":"app-1","git_repository":"https://github.com/goodmorning-mx/ledger.git","git_branch":"dev","build_pack":"dockerfile","base_directory":"/backend","dockerfile_location":"/Dockerfile","ports_exposes":"8000","domains":"https://api.dev.ledger.goodmorning.mx","instant_deploy":False,"is_auto_deploy_enabled":False,"autogenerate_domain":False,"health_check_enabled":True,"health_check_path":"/health","health_check_port":"8000","health_check_method":"GET","health_check_scheme":"http","health_check_return_code":200}
         base={"/applications":[app],"/applications/api-1":app,"/applications/api-1/envs":[] ,"/databases/db-1":{"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"healthy","internal_db_url":"postgresql://user:p%40ss@host:5432/db"},"/databases":[{"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"healthy"}]}
         base.update(overrides)
         return self.client(**base)
@@ -1360,12 +1361,42 @@ class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
         for method,path,kind in [("PATCH","/applications/api-1","backend_env_update"),("POST","/applications/api-1/envs/bulk","backend_env_create"),("POST","/applications/api-1/restart",None),("DELETE","/applications/api-1",None)]:
             with self.assertRaises(pp.ProvisioningError): client.request(method,path,json_body={"key":"APP_ENV"},post_kind=kind)
 
+
+    def test_stage9_explicit_destination_with_server_without_destinations(self):
+        explicit = "22222222-2222-4222-8222-222222222222"
+        client = self.client(**{"/servers": [{"uuid": "server-1", "name": "development"}], "/applications": []})
+        result = pp.provision(args(destination_uuid=explicit), client_factory=lambda: client)
+        self.assertEqual(result["selected_destination"]["uuid"], explicit)
+        self.assertEqual(result["selected_destination"]["selection_source"], "explicit_operator_input")
+        self.assertTrue(result["selected_destination"]["destination_uuid_present"])
+        self.assertFalse(result["selected_destination"]["destination_scope_api_verified"])
+        self.assertEqual(result["selected_destination"]["scope_verification_reason"], "public_api_does_not_expose_destination_listing")
+        self.assertEqual(result["resources"][1]["create_payload_preview"]["destination_uuid"], explicit)
+        self.assertEqual(result["resources"][2]["create_payload_preview"]["destination_uuid"], explicit)
+        self.assertNotIn(("GET", "/destinations"), client.calls)
+        self.assertFalse(any(call[0] in {"POST","PATCH","PUT","DELETE"} for call in client.calls))
+
+    def test_stage9_destination_uuid_invalid_shapes_fail_closed(self):
+        for value in (None, "", "   ", "11111111-1111-4111-8111-111111111111,22222222-2222-4222-8222-222222222222", "[11111111-1111-4111-8111-111111111111]", "https://coolify.example/destinations/11111111-1111-4111-8111-111111111111", "not-a-uuid"):
+            with self.subTest(value=value):
+                with self.assertRaises(pp.ProvisioningError):
+                    pp.validate_destination_uuid(value)
+
+    def test_stage9_explicit_destination_still_checks_present_server_destinations(self):
+        explicit = "22222222-2222-4222-8222-222222222222"
+        client = self.client(**{"/servers": [{"uuid": "server-1", "name": "development", "destinations": [{"uuid":"11111111-1111-4111-8111-111111111111"}]}], "/applications": []})
+        result = pp.provision(args(destination_uuid=explicit), client_factory=lambda: client)
+        self.assertEqual(result["backend_application"]["status"], "blocked")
+        self.assertTrue(any(b.get("reason") == "destination_not_on_selected_server" for b in result["blockers"]))
+
     def test_stage5_destination_selection(self):
+        valid = "11111111-1111-4111-8111-111111111111"
+        other = "22222222-2222-4222-8222-222222222222"
         blockers=[]; server={"uuid":"s","destinations":[]}
-        self.assertIsNone(pp.select_destination(server,args(),blockers)); self.assertTrue(blockers)
-        blockers=[]; server={"uuid":"s","destinations":[{"uuid":"a"},{"uuid":"b"}]}
-        self.assertIsNone(pp.select_destination(server,args(),blockers))
-        blockers=[]; self.assertEqual(pp.select_destination(server,args(destination_uuid="b"),blockers)["uuid"],"b")
+        self.assertEqual(pp.select_destination(server,args(destination_uuid=valid),blockers)["uuid"], valid); self.assertFalse(blockers)
+        blockers=[]; server={"uuid":"s","destinations":[{"uuid":valid},{"uuid":other}]}
+        self.assertIsNone(pp.select_destination(server,args(destination_uuid="33333333-3333-4333-8333-333333333333"),blockers)); self.assertTrue(blockers)
+        blockers=[]; self.assertEqual(pp.select_destination(server,args(destination_uuid=other),blockers)["uuid"], other)
 
     def test_stage5_no_remote_process_terms_in_source(self):
         source=open("scripts/provision_product_development.py").read()
@@ -1375,12 +1406,12 @@ class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
     def bound_client(self):
         mode=pp.ExecutionMode("apply","ledger","ledger",True,False,None,True,"ledger-api-dev",True,"ledger-api-dev")
         client=pp.CoolifyClient("https://coolify.example","token",mode=mode)
-        client.bind_backend_application_uuid("api-1", {"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1","git_repository":"goodmorning-mx/ledger"})
+        client.bind_backend_application_uuid("api-1", {"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"11111111-1111-4111-8111-111111111111","github_app_uuid":"app-1","git_repository":"goodmorning-mx/ledger"})
         client.bind_backend_env_contract(pp.desired_backend_env("ledger", "postgresql+psycopg://user:pass@host/db"))
         return client
 
     def app_payload(self, **updates):
-        payload=pp.backend_create_payload(args(), {"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1"})
+        payload=pp.backend_create_payload(args(), {"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"11111111-1111-4111-8111-111111111111","github_app_uuid":"app-1"})
         payload.update(updates)
         return payload
 
@@ -1421,7 +1452,7 @@ class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
     def test_stage5_application_payload_rejects_extra_ported_domain_and_wrong_binding(self):
         mode=pp.ExecutionMode("apply","ledger","ledger",True,False,None,True,"ledger-api-dev",False,None)
         client=pp.CoolifyClient("https://coolify.example","token",mode=mode)
-        client.bind_backend_application_bindings({"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1","git_repository":"goodmorning-mx/ledger"})
+        client.bind_backend_application_bindings({"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"11111111-1111-4111-8111-111111111111","github_app_uuid":"app-1","git_repository":"goodmorning-mx/ledger"})
         client._check_request("POST","/applications/private-github-app",post_kind="backend_application_create",json_body=self.app_payload())
         for payload in ({**self.app_payload(),"extra":"no"}, self.app_payload(domains="https://api.dev.ledger.goodmorning.mx:8000"), self.app_payload(project_uuid="other")):
             with self.assertRaises(pp.ProvisioningError):
@@ -1566,7 +1597,7 @@ class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
     def test_stage5_application_repository_binding_exact_and_equivalent(self):
         mode=pp.ExecutionMode("apply","ledger","ledger",True,False,None,True,"ledger-api-dev",False,None)
         client=pp.CoolifyClient("https://coolify.example","token",mode=mode)
-        bindings={"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1","git_repository":"owner/repo"}
+        bindings={"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"11111111-1111-4111-8111-111111111111","github_app_uuid":"app-1","git_repository":"owner/repo"}
         client.bind_backend_application_bindings(bindings)
         for repo in ("owner/repo", "https://github.com/owner/repo", "https://github.com/owner/repo.git"):
             payload=pp.backend_create_payload(args(repository="owner/repo"), bindings); payload["git_repository"]=repo
@@ -1580,14 +1611,14 @@ class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
 
 class Stage6FrontendApplicationTests(ProductDevelopmentProvisionerTests):
     def frontend_app(self, **overrides):
-        data = {"uuid":"front-1", "name":"ledger-frontend-dev", "type":"application", "project_uuid":"project-1", "environment_uuid":"env-1", "server_uuid":"server-1", "destination_uuid":"dest-1", "github_app_uuid":"app-1", "git_repository":"goodmorning-mx/ledger", "git_branch":"dev", "build_pack":"dockerfile", "base_directory":"/frontend", "dockerfile_location":"/Dockerfile", "ports_exposes":"80", "domains":"https://dev.ledger.goodmorning.mx", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/", "health_check_port":"80", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
+        data = {"uuid":"front-1", "name":"ledger-frontend-dev", "type":"application", "project_uuid":"project-1", "environment_uuid":"env-1", "server_uuid":"server-1", "destination_uuid":"11111111-1111-4111-8111-111111111111", "github_app_uuid":"app-1", "git_repository":"goodmorning-mx/ledger", "git_branch":"dev", "build_pack":"dockerfile", "base_directory":"/frontend", "dockerfile_location":"/Dockerfile", "ports_exposes":"80", "domains":"https://dev.ledger.goodmorning.mx", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/", "health_check_port":"80", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
         data.update(overrides)
         return data
 
 
 
     def backend_app(self, **overrides):
-        data = {"uuid":"api-1", "name":"ledger-api-dev", "type":"application", "project_uuid":"project-1", "environment_uuid":"env-1", "server_uuid":"server-1", "destination_uuid":"dest-1", "github_app_uuid":"app-1", "git_repository":"goodmorning-mx/ledger", "git_branch":"dev", "build_pack":"dockerfile", "base_directory":"/backend", "dockerfile_location":"/Dockerfile", "ports_exposes":"8000", "domains":"https://api.dev.ledger.goodmorning.mx", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/health", "health_check_port":"8000", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
+        data = {"uuid":"api-1", "name":"ledger-api-dev", "type":"application", "project_uuid":"project-1", "environment_uuid":"env-1", "server_uuid":"server-1", "destination_uuid":"11111111-1111-4111-8111-111111111111", "github_app_uuid":"app-1", "git_repository":"goodmorning-mx/ledger", "git_branch":"dev", "build_pack":"dockerfile", "base_directory":"/backend", "dockerfile_location":"/Dockerfile", "ports_exposes":"8000", "domains":"https://api.dev.ledger.goodmorning.mx", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/health", "health_check_port":"8000", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
         data.update(overrides)
         return data
 
@@ -1675,14 +1706,14 @@ class Stage6FrontendApplicationTests(ProductDevelopmentProvisionerTests):
         self.assertIn(r["frontend_application"]["status"], {"planned_after_backend","would_create"})
 
     def test_stage6_frontend_compatible_duplicate_and_incompatible_cases(self):
-        context={"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1","git_repository":"goodmorning-mx/ledger"}
+        context={"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"11111111-1111-4111-8111-111111111111","github_app_uuid":"app-1","git_repository":"goodmorning-mx/ledger"}
         self.assertEqual(pp.classify_frontend_application([self.frontend_app()], args(), context)["status"], "exists")
         self.assertEqual(pp.classify_frontend_application([self.frontend_app(), self.frontend_app(uuid="front-2")], args(), context)["status"], "duplicate")
         for field,value in (("git_repository","bad/repo"),("git_branch","main"),("github_app_uuid","bad"),("destination_uuid","bad"),("base_directory","/web"),("dockerfile_location","Dockerfile"),("ports_exposes","3000"),("domains","https://dev.ledger.goodmorning.mx:80"),("is_auto_deploy_enabled",True),("health_check_path","/health")):
             self.assertEqual(pp.classify_frontend_application([self.frontend_app(**{field:value})], args(), context)["status"], "incompatible", field)
 
     def test_stage6_frontend_payload_and_domain_validation(self):
-        context={"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","github_app_uuid":"app-1","git_repository":"goodmorning-mx/ledger"}
+        context={"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"11111111-1111-4111-8111-111111111111","github_app_uuid":"app-1","git_repository":"goodmorning-mx/ledger"}
         payload=pp.frontend_create_payload(args(), context)
         self.assertEqual(set(payload), pp.APPROVED_FRONTEND_APPLICATION_FIELDS)
         self.assertEqual(payload["ports_exposes"], "80")
@@ -1698,13 +1729,13 @@ class Stage6FrontendApplicationTests(ProductDevelopmentProvisionerTests):
 
     def test_stage6_apply_gates_and_post_then_verify(self):
         front=self.frontend_app()
-        api={**self.client().payloads["/applications"][0], "destination_uuid":"dest-1", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/health", "health_check_port":"8000", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
+        api={**self.client().payloads["/applications"][0], "destination_uuid":"11111111-1111-4111-8111-111111111111", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/health", "health_check_port":"8000", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
         c=self.client(**{"/applications":[api], "/applications/api-1":api, "/applications/front-1":front, "/applications/front-1/envs":[]})
         with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_FRONTEND_ENV_WRITES":"true"}, clear=False):
             r=pp.provision(args(dry_run=False, apply=True, confirm_product="ledger", confirm_frontend_application="ledger-frontend-dev", confirm_frontend_environment="ledger-frontend-dev"), client_factory=lambda:c)
         posts=[call for call in c.calls if call[0]=="POST" and call[1]=="/applications/private-github-app"]
         self.assertEqual(len(posts),1)
-        self.assertEqual(posts[0][2], pp.frontend_create_payload(args(), {"project_uuid":"project-1","environment_uuid":"env-1","environment_name":"dev","server_uuid":"server-1","github_app_uuid":"app-1","destination_uuid":"dest-1","git_repository":"goodmorning-mx/ledger"}))
+        self.assertEqual(posts[0][2], pp.frontend_create_payload(args(), {"project_uuid":"project-1","environment_uuid":"env-1","environment_name":"dev","server_uuid":"server-1","github_app_uuid":"app-1","destination_uuid":"11111111-1111-4111-8111-111111111111","git_repository":"goodmorning-mx/ledger"}))
         self.assertIn(("GET","/applications/front-1"), c.calls)
 
     def test_stage6_vite_api_url_env_contract_and_writes(self):
@@ -1756,11 +1787,11 @@ class Stage6FrontendApplicationTests(ProductDevelopmentProvisionerTests):
 class Stage7BackendDeploymentTests(unittest.TestCase):
     def base_client(self, **overrides):
         db_url = "postgresql://user:p%40ss@postgres:5432/ledger_dev"
-        app = {"uuid":"api-1","id":"api-1","name":"ledger-api-dev","type":"application","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"dest-1","git_repository":"goodmorning-mx/ledger","git_branch":"dev","build_pack":"dockerfile","base_directory":"/backend","dockerfile_location":"/Dockerfile","ports_exposes":"8000","domains":"https://api.dev.ledger.goodmorning.mx","github_app_uuid":"app-1","instant_deploy":False,"is_auto_deploy_enabled":False,"autogenerate_domain":False,"health_check_enabled":True,"health_check_path":"/health","health_check_port":"8000","health_check_method":"GET","health_check_scheme":"http","health_check_return_code":200,"status":"running:healthy"}
+        app = {"uuid":"api-1","id":"api-1","name":"ledger-api-dev","type":"application","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"11111111-1111-4111-8111-111111111111","git_repository":"goodmorning-mx/ledger","git_branch":"dev","build_pack":"dockerfile","base_directory":"/backend","dockerfile_location":"/Dockerfile","ports_exposes":"8000","domains":"https://api.dev.ledger.goodmorning.mx","github_app_uuid":"app-1","instant_deploy":False,"is_auto_deploy_enabled":False,"autogenerate_domain":False,"health_check_enabled":True,"health_check_path":"/health","health_check_port":"8000","health_check_method":"GET","health_check_scheme":"http","health_check_return_code":200,"status":"running:healthy"}
         payloads={
             "/projects":[{"uuid":"project-1","name":"ledger"}],
             "/projects/project-1":{"uuid":"project-1","name":"ledger","environments":[{"uuid":"env-1","name":"dev"}]},
-            "/servers":[{"uuid":"server-1","name":"development","destinations":[{"uuid":"dest-1","name":"docker"}]}],
+            "/servers":[{"uuid":"server-1","name":"development","destinations":[{"uuid":"11111111-1111-4111-8111-111111111111","name":"docker"}]}],
             "/github-apps":{"github_apps":[{"uuid":"app-1","name":"goodmorning-mx-coolify"}]},
             "/applications":[app, {**app,"uuid":"front-1","id":"front-1","name":"ledger-frontend-dev","base_directory":"/frontend","ports_exposes":"80","domains":"https://dev.ledger.goodmorning.mx","health_check_path":"/","health_check_port":"80"}],
             "/applications/api-1": app,

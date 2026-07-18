@@ -20,13 +20,13 @@ on:
       server:
         required: true
         type: string
-        default: development
+        default: localhost
       github_app:
         required: true
         type: string
         default: goodmorning-mx-coolify
       destination_uuid:
-        required: false
+        required: true
         type: string
 
 permissions:
@@ -85,9 +85,7 @@ jobs:
               "--server", os.environ["INPUT_SERVER"],
               "--github-app", os.environ["INPUT_GITHUB_APP"],
           ]
-          destination = os.environ.get("INPUT_DESTINATION_UUID")
-          if destination:
-              argv.extend(["--destination-uuid", destination])
+          argv.extend(["--destination-uuid", os.environ["INPUT_DESTINATION_UUID"]])
           raise SystemExit(main(argv))
           PY
 
@@ -124,9 +122,7 @@ jobs:
               "--github-app", os.environ["INPUT_GITHUB_APP"],
               "--confirmation", os.environ.get("INPUT_CONFIRMATION", ""),
           ]
-          destination = os.environ.get("INPUT_DESTINATION_UUID")
-          if destination:
-              argv.extend(["--destination-uuid", destination])
+          argv.extend(["--destination-uuid", os.environ["INPUT_DESTINATION_UUID"]])
           raise SystemExit(main(argv))
           PY
 

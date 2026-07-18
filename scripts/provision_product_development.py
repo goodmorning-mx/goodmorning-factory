@@ -29,6 +29,7 @@ TIMEOUT_SECONDS = 30
 SENSITIVE_ENV = ("COOLIFY_API_TOKEN",)
 SECRET_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL|DATABASE_URL|AUTHORIZATION|INTERNAL_DB_URL)", re.I)
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+UUID_RE = re.compile(r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 READ_ONLY_METHODS = {"GET"}
 WRITE_METHODS = {"POST", "PATCH"}
@@ -1806,22 +1807,41 @@ def frontend_domain(product: str) -> str:
     return f"https://dev.{product}.goodmorning.mx"
 
 
+def validate_destination_uuid(value: Any) -> str:
+    if value is None:
+        raise ProvisioningError("--destination-uuid is required for Stage 9 Application planning and creation.", error_type="validation", code=2)
+    if not isinstance(value, str):
+        raise ProvisioningError("--destination-uuid must be exactly one UUID string.", error_type="validation", code=2)
+    if value != value.strip() or not value:
+        raise ProvisioningError("--destination-uuid must not be empty or padded with whitespace.", error_type="validation", code=2)
+    if "," in value or "[" in value or "]" in value or " " in value or "\n" in value or "\t" in value:
+        raise ProvisioningError("--destination-uuid must be a single UUID, not a list.", error_type="validation", code=2)
+    parsed = urllib.parse.urlparse(value)
+    if parsed.scheme or parsed.netloc or "/" in value or "?" in value or "#" in value:
+        raise ProvisioningError("--destination-uuid must be a UUID, not a URL.", error_type="validation", code=2)
+    if not UUID_RE.fullmatch(value):
+        raise ProvisioningError("--destination-uuid must be exactly one RFC 4122 UUID.", error_type="validation", code=2)
+    return value
+
+
 def select_destination(server: dict[str, Any], args: argparse.Namespace, blockers: list[Any]) -> dict[str, Any] | None:
+    selected = validate_destination_uuid(getattr(args, "destination_uuid", None))
     destinations = item_list(server.get("destinations") if isinstance(server, dict) else [])
-    selected = getattr(args, "destination_uuid", None)
-    if not destinations:
-        blockers.append({"resource": "destination", "status": "blocked", "reason": "no_destination_for_selected_server"})
-        return None
-    if selected:
-        matches = [d for d in destinations if str(field(d, "uuid", "id") or "") == str(selected)]
+    if destinations:
+        matches = [d for d in destinations if str(field(d, "uuid", "id") or "") == selected]
         if len(matches) != 1:
             blockers.append({"resource": "destination", "status": "blocked", "reason": "destination_not_on_selected_server"})
             return None
-        return summary(matches[0], "name", "uuid", "id", "network")
-    if len(destinations) > 1:
-        blockers.append({"resource": "destination", "status": "blocked", "reason": "multiple_destinations_require_destination_uuid"})
-        return None
-    return summary(destinations[0], "name", "uuid", "id", "network")
+        selected_summary = summary(matches[0], "name", "uuid", "id", "network")
+        selected_summary.update({"selection_source": "explicit_operator_input", "destination_uuid_present": True, "destination_scope_api_verified": True})
+        return selected_summary
+    return {
+        "uuid": selected,
+        "selection_source": "explicit_operator_input",
+        "destination_uuid_present": True,
+        "destination_scope_api_verified": False,
+        "scope_verification_reason": "public_api_does_not_expose_destination_listing",
+    }
 
 
 def backend_create_payload(args: argparse.Namespace, bindings: dict[str, Any]) -> dict[str, Any]:
@@ -2146,7 +2166,8 @@ def ensure_frontend_application(client: CoolifyClient, args: argparse.Namespace,
         return {**classified, "status": "recreate_required" if st=="incompatible" else st}
     if not backend_allows_frontend(backend):
         status = "planned_after_backend" if not mode.is_apply else "blocked"
-        return {"name": frontend_application_name(args.product), "status": status, "reason":"backend_application_not_verified"}
+        reason = "backend_dependency_planned" if not mode.is_apply and backend.get("status") in {"absent", "would_create"} and not backend.get("blockers") else "backend_application_not_verified"
+        return {"name": frontend_application_name(args.product), "status": status, "reason": reason}
     if not mode.is_apply:
         actions.append(ActionRecord("frontend_application","plan_create","would_create").to_dict())
         return {"name": frontend_application_name(args.product), "status":"would_create", "create_payload_preview": frontend_payload_preview(frontend_create_payload(args,context))}
@@ -2234,7 +2255,8 @@ def reconcile_frontend_environment(client: CoolifyClient, args: argparse.Namespa
     uuid=frontend.get("uuid"); results=[]; blockers=[]
     if not backend_allows_frontend(backend):
         status = "blocked" if mode.is_apply else "planned_after_backend"
-        return {"status": status, "variables": [], "blockers": [{"resource":"frontend_environment", "key":"VITE_API_URL", "reason":"backend_application_not_verified", "backend_status": backend.get("status")}] if mode.is_apply else [], "observed": empty_frontend_env_metadata()}
+        reason = "backend_dependency_planned" if not mode.is_apply and backend.get("status") in {"absent", "would_create"} and not backend.get("blockers") else "backend_application_not_verified"
+        return {"status": status, "reason": reason, "variables": [], "blockers": [{"resource":"frontend_environment", "key":"VITE_API_URL", "reason":"backend_application_not_verified", "backend_status": backend.get("status")}] if mode.is_apply else [], "observed": empty_frontend_env_metadata()}
     if frontend.get("status") not in {"exists","created"} or not uuid:
         return {"status":"blocked" if mode.is_apply else "planned", "variables":[], "blockers":[{"reason":"frontend_application_not_verified"}] if mode.is_apply else [], "observed": empty_frontend_env_metadata()}
     if str(uuid) == str(backend.get("uuid")):
@@ -3104,7 +3126,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         "environment_name": "dev",
         "server_uuid": server_uuid,
         "github_app_uuid": github_app_summary.get("uuid") or github_app_summary.get("id"),
-        "destination_uuid": (destination or {}).get("uuid") or (destination or {}).get("id"),
+        "destination_uuid": destination.get("uuid") if isinstance(destination, dict) else None,
         "git_repository": args.repository,
     }
     discovery = {
@@ -3117,8 +3139,6 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
     }
     precondition_ok, pg_blockers, database_url = postgres_backend_precondition(client, args, postgres, postgresql_readiness)
     blockers.extend(pg_blockers if mode.is_apply else [])
-    if destination is None:
-        precondition_ok = False
     backend = ensure_backend_application(client, args, context, mode, actions, precondition_ok)
     if backend.get("status") in {"duplicate", "compatibility_unverified", "scope_unverified", "recreate_required", "blocked", "created_unverified", "write_outcome_unknown"}:
         blockers.append({"resource": "backend_application", "status": backend.get("status")})
