@@ -88,6 +88,10 @@ The Backend Application can be created or configured only when PostgreSQL is ver
 
 `internal_db_url` and the derived `DATABASE_URL` are never printed, returned, persisted, added to action details, or included in payload previews.
 
+Coolify v4.1.2 may omit `project_uuid` and `environment_uuid` from `GET /databases/{uuid}`. Applications still require API-verified scope through the normal `resource_scope()` checks; the PostgreSQL exception is narrower and conservative. When Coolify returns either field, it must match the selected Project and exact `dev` Environment, and contradictions are `out_of_scope`. When both are omitted, an existing PostgreSQL can be reused only if there is exactly one exact-name match with a real UUID, the selected server UUID matches, engine is PostgreSQL, version is exactly 16, it is private with no public port, deterministic `postgres_user` and `postgres_db` match the product, the Factory-managed description marker matches, no contradictions or unknown writes exist, and Project plus `dev` Environment selection was unambiguous. The output then reports `scope_api_verified=false`, `scope_verification_source=factory_managed_identity_and_explicit_selected_scope`, and `scope_verification_reason=public_api_omits_project_and_environment_scope`; it does not claim the public API verified omitted Project or Environment fields.
+
+After a create attempt, PostgreSQL can be marked `created` only after a 2xx `POST /databases/postgresql` returns a real UUID and a subsequent `GET /databases/{same_uuid}` verifies the same UUID and the conservative identity policy above. The internal post-create provenance is non-secret and limited to expected name, returned UUID, selected Project/dev Environment/server identifiers, and request/write booleans. Invalid JSON, timeout, 5xx, contradictory UUID, or `write_outcome_unknown` remain `created_unverified` or `partial`, do not trigger a retry, and block Backend/Frontend progression.
+
 ## Runtime environment variables
 
 Stage 5 reconciles exactly these Backend runtime variables:

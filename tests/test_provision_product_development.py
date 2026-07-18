@@ -590,6 +590,22 @@ class Stage3ProvisioningTests(unittest.TestCase):
     def apply_env(self):
         return mock.patch.dict(os.environ, {"COOLIFY_ALLOW_RESOURCE_WRITES": "true"})
 
+    def managed_db(self, **overrides):
+        db = {
+            "uuid": "db-1",
+            "name": "ledger-postgres-dev",
+            "type": "postgresql",
+            "version": "16",
+            "is_public": False,
+            "server_uuid": "server-1",
+            "postgres_user": "ledger_dev_user",
+            "postgres_db": "ledger_dev",
+            "description": pp.FACTORY_POSTGRES_DESCRIPTION,
+            "status": "exited",
+        }
+        db.update(overrides)
+        return db
+
     def missing_project_payloads(self, **overrides):
         payloads = {
             "/projects": [],
@@ -641,6 +657,91 @@ class Stage3ProvisioningTests(unittest.TestCase):
         self.assertFalse(any("deploy" in call[1] or "start" in call[1] for call in client.calls))
         self.assertNotIn("FAKE_PASSWORD_MARKER", json.dumps(result))
         self.assertNotIn("fake:fake", json.dumps(result))
+
+    def test_post_create_omitted_scope_same_uuid_is_created_verified(self):
+        db = self.managed_db()
+        client = FakeWriteClient(self.missing_project_payloads(**{
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/databases": [],
+            "/databases/db-1": db,
+        }), {"postgresql": {"uuid": "db-1", "name": "ledger-postgres-dev"}})
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql"]["status"], "created")
+        self.assertFalse(result["postgresql"]["scope_api_verified"])
+        self.assertEqual(result["postgresql"]["scope_verification_source"], pp.POSTGRES_SCOPE_FALLBACK_SOURCE)
+        self.assertEqual(result["postgresql"]["scope_verification_reason"], pp.POSTGRES_SCOPE_FALLBACK_REASON)
+
+    def test_rerun_reuses_managed_omitted_scope_without_second_post(self):
+        db = self.managed_db(status="running:healthy", internal_db_url="postgresql://u:p@h:5432/d")
+        client = FakeWriteClient(self.missing_project_payloads(**{
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/databases": [db],
+            "/databases/db-1": db,
+        }))
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql"]["status"], "exists")
+        self.assertEqual([c[1] for c in client.calls if c[0] == "POST"].count("/databases/postgresql"), 0)
+        self.assertEqual(result["postgresql_readiness"]["status"], "already_healthy")
+
+    def test_postgresql_omitted_scope_different_server_is_out_of_scope(self):
+        db = self.managed_db(server_uuid="other")
+        client = FakeWriteClient(self.missing_project_payloads(**{"/projects": [{"uuid": "project-1", "name": "ledger"}], "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]}, "/databases": [db], "/databases/db-1": db}))
+        result = pp.provision(args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql"]["status"], "out_of_scope")
+
+    def test_postgresql_contradictory_project_or_environment_is_out_of_scope(self):
+        for override in ({"project_uuid": "other", "environment_uuid": "env-1"}, {"project_uuid": "project-1", "environment_uuid": "other"}):
+            db = self.managed_db(**override)
+            client = FakeWriteClient(self.missing_project_payloads(**{"/projects": [{"uuid": "project-1", "name": "ledger"}], "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]}, "/databases": [db], "/databases/db-1": db}))
+            result = pp.provision(args(), client_factory=lambda: client)
+            self.assertEqual(result["postgresql"]["status"], "out_of_scope")
+
+    def test_postgresql_duplicate_exact_name_is_blocked(self):
+        db1 = self.managed_db(uuid="db-1")
+        db2 = self.managed_db(uuid="db-2")
+        client = FakeWriteClient(self.missing_project_payloads(**{"/projects": [{"uuid": "project-1", "name": "ledger"}], "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]}, "/databases": [db1, db2]}))
+        with self.assertRaises(pp.ProvisioningError):
+            pp.provision(args(), client_factory=lambda: client)
+
+    def test_postgresql_managed_identity_mismatches_are_not_reused(self):
+        cases = [
+            ({"type": "mysql"}, "incompatible"),
+            ({"version": "15"}, "incompatible"),
+            ({"is_public": True}, "incompatible"),
+            ({"postgres_user": "wrong"}, "incompatible"),
+            ({"description": "wrong"}, "incompatible"),
+            ({"postgres_db": None}, "compatibility_unverified"),
+        ]
+        for override, expected in cases:
+            db = self.managed_db(**override)
+            client = FakeWriteClient(self.missing_project_payloads(**{"/projects": [{"uuid": "project-1", "name": "ledger"}], "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]}, "/databases": [db], "/databases/db-1": db}))
+            result = pp.provision(args(), client_factory=lambda: client)
+            self.assertEqual(result["postgresql"]["status"], expected)
+
+    def test_postgresql_post_create_contradictory_uuid_is_created_unverified(self):
+        client = FakeWriteClient(self.missing_project_payloads(**{
+            "/projects": [{"uuid": "project-1", "name": "ledger"}],
+            "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]},
+            "/databases": [],
+            "/databases/db-1": self.managed_db(uuid="other-db"),
+        }), {"postgresql": {"uuid": "db-1", "name": "ledger-postgres-dev"}})
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql"]["status"], "created_unverified")
+
+    def test_postgresql_write_outcome_unknown_does_not_retry_or_leak(self):
+        secret = "postgresql://user:secret@host/db"
+        err = pp.ProvisioningError(f"timeout {secret}", method="POST", path="/databases/postgresql", write_outcome_unknown=True, request_attempted=True)
+        client = FakeWriteClient(self.missing_project_payloads(**{"/projects": [{"uuid": "project-1", "name": "ledger"}], "/projects/project-1": {"environments": [{"uuid": "env-1", "name": "dev"}]}}), {"postgresql": err})
+        with self.apply_env():
+            result = pp.provision(apply_args(), client_factory=lambda: client)
+        self.assertEqual(result["postgresql"]["status"], "created_unverified")
+        self.assertEqual([c[1] for c in client.calls if c[0] == "POST"].count("/databases/postgresql"), 1)
+        self.assertNotIn(secret, json.dumps(result))
 
     def test_apply_gates_fail_before_any_post(self):
         for confirm, env in (("ledger", {}), (None, {"COOLIFY_ALLOW_RESOURCE_WRITES": "true"}), ("other", {"COOLIFY_ALLOW_RESOURCE_WRITES": "true"})):

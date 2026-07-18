@@ -25,6 +25,9 @@ from typing import Any, Callable
 ALLOWED_BRANCH = "dev"
 ALLOWED_ENVIRONMENT = "dev"
 POSTGRES_VERSION = "16"
+FACTORY_POSTGRES_DESCRIPTION = "GoodMorning development PostgreSQL 16 resource managed by factory provisioning stage 3."
+POSTGRES_SCOPE_FALLBACK_SOURCE = "factory_managed_identity_and_explicit_selected_scope"
+POSTGRES_SCOPE_FALLBACK_REASON = "public_api_omits_project_and_environment_scope"
 TIMEOUT_SECONDS = 30
 SENSITIVE_ENV = ("COOLIFY_API_TOKEN",)
 SECRET_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|PRIVATE|CREDENTIAL|DATABASE_URL|AUTHORIZATION|INTERNAL_DB_URL)", re.I)
@@ -1367,6 +1370,62 @@ def postgres_differences(item: dict[str, Any]) -> tuple[list[dict[str, Any]], li
     return differences, unverified
 
 
+def is_real_identifier(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text) and not text.startswith("${")
+
+
+def postgres_identity_differences(item: dict[str, Any], product: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    differences, unverified = postgres_differences(item)
+    expected_sql = deterministic_sql_names(product)
+    for key, expected in expected_sql.items():
+        actual = nested_field(item, key)
+        if actual in (None, ""):
+            unverified.append({"field": key, "expected": expected})
+        elif str(actual) != expected:
+            differences.append({"field": key, "expected": expected, "actual": actual})
+    description = nested_field(item, "description")
+    if description in (None, ""):
+        unverified.append({"field": "description", "expected": "factory_managed_marker"})
+    elif str(description) != FACTORY_POSTGRES_DESCRIPTION:
+        differences.append({"field": "description", "expected": "factory_managed_marker", "actual": "different"})
+    return differences, unverified
+
+
+def postgresql_scope_identity(item: dict[str, Any], context: dict[str, Any]) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Conservative PostgreSQL-only scope classification for Coolify v4.1.2.
+
+    If Coolify exposes project/environment UUIDs, they must match exactly. If
+    both are omitted, a database may still be reused only through the separate
+    Factory-managed identity checks in postgres_identity_differences().
+    """
+
+    scope_status, details = resource_scope(item, context)
+    if scope_status != "scope_unverified":
+        return scope_status, details, {"scope_api_verified": scope_status == "in_scope"}
+    missing = {detail["field"] for detail in details if detail["status"] == "unverified"}
+    if {"project_uuid", "environment_uuid"}.issubset(missing) and "server_uuid" not in missing:
+        return "in_scope", details, {
+            "scope_api_verified": False,
+            "scope_verification_source": POSTGRES_SCOPE_FALLBACK_SOURCE,
+            "scope_verification_reason": POSTGRES_SCOPE_FALLBACK_REASON,
+        }
+    return scope_status, details, {"scope_api_verified": False}
+
+
+def postgresql_provenance(expected_name: str, returned_uuid: Any, project: dict[str, Any], environment: dict[str, Any], server: dict[str, Any], *, request_attempted: bool, write_performed: bool) -> dict[str, Any]:
+    return {
+        "expected_name": expected_name,
+        "returned_uuid": returned_uuid,
+        "project_uuid": project.get("uuid"),
+        "environment_name": environment.get("name"),
+        "environment_uuid": environment.get("uuid"),
+        "server_uuid": server.get("uuid"),
+        "request_attempted": request_attempted,
+        "write_performed": write_performed,
+    }
+
+
 def deterministic_sql_names(product: str) -> dict[str, str]:
     safe = re.sub(r"[^a-z0-9_]", "_", product.replace("-", "_"))
     return {"postgres_user": f"{safe}_dev_user", "postgres_db": f"{safe}_dev"}
@@ -1391,7 +1450,7 @@ def postgresql_create_payload(args: argparse.Namespace, project_uuid: str, serve
         "project_uuid": project_uuid,
         "environment_name": "dev",
         "name": f"{args.product}-postgres-dev",
-        "description": "GoodMorning development PostgreSQL 16 resource managed by factory provisioning stage 3.",
+        "description": FACTORY_POSTGRES_DESCRIPTION,
         "image": "postgres:16-alpine",
         "postgres_user": names["postgres_user"],
         "postgres_password": password,
@@ -1539,17 +1598,23 @@ def ensure_environment(client: CoolifyClient, project: dict[str, Any], mode: Exe
 
 def postgres_classification_from_detail(item: dict[str, Any], context: dict[str, Any]) -> dict[str, Any]:
     name = context["name"]
-    scope_status, scope_details = resource_scope(item, context)
+    scope_status, scope_details, scope_meta = postgresql_scope_identity(item, context)
     if scope_status != "in_scope":
-        return {"status": scope_status, "name": name, "uuid": field(item, "uuid", "id"), "scope_details": scope_details}
-    differences, unverified = postgres_differences(item)
+        return {"status": scope_status, "name": name, "uuid": field(item, "uuid", "id"), "scope_details": scope_details, **scope_meta}
+    if scope_meta.get("scope_api_verified") is False:
+        differences, unverified = postgres_identity_differences(item, context.get("product", ""))
+    else:
+        differences, unverified = postgres_differences(item)
     base = {
         "name": name,
         "uuid": field(item, "uuid", "id"),
         "internal_db_url_available": bool(nested_field(item, "internal_db_url")),
         "credentials_configured": bool(nested_field(item, "postgres_user", "postgres_db")),
         "scope_details": scope_details,
+        **scope_meta,
     }
+    if not is_real_identifier(base["uuid"]):
+        unverified.append({"field": "uuid", "expected": "real_uuid"})
     if differences:
         return {**base, "status": "incompatible", "differences": differences}
     if unverified:
@@ -1571,7 +1636,7 @@ def exact_postgres_matches(client: CoolifyClient, name: str) -> list[dict[str, A
 
 def ensure_postgresql(client: CoolifyClient, args: argparse.Namespace, project: dict[str, Any], environment: dict[str, Any], server: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]]) -> dict[str, Any]:
     name = f"{args.product}-postgres-dev"
-    context = {"name": name, "project_uuid": project["uuid"], "environment_uuid": environment["uuid"], "server_uuid": server["uuid"]}
+    context = {"name": name, "product": args.product, "project_uuid": project["uuid"], "environment_uuid": environment["uuid"], "server_uuid": server["uuid"]}
     matches = exact_postgres_matches(client, name)
     if len(matches) > 1:
         raise ProvisioningError(f"Found multiple PostgreSQL resources named exactly '{name}'.", error_type="discovery")
@@ -1599,7 +1664,7 @@ def ensure_postgresql(client: CoolifyClient, args: argparse.Namespace, project: 
     except ProvisioningError as exc:
         if exc.write_outcome_unknown:
             actions.append(ActionRecord("postgresql", "create", "outcome_unknown", request_attempted=True, write_outcome_unknown=True).to_dict())
-            raise
+            return {"status": "created_unverified", "name": name, "write_performed": exc.write_performed, "write_outcome_unknown": True, "request_attempted": True, "internal_db_url_available": False, "credentials_configured": False}
         if exc.http_status in {409, 422}:
             matches = exact_postgres_matches(client, name)
             if len(matches) == 1 and field(matches[0], "uuid", "id"):
@@ -1620,19 +1685,24 @@ def ensure_postgresql(client: CoolifyClient, args: argparse.Namespace, project: 
     if not uuid:
         actions.append(ActionRecord("postgresql", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
         return {"status": "created_unverified", "name": name, "write_performed": True, "internal_db_url_available": False, "credentials_configured": True}
+    provenance = postgresql_provenance(name, uuid, project, environment, server, request_attempted=True, write_performed=True)
     try:
         detail = hydrate_database_by_uuid(client, uuid, item if isinstance(item, dict) else {"uuid": uuid, "name": name})
     except ProvisioningError as exc:
         actions.append(ActionRecord("postgresql", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
-        return {"status": "created_unverified", "name": name, "uuid": uuid, "write_performed": True, "verification_error": exc.message, "internal_db_url_available": False, "credentials_configured": True}
+        return {"status": "created_unverified", "name": name, "uuid": uuid, "write_performed": True, "verification_error": exc.message, "post_create_provenance": provenance, "internal_db_url_available": False, "credentials_configured": True}
+    if str(field(detail, "uuid", "id") or "") != str(uuid):
+        actions.append(ActionRecord("postgresql", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
+        return {"status": "created_unverified", "name": name, "uuid": uuid, "write_performed": True, "post_create_provenance": provenance, "verification_error": "PostgreSQL detail UUID contradicted create response UUID.", "internal_db_url_available": False, "credentials_configured": True}
     result = postgres_classification_from_detail(detail, context)
     if result["status"] == "exists":
         result["status"] = "created"
         result["credentials_configured"] = True
+        result["post_create_provenance"] = provenance
         actions.append(ActionRecord("postgresql", "create", "created", request_attempted=True, write_performed=True, verified=True).to_dict())
         return result
     actions.append(ActionRecord("postgresql", "create", "created_unverified", request_attempted=True, write_performed=True).to_dict())
-    return {**result, "status": "created_unverified" if result["status"] in {"compatibility_unverified", "scope_unverified"} else result["status"], "write_performed": True, "credentials_configured": True}
+    return {**result, "status": "created_unverified" if result["status"] in {"compatibility_unverified", "scope_unverified"} else result["status"], "write_performed": True, "credentials_configured": True, "post_create_provenance": provenance}
 
 
 
@@ -3156,7 +3226,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         else:
             raise
     postgresql_readiness = locals().get("postgresql_readiness", readiness_result("blocked", postgres.get("uuid")))
-    if mode.is_apply and postgres.get("status") in {"compatibility_unverified", "scope_unverified", "out_of_scope"}:
+    if mode.is_apply and postgres.get("status") in {"compatibility_unverified", "scope_unverified", "out_of_scope", "duplicate"}:
         blockers.append({"message": f"PostgreSQL status requires manual review: {postgres['status']}", "write_performed": False})
     if postgres.get("status") == "incompatible":
         blockers.append({"message": "Existing PostgreSQL contradicts desired state; manual recreation required.", "write_performed": False})
