@@ -147,7 +147,7 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(result["status"], "dry_run")
         self.assertEqual(
             result["would_create"]["git_repository"],
-            f"https://github.com/{pc.DEFAULT_REPOSITORY}",
+            pc.DEFAULT_REPOSITORY,
         )
         self.assertEqual(
             result["would_create"]["docker_compose_location"], pc.DEFAULT_COMPOSE
@@ -1074,6 +1074,14 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
         self.assertEqual(result["status"], "exists")
         self.assertTrue(result["source_configured"])
         self.assertTrue(result["domain_reconciled"])
+
+    def test_github_app_payload_uses_repository_slug_for_coolify_api_lookup(self):
+        repository_url = f"https://github.com/{pc.DEFAULT_REPOSITORY}.git"
+
+        self.assertEqual(
+            pc.source_patch_payload(args(repository=repository_url))["git_repository"],
+            pc.DEFAULT_REPOSITORY,
+        )
 
     def test_existing_application_with_absent_compose_raw_deploys_when_source_is_configured(
         self,
