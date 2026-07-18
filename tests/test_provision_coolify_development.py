@@ -130,7 +130,13 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
                 self.assertEqual(method, "PATCH")
                 self.assertIn(
                     kwargs["body"],
-                    [pc.source_patch_payload(args()), pc.domain_patch_payload(args())],
+                    [
+                        pc.source_patch_payload(
+                            args(),
+                            {"uuid": "github-app-7", "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME},
+                        ),
+                        pc.domain_patch_payload(args()),
+                    ],
                 )
                 return pc.Response(200, {"uuid": path.rsplit("/", 1)[-1]}, {})
             raise AssertionError((method, path))
@@ -813,6 +819,36 @@ class CoolifyDevelopmentProvisioningTests(unittest.TestCase):
 
         self.assertEqual(hydrated["git_repository"], pc.DEFAULT_REPOSITORY)
         self.assertEqual(hydrated["docker_compose_raw"], "services: {}")
+
+    def test_matching_source_without_github_app_is_safely_adoptable(self):
+        application = {
+            "uuid": "app-1",
+            "name": "factory-smoke-test-dev",
+            "git_repository": pc.DEFAULT_REPOSITORY,
+            "git_branch": pc.DEFAULT_BRANCH,
+            "docker_compose_location": pc.DEFAULT_COMPOSE,
+            "environment_name": "dev",
+        }
+        environment = {"uuid": "env-dev", "name": "dev"}
+        github_app = {
+            "uuid": "github-app-7",
+            "name": pc.DEFAULT_COOLIFY_GITHUB_APP_NAME,
+        }
+
+        self.assertFalse(
+            pc.application_deployment_source_configured(
+                application, args(), environment, github_app
+            )
+        )
+        self.assertTrue(
+            pc.application_deployment_source_adoptable(
+                application, args(), environment, github_app
+            )
+        )
+        self.assertEqual(
+            pc.source_patch_payload(args(), github_app)["github_app_uuid"],
+            "github-app-7",
+        )
 
     def test_real_creation_posts_once_when_dry_run_false(self):
         calls = []
