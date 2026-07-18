@@ -229,6 +229,38 @@ def _backend_plan_safe_for_frontend(result: dict[str, Any]) -> bool:
     return False
 
 
+def _deployment_action_not_requested_safe(result: dict[str, Any], path: tuple[str, ...], node: dict[str, Any]) -> bool:
+    if len(path) < 2 or path[0] != "actions":
+        return False
+    resource = node.get("resource")
+    if resource not in {"backend_deployment", "frontend_deployment"}:
+        return False
+    if node.get("status") != "not_requested":
+        return False
+    if node.get("request_attempted") is not False:
+        return False
+    if node.get("write_performed") is not False:
+        return False
+    if node.get("write_outcome_unknown") is not False:
+        return False
+    if node.get("verified") is not False:
+        return False
+    deployment = result.get(resource)
+    if not isinstance(deployment, dict):
+        return False
+    if deployment.get("user_requested") is not False:
+        return False
+    if deployment.get("status") not in {"not_requested", "planned"}:
+        return False
+    if deployment.get("blockers"):
+        return False
+    if deployment.get("write_outcome_unknown") or deployment.get("created_unverified") or deployment.get("updated_unverified"):
+        return False
+    if deployment.get("request_attempted") or deployment.get("write_performed"):
+        return False
+    return True
+
+
 def classify_plan_safety(result: dict[str, Any]) -> tuple[bool, list[dict[str, Any]]]:
     blockers: list[dict[str, Any]] = []
     if result.get("status") != "dry_run":
@@ -257,7 +289,9 @@ def classify_plan_safety(result: dict[str, Any]) -> tuple[bool, list[dict[str, A
             if not isinstance(deployment, dict) or deployment.get("user_requested") or deployment.get("status") not in {"not_requested", "planned"}:
                 blockers.append(_safe_blocker(path, node, "not_checked_without_unrequested_deployment"))
         elif status == "not_requested":
-            if not (path and path[-1] in {"backend_deployment", "frontend_deployment"}):
+            if path and path[-1] in {"backend_deployment", "frontend_deployment"}:
+                pass
+            elif not _deployment_action_not_requested_safe(result, path, node):
                 blockers.append(_safe_blocker(path, node, "not_requested_outside_deployment_context"))
         elif status in UNSAFE_STATUSES:
             blockers.append(_safe_blocker(path, node, status))

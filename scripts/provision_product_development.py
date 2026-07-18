@@ -3263,6 +3263,8 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
             resource["create_payload_preview"] = backend_payload_preview(backend_create_payload(args, context))
         elif resource["name"] == frontend_application_name(args.product):
             resource.update({"status": frontend.get("status"), "provisioning": frontend})
+            if frontend.get("status") == "planned_after_backend" and frontend.get("reason") == "backend_dependency_planned":
+                resource["reason"] = frontend["reason"]
             resource["create_payload_preview"] = frontend_payload_preview(frontend_create_payload(args, context))
         else:
             resource["status"] = "planned_later"
