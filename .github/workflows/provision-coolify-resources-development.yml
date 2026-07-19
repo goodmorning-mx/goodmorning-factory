@@ -11,6 +11,11 @@ on:
       - 'scripts/reconcile_resource_product.py'
       - '.github/workflows/provision-coolify-resources-development.yml'
   workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: Optional single resources-v2 manifest to reconcile.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -22,6 +27,7 @@ concurrency:
 
 jobs:
   reconcile-resources-v2:
+    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'catalog(factory): register product ') }}
     name: Reconcile resources-v2 products
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -71,7 +77,18 @@ jobs:
           selection_file="${RUNNER_TEMP}/resources-v2-manifests.txt"
           : > "${selection_file}"
 
-          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+          requested_manifest="${{ inputs.manifest_path }}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${requested_manifest}" ]; then
+            if [[ ! "${requested_manifest}" =~ ^products/[a-z0-9][a-z0-9-]*\\.json$ ]] || [ ! -f "${requested_manifest}" ]; then
+              echo "manifest_path must identify an existing products/<slug>.json file."
+              exit 1
+            fi
+            if [ "$(jq -r '.topology // empty' "${requested_manifest}")" != "resources-v2" ]; then
+              echo "Selected manifest is not resources-v2."
+              exit 1
+            fi
+            printf '%s\n' "${requested_manifest}" >> "${selection_file}"
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ] && [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
             while IFS= read -r manifest; do
               if [ -f "${manifest}" ] && [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v2" ]; then
                 printf '%s\n' "${manifest}" >> "${selection_file}"
