@@ -483,6 +483,29 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
             pp.APPLICATION_SCOPE_FALLBACK_REASON,
         )
 
+    def test_application_aliases_verify_fqdn_and_github_source_id(self):
+        application = {
+            "uuid": "api-1", "name": "ledger-api-dev", "server_uuid": "server-1",
+            "destination_uuid": "destination-1", "source_id": 7,
+            "git_repository": "goodmorning-mx/ledger", "git_branch": "dev",
+            "build_pack": "dockerfile", "base_directory": "/backend",
+            "dockerfile_location": "/Dockerfile", "ports_exposes": "8000",
+            "fqdn": "https://api.dev.ledger.goodmorning.mx",
+            "instant_deploy": False, "is_auto_deploy_enabled": True,
+            "autogenerate_domain": False, "health_check_enabled": True,
+            "health_check_path": "/health", "health_check_port": "8000",
+            "health_check_method": "GET", "health_check_scheme": "http",
+            "health_check_return_code": 200,
+        }
+        differences, unverified = pp.backend_application_differences(
+            application,
+            args(),
+            {"destination_uuid": "destination-1", "github_app_uuid": "app-uuid", "github_app_id": 7},
+        )
+
+        self.assertEqual(differences, [])
+        self.assertEqual(unverified, [])
+
     def test_legacy_compose_product_dev_is_reported_separately(self):
         client = self.client(
             **{
