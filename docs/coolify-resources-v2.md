@@ -34,11 +34,13 @@ product's `dev` branch deploy directly through the native GitHub connection.
 }
 ```
 
-A push to Factory `dev` plans every `resources-v2` manifest before applying any
-writes. A safe plan is followed by idempotent creation, PostgreSQL readiness,
-environment reconciliation, Backend deployment and Frontend deployment. All
-real actions are guarded by exact resource confirmations and repository-level
-deployment authorization.
+A push to Factory `dev` selects changed `resources-v2` manifests; workflow dispatch
+selects the full catalog. A safe plan is followed by bounded convergence through
+idempotent creation, PostgreSQL readiness, environment reconciliation, Backend
+deployment and Frontend deployment. Only `partial` progress is retried, with
+increasing delay and a hard attempt limit. Errors fail immediately, and backups
+run only after every selected product is healthy. All real actions are guarded by
+exact resource confirmations and repository-level deployment authorization.
 
 `compose-v1` remains supported for disposable prototypes and is archived as a
 rollback implementation. A manifest is reconciled by exactly one topology; the
