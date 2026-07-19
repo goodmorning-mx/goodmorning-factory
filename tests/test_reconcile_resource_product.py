@@ -25,6 +25,20 @@ class ResourceManifestTests(unittest.TestCase):
         self.assertIn('if __package__ in (None, ""):', source)
         self.assertIn("sys.path.insert", source)
 
+    def test_workflow_plans_without_requesting_deployments(self):
+        workflow = (
+            Path(resource.__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "provision-coolify-resources-development.yml"
+        ).read_text(encoding="utf-8")
+
+        plan_step = workflow.split("- name: Plan all resources-v2 products", 1)[1]
+        plan_step = plan_step.split("- name: Apply and deploy all resources-v2 products", 1)[0]
+        self.assertIn("--phase plan", plan_step)
+        self.assertIn("--operation plan", plan_step)
+        self.assertNotIn("--operation deploy-full", plan_step)
+
     def test_manifest_accepts_repository_independent_from_product_slug(self):
         self.assertEqual(
             resource.validate_manifest(manifest())["repository"],
