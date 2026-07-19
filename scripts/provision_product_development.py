@@ -2108,8 +2108,9 @@ def backend_application_differences(item: dict[str, Any], args: argparse.Namespa
         actual = nested_field(item, *ps); exp = expected.get(key)
         if actual in (None, ""):
             unver.append({"field": key, "expected": exp})
-        elif key == "github_app_uuid" and not github_app_identifier_matches(actual, context):
-            diffs.append({"field": key, "expected": exp, "actual": actual})
+        elif key == "github_app_uuid":
+            if not github_app_identifier_matches(actual, context):
+                diffs.append({"field": key, "expected": exp, "actual": actual})
         elif key == "domains" and ":8000" in normalize_domain(actual):
             diffs.append({"field": key, "expected": exp, "actual": "contains_port"})
         elif not normalized_equal(key, actual, exp):
@@ -2345,8 +2346,9 @@ def frontend_application_differences(item: dict[str, Any], args: argparse.Namesp
         actual = nested_field(item, *ps); exp = expected.get(key)
         if actual in (None, ""):
             unver.append({"field": key, "expected": exp})
-        elif key == "github_app_uuid" and not github_app_identifier_matches(actual, context):
-            diffs.append({"field": key, "expected": exp, "actual": actual})
+        elif key == "github_app_uuid":
+            if not github_app_identifier_matches(actual, context):
+                diffs.append({"field": key, "expected": exp, "actual": actual})
         elif key == "domains" and re.search(r":(?:80|3000|8000)(?:/|$)", normalize_domain(actual)):
             diffs.append({"field": key, "expected": exp, "actual": "contains_port"})
         elif not normalized_equal(key, actual, exp):
