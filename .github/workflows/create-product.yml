@@ -1,11 +1,6 @@
 name: Create GoodMorning product repository
 
 on:
-  push:
-    branches:
-      - dev
-    paths:
-      - 'requests/*.json'
   pull_request:
     branches:
       - dev
