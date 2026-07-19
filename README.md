@@ -18,6 +18,7 @@ The product repository owns the runtime contract:
 - Backend migrations and database connectivity use a private `DATABASE_URL`;
 - PostgreSQL has no public port;
 - each Application can be observed, deployed and rolled back independently.
+- the native Coolify GitHub App automatically deploys product `dev` pushes.
 
 Factory owns exact discovery, Project and Environment creation, native Database
 creation/readiness, Application creation, environment reconciliation,
