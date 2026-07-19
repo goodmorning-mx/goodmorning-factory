@@ -37,11 +37,14 @@ jobs:
       OCI_S3_BUCKET: ${{ vars.OCI_S3_BUCKET }}
       OCI_S3_REGION: ${{ vars.OCI_S3_REGION }}
       OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
+      MAX_RECONCILE_ATTEMPTS: '6'
+      RECONCILE_RETRY_BASE_SECONDS: '20'
     steps:
       - name: Check out factory dev
         uses: actions/checkout@v4
         with:
           persist-credentials: false
+          fetch-depth: 2
 
       - name: Validate development authorization
         shell: bash
@@ -61,7 +64,39 @@ jobs:
           fi
           echo "::add-mask::${COOLIFY_API_TOKEN}"
 
-      - name: Plan all resources-v2 products
+      - name: Select affected resources-v2 manifests
+        shell: bash
+        run: |
+          set -euo pipefail
+          selection_file="${RUNNER_TEMP}/resources-v2-manifests.txt"
+          : > "${selection_file}"
+
+          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            while IFS= read -r manifest; do
+              if [ -f "${manifest}" ] && [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v2" ]; then
+                printf '%s\n' "${manifest}" >> "${selection_file}"
+              fi
+            done < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- 'products/*.json')
+          fi
+
+          if [ ! -s "${selection_file}" ]; then
+            for manifest in products/*.json; do
+              if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v2" ]; then
+                printf '%s\n' "${manifest}" >> "${selection_file}"
+              fi
+            done
+          fi
+
+          sort -u -o "${selection_file}" "${selection_file}"
+          if [ ! -s "${selection_file}" ]; then
+            echo "No resources-v2 manifests were selected."
+            exit 1
+          fi
+          echo "Selected manifests:"
+          sed 's/^/- /' "${selection_file}"
+          echo "RESOURCE_MANIFESTS_FILE=${selection_file}" >> "${GITHUB_ENV}"
+
+      - name: Plan selected resources-v2 products
         shell: bash
         env:
           COOLIFY_ALLOW_RESOURCE_WRITES: 'false'
@@ -76,12 +111,8 @@ jobs:
         run: |
           set -euo pipefail
           echo "::add-mask::${COOLIFY_API_TOKEN}"
-          shopt -s nullglob
           selected=0
-          for manifest in products/*.json; do
-            if [ "$(jq -r '.topology // "compose-v1"' "${manifest}")" != "resources-v2" ]; then
-              continue
-            fi
+          while IFS= read -r manifest; do
             selected=$((selected + 1))
             python scripts/reconcile_resource_product.py \
               --manifest "${manifest}" \
@@ -90,10 +121,10 @@ jobs:
               --server "${COOLIFY_SERVER_NAME}" \
               --github-app "${COOLIFY_GITHUB_APP_NAME}" \
               --destination-uuid "${COOLIFY_DESTINATION_UUID}"
-          done
-          echo "Planned ${selected} resources-v2 product(s)."
+          done < "${RESOURCE_MANIFESTS_FILE}"
+          echo "Planned ${selected} selected resources-v2 product(s)."
 
-      - name: Apply and deploy all resources-v2 products
+      - name: Converge selected resources-v2 products
         shell: bash
         env:
           COOLIFY_ALLOW_RESOURCE_WRITES: 'true'
@@ -110,24 +141,48 @@ jobs:
           echo "::add-mask::${COOLIFY_API_TOKEN}"
           status_file="${RUNNER_TEMP}/resources-v2-reconcile.log"
           : > "${status_file}"
-          shopt -s nullglob
           selected=0
-          for manifest in products/*.json; do
-            if [ "$(jq -r '.topology // "compose-v1"' "${manifest}")" != "resources-v2" ]; then
-              continue
-            fi
+          while IFS= read -r manifest; do
             selected=$((selected + 1))
             product="$(jq -er '.product' "${manifest}")"
-            echo "Reconciling resources-v2 product ${product}"
-            python scripts/reconcile_resource_product.py \
-              --manifest "${manifest}" \
-              --phase apply \
-              --operation deploy-full \
-              --server "${COOLIFY_SERVER_NAME}" \
-              --github-app "${COOLIFY_GITHUB_APP_NAME}" \
-              --destination-uuid "${COOLIFY_DESTINATION_UUID}" 2>&1 | tee -a "${status_file}"
-          done
-          echo "Applied ${selected} resources-v2 product(s)."
+            converged=false
+            for attempt in $(seq 1 "${MAX_RECONCILE_ATTEMPTS}"); do
+              attempt_file="${RUNNER_TEMP}/${product}-reconcile-${attempt}.json"
+              echo "Reconciling resources-v2 product ${product} (attempt ${attempt}/${MAX_RECONCILE_ATTEMPTS})"
+              set +e
+              python scripts/reconcile_resource_product.py \
+                --manifest "${manifest}" \
+                --phase apply \
+                --operation deploy-full \
+                --server "${COOLIFY_SERVER_NAME}" \
+                --github-app "${COOLIFY_GITHUB_APP_NAME}" \
+                --destination-uuid "${COOLIFY_DESTINATION_UUID}" 2>&1 | tee "${attempt_file}" | tee -a "${status_file}"
+              reconcile_code=${PIPESTATUS[0]}
+              set -e
+
+              status="$(jq -r '.status // "error"' "${attempt_file}" 2>/dev/null || echo error)"
+              if [ "${reconcile_code}" -eq 0 ]; then
+                converged=true
+                echo "Product ${product} converged on attempt ${attempt}."
+                break
+              fi
+              if [ "${status}" != "partial" ]; then
+                echo "Product ${product} returned non-retryable status ${status} (exit ${reconcile_code})."
+                exit "${reconcile_code}"
+              fi
+              if [ "${attempt}" -ge "${MAX_RECONCILE_ATTEMPTS}" ]; then
+                break
+              fi
+              delay=$((RECONCILE_RETRY_BASE_SECONDS * attempt))
+              echo "Product ${product} is progressing safely; retrying in ${delay}s."
+              sleep "${delay}"
+            done
+            if [ "${converged}" != "true" ]; then
+              echo "Reconciliation did not converge for ${product} after ${MAX_RECONCILE_ATTEMPTS} attempts."
+              exit 1
+            fi
+          done < "${RESOURCE_MANIFESTS_FILE}"
+          echo "Applied ${selected} selected resources-v2 product(s)."
 
       - name: Reconcile external development backup schedules
         shell: bash
@@ -138,10 +193,7 @@ jobs:
           echo "::add-mask::${OCI_S3_SECRET_KEY}"
           status_file="${RUNNER_TEMP}/resources-v2-reconcile.log"
           selected=0
-          for manifest in products/*.json; do
-            if [ "$(jq -r '.topology // empty' "${manifest}")" != "resources-v2" ]; then
-              continue
-            fi
+          while IFS= read -r manifest; do
             if [ "$(jq -r '.backup.enabled // false' "${manifest}")" != "true" ]; then
               continue
             fi
@@ -149,8 +201,8 @@ jobs:
             python scripts/reconcile_database_backups.py \
               --manifest "${manifest}" \
               --backup-now true 2>&1 | tee -a "${status_file}"
-          done
-          echo "Reconciled ${selected} external development backup schedule(s)."
+          done < "${RESOURCE_MANIFESTS_FILE}"
+          echo "Reconciled ${selected} selected external development backup schedule(s)."
 
       - name: Close resolved resources-v2 failure
         if: success()
