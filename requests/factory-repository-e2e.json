@@ -2,6 +2,6 @@
   "product_name": "factory-repository-e2e",
   "description": "End-to-end validation of the GoodMorning repository-first product factory",
   "confirm_provision": true,
-  "retry": 1,
-  "reason": "Canonical frontend port 80 template correction"
+  "retry": 2,
+  "reason": "Validate reliable merged-request orchestration"
 }
