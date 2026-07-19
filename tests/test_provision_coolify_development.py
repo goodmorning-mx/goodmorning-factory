@@ -1547,6 +1547,12 @@ class ProvisionCoolifyWorkflowTests(unittest.TestCase):
         self.assertIn('"development_domain": "dev.factory-smoke-test.goodmorning.mx"', manifest)
         self.assertNotIn('"production_domain"', manifest)
 
+    def test_compose_workflow_skips_resources_v2_manifests(self):
+        text = self.workflow_text()
+
+        self.assertIn('.topology // "compose-v1"', text)
+        self.assertIn('if [ "${topology}" != "compose-v1" ]', text)
+
     def test_workflow_fails_on_recreate_required_status(self):
         text = self.workflow_text()
         self.assertIn('payload.get("status") in {"recreate_required"', text)
