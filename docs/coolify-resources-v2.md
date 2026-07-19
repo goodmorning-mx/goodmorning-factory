@@ -46,10 +46,22 @@ Compose and resources workflows must never manage the same product at once.
 
 ## Backups
 
-The native Database resource makes Coolify scheduled backups visible and
-manageable. External S3 storage and a retention policy remain required before a
-product can be promoted to production. Factory must not create paid storage or
-rotate credentials without Abel's approval.
+Every persistent `resources-v2` product declares a development backup policy
+in its reviewed manifest. Factory registers one team-scoped S3-compatible
+storage in Coolify, verifies the connection, and idempotently creates or updates
+one scheduled backup for the product's exact private PostgreSQL resource.
+
+The development baseline is one daily backup, one local recovery copy and seven
+external Oracle Object Storage copies retained for seven days. Pull-request
+smoke verification triggers a real dump, rejects local-only success or S3
+warnings, and independently confirms that the exact backup object exists in the
+bucket. Product promotion to production remains blocked until its external
+backup and restore drill have passed.
+
+Storage credentials remain GitHub Actions secrets and are streamed to Coolify
+over audited SSH input; they are never committed, printed, or passed as command
+arguments. Factory must not create paid storage, rotate credentials, delete
+backup objects, or enable production without Abel's explicit approval.
 
 ## Migration
 
@@ -60,3 +72,4 @@ rotate credentials without Abel's approval.
 5. Export and restore PostgreSQL data when the source database is non-empty.
 6. Keep the legacy Compose application available until rollback retention ends.
 7. Delete legacy resources only with explicit approval.
+
