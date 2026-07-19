@@ -466,6 +466,7 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
         client = self.client(**{
             "/applications": [application],
             "/applications/api-1": application,
+            "/applications/api-1/envs": [],
         })
 
         result = pp.provision(args(), client_factory=lambda: client)
