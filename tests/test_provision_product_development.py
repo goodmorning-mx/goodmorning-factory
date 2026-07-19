@@ -478,6 +478,10 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
             backend["matches"][0]["scope_verification_source"],
             pp.APPLICATION_SCOPE_FALLBACK_SOURCE,
         )
+        self.assertEqual(
+            backend["matches"][0]["scope_verification_reason"],
+            pp.APPLICATION_SCOPE_FALLBACK_REASON,
+        )
 
     def test_legacy_compose_product_dev_is_reported_separately(self):
         client = self.client(
