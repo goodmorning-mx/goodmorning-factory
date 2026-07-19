@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import shlex
 import subprocess
 import sys
 import tempfile
@@ -25,31 +24,6 @@ SENSITIVE_ENV_NAMES = (
     "OCI_S3_ACCESS_KEY",
     "OCI_S3_SECRET_KEY",
 )
-
-STORAGE_NAME = "goodmorning-factory-oracle-backups"
-
-TINKER_PROGRAM = r"""
-$payload = json_decode(stream_get_contents(STDIN), true, 512, JSON_THROW_ON_ERROR);
-$storage = \App\Models\S3Storage::firstOrNew([
-    'team_id' => (int) $payload['team_id'],
-    'name' => $payload['name'],
-]);
-$storage->fill([
-    'description' => $payload['description'],
-    'region' => $payload['region'],
-    'key' => $payload['key'],
-    'secret' => $payload['secret'],
-    'bucket' => $payload['bucket'],
-    'endpoint' => $payload['endpoint'],
-]);
-$storage->testConnection(shouldSave: true);
-echo json_encode([
-    'uuid' => $storage->uuid,
-    'name' => $storage->name,
-    'is_usable' => (bool) $storage->is_usable,
-], JSON_THROW_ON_ERROR);
-""".strip()
-
 
 def redact(value: str) -> str:
     result = value
@@ -91,6 +65,11 @@ def load_manifest(path: Path) -> dict[str, Any]:
     backup = manifest.get("backup")
     if not isinstance(backup, dict) or backup.get("enabled") is not True:
         raise BackupError("Manifest must explicitly enable its backup contract")
+    storage_uuid = backup.get("storage_uuid")
+    if not isinstance(storage_uuid, str) or len(storage_uuid) < 20 or not all(
+        character.islower() or character.isdigit() for character in storage_uuid
+    ):
+        raise BackupError("Backup storage_uuid must be a stable lowercase Coolify UUID")
     frequency = backup.get("frequency")
     if not isinstance(frequency, str) or len(frequency.split()) != 5:
         raise BackupError("Backup frequency must be an explicit five-field cron expression")
@@ -161,62 +140,6 @@ def select_database(databases: Any, product: str) -> dict[str, Any]:
     if not isinstance(uuid, str) or not uuid:
         raise BackupError(f"{expected_name} has no stable UUID")
     return database
-
-
-def parse_json_object(output: str, required_key: str) -> dict[str, Any]:
-    decoder = json.JSONDecoder()
-    for index, character in enumerate(output):
-        if character != "{":
-            continue
-        try:
-            value, _end = decoder.raw_decode(output[index:])
-        except json.JSONDecodeError:
-            continue
-        if isinstance(value, dict) and required_key in value:
-            return value
-    raise BackupError("Command completed without the expected sanitized JSON result")
-
-
-def register_storage(team_id: int, runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run) -> dict[str, Any]:
-    host = required_env("COOLIFY_SSH_HOST")
-    user = required_env("COOLIFY_SSH_USER")
-    identity = required_env("COOLIFY_SSH_IDENTITY_FILE")
-    known_hosts = required_env("COOLIFY_SSH_KNOWN_HOSTS_FILE")
-    payload = {
-        "team_id": team_id,
-        "name": STORAGE_NAME,
-        "description": "GoodMorning Factory managed Oracle Object Storage backups",
-        "region": required_env("OCI_S3_REGION"),
-        "key": required_env("OCI_S3_ACCESS_KEY"),
-        "secret": required_env("OCI_S3_SECRET_KEY"),
-        "bucket": required_env("OCI_S3_BUCKET"),
-        "endpoint": required_env("OCI_S3_ENDPOINT"),
-    }
-    remote_command = "docker exec -i coolify php artisan tinker --execute=" + shlex.quote(TINKER_PROGRAM)
-    command = [
-        "ssh",
-        "-o", "BatchMode=yes",
-        "-o", "StrictHostKeyChecking=yes",
-        "-o", f"UserKnownHostsFile={known_hosts}",
-        "-o", f"IdentityFile={identity}",
-        f"{user}@{host}",
-        remote_command,
-    ]
-    completed = runner(
-        command,
-        input=json.dumps(payload),
-        text=True,
-        capture_output=True,
-        timeout=90,
-        check=False,
-    )
-    if completed.returncode != 0:
-        details = redact((completed.stderr or completed.stdout or "unknown SSH error")[-2000:])
-        raise BackupError(f"Could not register or verify Coolify S3 storage: {details}")
-    result = parse_json_object(completed.stdout, "uuid")
-    if result.get("name") != STORAGE_NAME or result.get("is_usable") is not True:
-        raise BackupError("Coolify did not mark the managed S3 storage as usable")
-    return result
 
 
 def desired_backup_payload(backup: dict[str, Any], storage_uuid: str, backup_now: bool) -> dict[str, Any]:
@@ -363,17 +286,13 @@ def verify_object(
 def reconcile(manifest_path: Path, backup_now: bool) -> dict[str, Any]:
     manifest = load_manifest(manifest_path)
     client = CoolifyClient(required_env("COOLIFY_BASE_URL"), required_env("COOLIFY_API_TOKEN"))
-    team = client.call("GET", "/teams/current")
-    team_id = team.get("id") if isinstance(team, dict) else None
-    if not isinstance(team_id, int):
-        raise BackupError("Coolify current team has no numeric ID")
     database = select_database(client.call("GET", "/databases"), manifest["product"])
-    storage = register_storage(team_id)
+    storage_uuid = manifest["backup"]["storage_uuid"]
     backup_uuid, previous_ids = reconcile_schedule(
         client,
         database["uuid"],
         manifest["backup"],
-        storage["uuid"],
+        storage_uuid,
         backup_now,
     )
     result: dict[str, Any] = {
@@ -382,7 +301,7 @@ def reconcile(manifest_path: Path, backup_now: bool) -> dict[str, Any]:
         "environment": "dev",
         "database_uuid": database["uuid"],
         "backup_uuid": backup_uuid,
-        "storage_uuid": storage["uuid"],
+        "storage_uuid": storage_uuid,
         "frequency": manifest["backup"]["frequency"],
     }
     if backup_now:
