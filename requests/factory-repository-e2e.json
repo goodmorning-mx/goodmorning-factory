@@ -2,6 +2,6 @@
   "product_name": "factory-repository-e2e",
   "description": "End-to-end validation of the GoodMorning repository-first product factory",
   "confirm_provision": true,
-  "retry": 2,
-  "reason": "Validate reliable merged-request orchestration"
+  "retry": 3,
+  "reason": "Validate merged-request orchestration with complete history"
 }
