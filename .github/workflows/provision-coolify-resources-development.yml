@@ -28,7 +28,7 @@ jobs:
       COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
       COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
       COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'localhost' }}
-      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_DESTINATION_UUID || 'bk8cw0gkswgo04o0s88sk0kg' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0' }}
       COOLIFY_GITHUB_APP_NAME: ${{ vars.COOLIFY_GITHUB_APP_NAME || 'goodmorning-mx-coolify' }}
       COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
     steps:
