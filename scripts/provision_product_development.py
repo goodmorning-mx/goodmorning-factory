@@ -899,6 +899,46 @@ def resource_scope(item: dict[str, Any], context: dict[str, Any]) -> tuple[str, 
     return "in_scope", details
 
 
+APPLICATION_SCOPE_FALLBACK_SOURCE = "coolify_application_detail_exact_identity_and_server"
+APPLICATION_SCOPE_FALLBACK_REASON = "public_api_omits_project_and_environment_uuid"
+
+
+def application_scope_identity(item: dict[str, Any], context: dict[str, Any]) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
+    """Verify Application scope when Coolify omits both project and environment UUIDs.
+
+    The fallback is allowed only when the server UUID matches. Repository,
+    source, build and routing identity remain independently mandatory in the
+    application compatibility checks.
+    """
+
+    scope_status, details = resource_scope(item, context)
+    missing = {detail["field"] for detail in details if detail["status"] == "unverified"}
+    meta = {
+        "project_scope_api_present": "project_uuid" not in missing,
+        "environment_scope_api_present": "environment_uuid" not in missing,
+        "server_scope_api_matched": any(
+            detail["field"] == "server_uuid" and detail["status"] == "matched"
+            for detail in details
+        ),
+    }
+    if scope_status != "scope_unverified":
+        return scope_status, details, {**meta, "scope_api_verified": scope_status == "in_scope"}
+    if {"project_uuid", "environment_uuid"}.issubset(missing) and meta["server_scope_api_matched"]:
+        fallback_details = [
+            {**detail, "status": "api_omitted"}
+            if detail["field"] in {"project_uuid", "environment_uuid"} and detail["status"] == "unverified"
+            else detail
+            for detail in details
+        ]
+        return "in_scope", fallback_details, {
+            **meta,
+            "scope_api_verified": False,
+            "scope_verification_source": APPLICATION_SCOPE_FALLBACK_SOURCE,
+            "scope_verification_reason": APPLICATION_SCOPE_FALLBACK_REASON,
+        }
+    return scope_status, details, {**meta, "scope_api_verified": False}
+
+
 def candidate_identifier(item: dict[str, Any]) -> Any:
     return field(item, "uuid", "id")
 
@@ -1077,8 +1117,8 @@ def classify_expected_resource(name: str, expected: dict[str, Any], matches: lis
     scoped = []
     reports = []
     for item in matches:
-        scope_status, scope_details = resource_scope(item, context)
-        report = {"resource": operational_summary(item), "scope": scope_status, "scope_details": scope_details}
+        scope_status, scope_details, scope_meta = application_scope_identity(item, context)
+        report = {"resource": operational_summary(item), "scope": scope_status, "scope_details": scope_details, **scope_meta}
         if scope_status == "out_of_scope":
             reports.append({**report, "status": "out_of_scope"})
         elif scope_status == "scope_unverified":
@@ -2081,8 +2121,8 @@ def classify_backend_application(matches: list[dict[str, Any]], args: argparse.N
     if not matches: return {"name": name, "status": "absent"}
     scoped=[]; reports=[]
     for item in matches:
-        scope, details = resource_scope(item, context)
-        reports.append({"resource": operational_summary(item), "scope": scope, "scope_details": details})
+        scope, details, scope_meta = application_scope_identity(item, context)
+        reports.append({"resource": operational_summary(item), "scope": scope, "scope_details": details, **scope_meta})
         if scope == "in_scope": scoped.append(item)
     if not scoped:
         return {"name": name, "status": "out_of_scope" if all(r["scope"]=="out_of_scope" for r in reports) else "scope_unverified", "matches": reports}
@@ -2316,8 +2356,8 @@ def classify_frontend_application(matches: list[dict[str, Any]], args: argparse.
     if not matches: return {"name": name, "status": "absent"}
     scoped=[]; reports=[]
     for item in matches:
-        scope, details = resource_scope(item, context)
-        reports.append({"resource": operational_summary(item), "scope": scope, "scope_details": details})
+        scope, details, scope_meta = application_scope_identity(item, context)
+        reports.append({"resource": operational_summary(item), "scope": scope, "scope_details": details, **scope_meta})
         if scope == "in_scope": scoped.append(item)
     if not scoped:
         return {"name": name, "status": "out_of_scope" if all(r["scope"]=="out_of_scope" for r in reports) else "scope_unverified", "matches": reports}
