@@ -1,0 +1,5 @@
+{
+  "product_name": "factory-repository-e2e",
+  "description": "End-to-end validation of the GoodMorning repository-first product factory",
+  "confirm_provision": true
+}
