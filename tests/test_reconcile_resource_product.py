@@ -19,6 +19,12 @@ def manifest(**updates):
 
 
 class ResourceManifestTests(unittest.TestCase):
+    def test_direct_script_bootstraps_repository_import_path(self):
+        source = Path(resource.__file__).read_text(encoding="utf-8")
+
+        self.assertIn('if __package__ in (None, ""):', source)
+        self.assertIn("sys.path.insert", source)
+
     def test_manifest_accepts_repository_independent_from_product_slug(self):
         self.assertEqual(
             resource.validate_manifest(manifest())["repository"],
