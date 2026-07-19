@@ -415,7 +415,7 @@ class CoolifyClient:
         if set(json_body) != APPROVED_FRONTEND_APPLICATION_FIELDS:
             raise ProvisioningError("Frontend Application payload fields do not exactly match the approved contract.", error_type="safety")
         expected_domain = f"https://dev.{self.mode.product}.goodmorning.mx"
-        checks = {"name": self.mode.frontend_application_name, "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/frontend", "dockerfile_location": "/Dockerfile", "ports_exposes": "80", "domains": expected_domain, "instant_deploy": False, "is_auto_deploy_enabled": False, "autogenerate_domain": False, "health_check_enabled": True, "health_check_path": "/", "health_check_port": "80", "health_check_method": "GET", "health_check_scheme": "http", "health_check_return_code": 200}
+        checks = {"name": self.mode.frontend_application_name, "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/frontend", "dockerfile_location": "/Dockerfile", "ports_exposes": "80", "domains": expected_domain, "instant_deploy": False, "is_auto_deploy_enabled": True, "autogenerate_domain": False, "health_check_enabled": True, "health_check_path": "/", "health_check_port": "80", "health_check_method": "GET", "health_check_scheme": "http", "health_check_return_code": 200}
         for key, expected in checks.items():
             if json_body.get(key) != expected:
                 raise ProvisioningError(f"Frontend Application payload field {key} does not match the approved Stage 6 contract.", error_type="safety")
@@ -467,7 +467,7 @@ class CoolifyClient:
             "ports_exposes": "8000",
             "domains": expected_domain,
             "instant_deploy": False,
-            "is_auto_deploy_enabled": False,
+            "is_auto_deploy_enabled": True,
             "autogenerate_domain": False,
             "health_check_enabled": True,
             "health_check_path": "/health",
@@ -1209,7 +1209,7 @@ def application_desired_state(
         "routing": {"domains": domains},
         "deployment_policy": {
             "instant_deploy": False,
-            "auto_deploy_enabled": False,
+            "auto_deploy_enabled": True,
         },
     }
 
@@ -2025,7 +2025,7 @@ def backend_create_payload(args: argparse.Namespace, bindings: dict[str, Any]) -
         "ports_exposes": "8000",
         "domains": api_domain(args.product),
         "instant_deploy": False,
-        "is_auto_deploy_enabled": False,
+        "is_auto_deploy_enabled": True,
         "autogenerate_domain": False,
         "health_check_enabled": True,
         "health_check_path": "/health",
@@ -2057,12 +2057,15 @@ def backend_application_differences(item: dict[str, Any], args: argparse.Namespa
             diffs.append({"field": key, "expected": exp, "actual": "contains_port"})
         elif not normalized_equal(key, actual, exp):
             diffs.append({"field": key, "expected": exp, "actual": actual})
-    for key in ("instant_deploy", "is_auto_deploy_enabled", "autogenerate_domain"):
+    for key in ("instant_deploy", "autogenerate_domain"):
         actual = nested_field(item, key)
         if actual in (None, ""):
             continue
         if bool_value(actual) is not False:
             diffs.append({"field": key, "expected": False, "actual": actual})
+    auto_deploy = nested_field(item, "is_auto_deploy_enabled")
+    if auto_deploy not in (None, "") and bool_value(auto_deploy) is not True:
+        diffs.append({"field": "is_auto_deploy_enabled", "expected": True, "actual": auto_deploy})
     hc = {"health_check_enabled": True, "health_check_path": "/health", "health_check_port": "8000", "health_check_method": "GET", "health_check_scheme": "http", "health_check_return_code": 200}
     for key, exp in hc.items():
         actual = nested_field(item, key)
@@ -2257,7 +2260,7 @@ def frontend_create_payload(args: argparse.Namespace, bindings: dict[str, Any]) 
         "ports_exposes": "80",
         "domains": domain,
         "instant_deploy": False,
-        "is_auto_deploy_enabled": False,
+        "is_auto_deploy_enabled": True,
         "autogenerate_domain": False,
         "health_check_enabled": True,
         "health_check_path": "/",
@@ -2289,12 +2292,15 @@ def frontend_application_differences(item: dict[str, Any], args: argparse.Namesp
             diffs.append({"field": key, "expected": exp, "actual": "contains_port"})
         elif not normalized_equal(key, actual, exp):
             diffs.append({"field": key, "expected": exp, "actual": actual})
-    for key in ("instant_deploy", "is_auto_deploy_enabled", "autogenerate_domain"):
+    for key in ("instant_deploy", "autogenerate_domain"):
         actual = nested_field(item, key)
         if actual in (None, ""):
             continue
         if bool_value(actual) is not False:
             diffs.append({"field": key, "expected": False, "actual": actual})
+    auto_deploy = nested_field(item, "is_auto_deploy_enabled")
+    if auto_deploy not in (None, "") and bool_value(auto_deploy) is not True:
+        diffs.append({"field": "is_auto_deploy_enabled", "expected": True, "actual": auto_deploy})
     hc = {"health_check_enabled": True, "health_check_path": "/", "health_check_port": "80", "health_check_method": "GET", "health_check_scheme": "http", "health_check_return_code": 200}
     for key, exp in hc.items():
         actual = nested_field(item, key)

@@ -1,9 +1,10 @@
 {
-  "topology": "compose-v1",
+  "topology": "resources-v2",
   "product": "goodmorningmockup",
   "repository": "goodmorning-mx/factory-smoke-test",
   "branch": "dev",
-  "compose": "/compose.yaml",
-  "development_domain": "dev.compose-v1-goodmorningmockup.goodmorning.mx",
-  "coolify_github_app_name": "goodmorning-mx-coolify"
+  "development_domain": "dev.goodmorningmockup.goodmorning.mx",
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "backend_base_directory": "/backend",
+  "frontend_base_directory": "/frontend"
 }
