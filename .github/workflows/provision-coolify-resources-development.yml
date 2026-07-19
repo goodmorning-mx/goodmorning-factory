@@ -169,7 +169,7 @@ jobs:
             selected=$((selected + 1))
             python scripts/reconcile_database_backups.py \
               --manifest "${manifest}" \
-              --backup-now false 2>&1 | tee -a "${status_file}"
+              --backup-now true 2>&1 | tee -a "${status_file}"
           done
           echo "Reconciled ${selected} external development backup schedule(s)."
 
@@ -218,4 +218,3 @@ jobs:
           else
             gh issue create --title "${title}" --body-file "${issue_body}"
           fi
-
