@@ -1,6 +1,9 @@
 name: Provision Coolify resource-based development products
 
 on:
+  repository_dispatch:
+    types:
+      - reconcile-product
   push:
     branches:
       - dev
@@ -79,7 +82,14 @@ jobs:
           : > "${selection_file}"
 
           requested_manifest="${{ inputs.manifest_path }}"
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${requested_manifest}" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            requested_manifest="${{ github.event.client_payload.manifest_path }}"
+            if [ -z "${requested_manifest}" ]; then
+              echo "repository_dispatch requires client_payload.manifest_path."
+              exit 1
+            fi
+          fi
+          if { [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; } && [ -n "${requested_manifest}" ]; then
             if [[ ! "${requested_manifest}" =~ ^products/[a-z0-9][a-z0-9-]*\.json$ ]] || [ ! -f "${requested_manifest}" ]; then
               echo "manifest_path must identify an existing products/<slug>.json file."
               exit 1
