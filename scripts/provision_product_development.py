@@ -2731,6 +2731,48 @@ def backend_deployment_result(status: str = "not_requested", **updates: Any) -> 
     return result
 
 
+def deployment_failure_diagnostics(item: dict[str, Any]) -> dict[str, Any]:
+    """Return a short redacted failure summary from Coolify deployment logs."""
+
+    raw_logs = field(item, "logs")
+    if raw_logs in (None, "", []):
+        return {"available": False, "messages": []}
+
+    parsed: Any = raw_logs
+    if isinstance(raw_logs, str):
+        try:
+            parsed = json.loads(raw_logs)
+        except json.JSONDecodeError:
+            parsed = raw_logs.splitlines()
+
+    candidates: list[str] = []
+    entries = parsed if isinstance(parsed, list) else [parsed]
+    for entry in entries:
+        if isinstance(entry, dict):
+            for key in ("output", "message", "error"):
+                value = entry.get(key)
+                if isinstance(value, str) and value.strip():
+                    candidates.extend(value.splitlines())
+        elif isinstance(entry, str):
+            candidates.extend(entry.splitlines())
+
+    failure_pattern = re.compile(
+        r"(error|failed|failure|exception|traceback|not found|no such file|"
+        r"permission denied|exit code|could not|unable to|connection refused)",
+        re.I,
+    )
+    messages: list[str] = []
+    for candidate in candidates:
+        clean = sanitize_string(candidate).strip()
+        if not clean or not failure_pattern.search(clean):
+            continue
+        clean = clean[:500] + ("...[truncated]" if len(clean) > 500 else "")
+        if clean not in messages:
+            messages.append(clean)
+
+    return {"available": bool(messages), "messages": messages[-12:]}
+
+
 def runtime_readiness_result(status: str = "not_checked", **updates: Any) -> dict[str, Any]:
     result = {"status": status, "healthy": False, "verified": False}
     result.update(updates)
@@ -2902,7 +2944,14 @@ def poll_backend_deployment(client: CoolifyClient, args: argparse.Namespace, dep
         if status == "finished":
             return backend_deployment_result("finished", deployment_uuid=deployment_uuid, terminal=True, verified=True, poll_attempts=attempts, poll_errors=errors)
         if status in {"failed", "cancelled-by-user"}:
-            return backend_deployment_result(status, deployment_uuid=deployment_uuid, terminal=True, poll_attempts=attempts, poll_errors=errors)
+            return backend_deployment_result(
+                status,
+                deployment_uuid=deployment_uuid,
+                terminal=True,
+                poll_attempts=attempts,
+                poll_errors=errors,
+                failure_diagnostics=deployment_failure_diagnostics(item),
+            )
         if status not in DEPLOYMENT_PENDING_STATUSES:
             return backend_deployment_result("deployment_status_unverified", deployment_uuid=deployment_uuid, poll_attempts=attempts, poll_errors=errors)
         sleeper(args.backend_deployment_interval)
