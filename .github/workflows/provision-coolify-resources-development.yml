@@ -96,7 +96,7 @@ jobs:
           sed 's/^/- /' "${selection_file}"
           echo "RESOURCE_MANIFESTS_FILE=${selection_file}" >> "${GITHUB_ENV}"
 
-      - name: Plan selected resources-v2 products
+      - name: Plan all resources-v2 products
         shell: bash
         env:
           COOLIFY_ALLOW_RESOURCE_WRITES: 'false'
