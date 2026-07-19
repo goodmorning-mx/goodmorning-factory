@@ -21,7 +21,7 @@ class ConvergentResourcesWorkflowTests(unittest.TestCase):
         self.assertNotIn("continue-on-error", self.text)
 
     def test_backup_runs_only_after_resource_convergence(self):
-        converge = self.text.index("Converge selected resources-v2 products")
+        converge = self.text.index("Apply and deploy all resources-v2 products")
         backup = self.text.index("Reconcile external development backup schedules")
         self.assertLess(converge, backup)
         self.assertIn('if [ "${converged}" != "true" ]; then', self.text)
