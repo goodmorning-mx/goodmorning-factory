@@ -228,8 +228,7 @@ jobs:
           echo "Reconciled ${selected} selected external development backup schedule(s)."
 
       - name: Close resolved resources-v2 failure
-        if: steps.select.outputs.selected == 'true'
-        if: success()
+        if: steps.select.outputs.selected == 'true' && success()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
