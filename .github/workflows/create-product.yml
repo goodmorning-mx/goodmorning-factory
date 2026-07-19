@@ -45,8 +45,8 @@ jobs:
           import sys
           name = "${{ github.event.inputs.product_name }}"
           reserved = {"goodmorning-factory", "goodmorning-mvp-template"}
-          if not name or len(name) > 100 or name in reserved or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", name):
-              print("Invalid product_name. Use lowercase letters, numbers, and hyphens; start/end with a letter or number; avoid reserved names; max 100 characters.", file=sys.stderr)
+          if not name or len(name) > 63 or name in reserved or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", name):
+              print("Invalid product_name. Use lowercase letters, numbers, and hyphens; start/end with a letter or number; avoid reserved names; max 63 characters.", file=sys.stderr)
               sys.exit(1)
           PY
 
