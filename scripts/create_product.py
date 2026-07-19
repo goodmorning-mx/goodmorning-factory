@@ -16,7 +16,7 @@ from typing import Any
 API = "https://api.github.com"
 ORG = "goodmorning-mx"
 TEMPLATE_REPO = "goodmorning-mvp-template"
-MAX_REPO_NAME_LENGTH = 100
+MAX_REPO_NAME_LENGTH = 63
 TOPICS = ["goodmorning", "goodmorning-product", "managed-by-goodmorning-factory"]
 RESERVED = {"goodmorning-factory", "goodmorning-mvp-template"}
 NAME_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$")
