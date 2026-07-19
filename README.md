@@ -22,10 +22,12 @@ The product repository owns the runtime contract:
 
 Factory owns exact discovery, Project and Environment creation, native Database
 creation/readiness, Application creation, environment reconciliation,
-deployment polling and smoke verification.
+deployment polling, smoke verification, and external database-backup reconciliation.
 
 Development onboarding is catalog-driven: a reviewed `resources-v2` manifest in
 `products/` is planned and reconciled automatically when it reaches `dev`.
+
+Development PostgreSQL resources declare daily external backups that Factory verifies against Oracle Object Storage.
 
 See `docs/coolify-resources-v2.md` for the canonical contract and
 `scripts/provision_product_development.py` for the audited provisioner.
@@ -36,3 +38,4 @@ The previous single-Application Docker Compose topology remains supported as
 `compose-v1` for disposable prototypes and rollback. Its frozen source is also
 preserved on `archive/compose-v1-2026-07-18`. A product manifest is owned by
 exactly one topology at a time.
+

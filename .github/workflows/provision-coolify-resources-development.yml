@@ -7,6 +7,7 @@ on:
     paths:
       - 'products/*.json'
       - 'scripts/provision_product_development.py'
+      - 'scripts/reconcile_database_backups.py'
       - 'scripts/reconcile_resource_product.py'
       - '.github/workflows/provision-coolify-resources-development.yml'
   workflow_dispatch:
@@ -31,6 +32,13 @@ jobs:
       COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0' }}
       COOLIFY_GITHUB_APP_NAME: ${{ vars.COOLIFY_GITHUB_APP_NAME || 'goodmorning-mx-coolify' }}
       COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
+      COOLIFY_SSH_HOST: ${{ vars.COOLIFY_SSH_HOST }}
+      COOLIFY_SSH_USER: ${{ vars.COOLIFY_SSH_USER }}
+      OCI_S3_ACCESS_KEY: ${{ secrets.OCI_S3_ACCESS_KEY }}
+      OCI_S3_SECRET_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+      OCI_S3_BUCKET: ${{ vars.OCI_S3_BUCKET }}
+      OCI_S3_REGION: ${{ vars.OCI_S3_REGION }}
+      OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
     steps:
       - name: Check out factory dev
         uses: actions/checkout@v4
@@ -122,6 +130,48 @@ jobs:
               --destination-uuid "${COOLIFY_DESTINATION_UUID}" 2>&1 | tee -a "${status_file}"
           done
           echo "Applied ${selected} resources-v2 product(s)."
+
+      - name: Configure audited SSH identity for backup storage
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.GOODMORNING_FACTORY_COOLIFY_SSH_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.GOODMORNING_FACTORY_COOLIFY_KNOWN_HOSTS }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SSH_PRIVATE_KEY:-}" ] || [ -z "${SSH_KNOWN_HOSTS:-}" ]; then
+            echo "Coolify SSH key and known-hosts secrets are required for backup reconciliation."
+            exit 1
+          fi
+          install -d -m 700 "${HOME}/.ssh"
+          install -m 600 /dev/null "${HOME}/.ssh/goodmorning_factory"
+          printf '%s\n' "${SSH_PRIVATE_KEY}" > "${HOME}/.ssh/goodmorning_factory"
+          install -m 600 /dev/null "${HOME}/.ssh/known_hosts"
+          printf '%s\n' "${SSH_KNOWN_HOSTS}" > "${HOME}/.ssh/known_hosts"
+          echo "COOLIFY_SSH_IDENTITY_FILE=${HOME}/.ssh/goodmorning_factory" >> "${GITHUB_ENV}"
+          echo "COOLIFY_SSH_KNOWN_HOSTS_FILE=${HOME}/.ssh/known_hosts" >> "${GITHUB_ENV}"
+
+      - name: Reconcile external development backup schedules
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+          echo "::add-mask::${OCI_S3_ACCESS_KEY}"
+          echo "::add-mask::${OCI_S3_SECRET_KEY}"
+          status_file="${RUNNER_TEMP}/resources-v2-reconcile.log"
+          selected=0
+          for manifest in products/*.json; do
+            if [ "$(jq -r '.topology // empty' "${manifest}")" != "resources-v2" ]; then
+              continue
+            fi
+            if [ "$(jq -r '.backup.enabled // false' "${manifest}")" != "true" ]; then
+              continue
+            fi
+            selected=$((selected + 1))
+            python scripts/reconcile_database_backups.py \
+              --manifest "${manifest}" \
+              --backup-now true 2>&1 | tee -a "${status_file}"
+          done
+          echo "Reconciled ${selected} external development backup schedule(s)."
 
       - name: Close resolved resources-v2 failure
         if: success()
