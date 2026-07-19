@@ -52,8 +52,8 @@ storage in Coolify, verifies the connection, and idempotently creates or updates
 one scheduled backup for the product's exact private PostgreSQL resource.
 
 The development baseline is one daily backup, one local recovery copy and seven
-external Oracle Object Storage copies retained for seven days. Pull-request
-smoke verification triggers a real dump, rejects local-only success or S3
+external Oracle Object Storage copies retained for seven days. Trusted Factory
+reconciliation on `dev` triggers a real dump, rejects local-only success or S3
 warnings, and independently confirms that the exact backup object exists in the
 bucket. Product promotion to production remains blocked until its external
 backup and restore drill have passed.
@@ -72,4 +72,3 @@ backup objects, or enable production without Abel's explicit approval.
 5. Export and restore PostgreSQL data when the source database is non-empty.
 6. Keep the legacy Compose application available until rollback retention ends.
 7. Delete legacy resources only with explicit approval.
-
