@@ -39,6 +39,17 @@ class ResourceManifestTests(unittest.TestCase):
         self.assertIn("--operation plan", plan_step)
         self.assertNotIn("--operation deploy-full", plan_step)
 
+    def test_resources_workflow_uses_native_application_destination(self):
+        workflow = (
+            Path(resource.__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "provision-coolify-resources-development.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("COOLIFY_RESOURCES_DESTINATION_UUID", workflow)
+        self.assertIn("g61slcctgnbvhhc8si0h9tf0", workflow)
+
     def test_manifest_accepts_repository_independent_from_product_slug(self):
         self.assertEqual(
             resource.validate_manifest(manifest())["repository"],
