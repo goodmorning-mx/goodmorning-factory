@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -134,6 +135,9 @@ def main(argv: list[str] | None = None) -> int:
     except ManifestError as exc:
         print(json.dumps({"status": "error", "error": str(exc)}, sort_keys=True))
         return 2
+
+    if __package__ in (None, ""):
+        sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
     from scripts.provision_product_development import main as provision_main
 
