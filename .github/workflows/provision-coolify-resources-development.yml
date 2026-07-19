@@ -124,7 +124,7 @@ jobs:
           done < "${RESOURCE_MANIFESTS_FILE}"
           echo "Planned ${selected} selected resources-v2 product(s)."
 
-      - name: Converge selected resources-v2 products
+      - name: Apply and deploy all resources-v2 products
         shell: bash
         env:
           COOLIFY_ALLOW_RESOURCE_WRITES: 'true'
