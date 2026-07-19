@@ -2489,6 +2489,10 @@ def frontend_env_observed_metadata(envs: list[dict[str, Any]], desired: dict[str
     for item in envs:
         if not isinstance(item, dict):
             continue
+        # Coolify may return a separate preview row for the same key. The
+        # development deployment contract applies only to non-preview rows.
+        if bool_value(item.get("is_preview")) is not False:
+            continue
         key = item.get("key")
         if key in (None, ""):
             continue
