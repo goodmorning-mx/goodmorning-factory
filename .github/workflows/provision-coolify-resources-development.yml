@@ -123,6 +123,21 @@ jobs:
           done
           echo "Applied ${selected} resources-v2 product(s)."
 
+      - name: Close resolved resources-v2 failure
+        if: success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="[automation] Coolify resources-v2 development reconciliation failed"
+          existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue close "${existing}" \
+              --reason completed \
+              --comment "Resolved automatically by successful development reconciliation: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
       - name: Report sanitized resources-v2 failure
         if: failure()
         shell: bash
