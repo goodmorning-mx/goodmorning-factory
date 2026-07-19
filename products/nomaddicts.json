@@ -1,0 +1,20 @@
+{
+  "topology": "resources-v2",
+  "product": "nomaddicts",
+  "repository": "goodmorning-mx/factory-smoke-test",
+  "branch": "dev",
+  "development_domain": "dev.nomaddicts.goodmorning.mx",
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "backend_base_directory": "/backend",
+  "frontend_base_directory": "/frontend",
+  "backup": {
+    "enabled": true,
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
+    "frequency": "0 3 * * *",
+    "local_retention_count": 1,
+    "local_retention_days": 1,
+    "s3_retention_count": 7,
+    "s3_retention_days": 7,
+    "timeout_seconds": 1800
+  }
+}
