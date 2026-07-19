@@ -47,9 +47,10 @@ Compose and resources workflows must never manage the same product at once.
 ## Backups
 
 Every persistent `resources-v2` product declares a development backup policy
-in its reviewed manifest. Factory registers one team-scoped S3-compatible
-storage in Coolify, verifies the connection, and idempotently creates or updates
-one scheduled backup for the product's exact private PostgreSQL resource.
+and the UUID of a prevalidated, team-scoped S3-compatible storage in its reviewed
+manifest. Factory refuses missing or malformed storage UUIDs and idempotently
+creates or updates one scheduled backup for the product's exact private
+PostgreSQL resource.
 
 The development baseline is one daily backup, one local recovery copy and seven
 external Oracle Object Storage copies retained for seven days. Trusted Factory
@@ -58,10 +59,14 @@ warnings, and independently confirms that the exact backup object exists in the
 bucket. Product promotion to production remains blocked until its external
 backup and restore drill have passed.
 
-Storage credentials remain GitHub Actions secrets and are streamed to Coolify
-over audited SSH input; they are never committed, printed, or passed as command
-arguments. Factory must not create paid storage, rotate credentials, delete
-backup objects, or enable production without Abel's explicit approval.
+Storage credentials remain encrypted in Coolify and GitHub Actions secrets; they
+are never committed or printed. Coolify uses its validated storage record for
+the scheduled upload, while Factory independently lists Oracle with the Actions
+credentials to prove the exact object exists. Registering or rotating a global
+Coolify storage remains an explicit administrative action because Coolify 4.1.2
+does not expose a public API for it. Factory must not create paid storage, rotate
+credentials, delete backup objects, or enable production without Abel's explicit
+approval.
 
 ## Migration
 
