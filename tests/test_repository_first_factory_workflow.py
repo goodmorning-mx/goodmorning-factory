@@ -13,6 +13,13 @@ class RepositoryFirstFactoryWorkflowTests(unittest.TestCase):
         cls.create = CREATE_WORKFLOW.read_text(encoding="utf-8")
         cls.resources = RESOURCE_WORKFLOW.read_text(encoding="utf-8")
 
+    def test_gitops_request_resolves_exactly_one_changed_file(self):
+        self.assertIn("'requests/*.json'", self.create)
+        self.assertIn("Resolve product request", self.create)
+        self.assertIn("git diff --name-only", self.create)
+        self.assertIn('if [ "${#requests[@]}" -ne 1 ]', self.create)
+        self.assertIn("${{ steps.request.outputs.product_name }}", self.create)
+
     def test_create_pipeline_registers_then_dispatches_then_waits(self):
         register = self.create.index("Register repository-first product manifest")
         sentinel = self.create.index("Create deployment verification sentinel")
