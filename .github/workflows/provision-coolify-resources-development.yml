@@ -80,7 +80,7 @@ jobs:
             python scripts/reconcile_resource_product.py \
               --manifest "${manifest}" \
               --phase plan \
-              --operation deploy-full \
+              --operation plan \
               --server "${COOLIFY_SERVER_NAME}" \
               --github-app "${COOLIFY_GITHUB_APP_NAME}" \
               --destination-uuid "${COOLIFY_DESTINATION_UUID}"
