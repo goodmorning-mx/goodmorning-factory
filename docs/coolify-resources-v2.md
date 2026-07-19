@@ -17,6 +17,10 @@ PostgreSQL has no public port. The Backend receives its private `DATABASE_URL`
 as a secret runtime variable. Frontend and Backend may be deployed or rolled
 back independently without replacing the PostgreSQL resource.
 
+Both Applications use the native Coolify GitHub App with automatic deployment
+enabled. After Factory performs the initial installation, pushes to the
+product's `dev` branch deploy directly through the native GitHub connection.
+
 ## Catalog contract
 
 ```json
