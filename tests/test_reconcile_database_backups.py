@@ -17,6 +17,7 @@ class BackupContractTests(unittest.TestCase):
             "branch": "dev",
             "backup": {
                 "enabled": True,
+                "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
                 "frequency": "0 3 * * *",
                 "local_retention_count": 1,
                 "local_retention_days": 1,
@@ -72,30 +73,12 @@ class BackupContractTests(unittest.TestCase):
         self.assertEqual(payload["database_backup_retention_amount_locally"], 1)
         self.assertFalse(payload["dump_all"])
 
-    def test_storage_registration_uses_stdin_and_returns_sanitized_identity(self):
-        environment = {
-            "COOLIFY_SSH_HOST": "example.test",
-            "COOLIFY_SSH_USER": "ubuntu",
-            "COOLIFY_SSH_IDENTITY_FILE": "/tmp/key",
-            "COOLIFY_SSH_KNOWN_HOSTS_FILE": "/tmp/known_hosts",
-            "OCI_S3_REGION": "mx-queretaro-1",
-            "OCI_S3_ACCESS_KEY": "access-value",
-            "OCI_S3_SECRET_KEY": "secret-value",
-            "OCI_S3_BUCKET": "bucket",
-            "OCI_S3_ENDPOINT": "https://namespace.example.test",
-        }
-        completed = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout='Psy Shell\n{"uuid":"s3-1","name":"goodmorning-factory-oracle-backups","is_usable":true}', stderr=""
-        )
-        runner = mock.Mock(return_value=completed)
-        with mock.patch.dict(os.environ, environment, clear=True):
-            result = rb.register_storage(1, runner=runner)
-        self.assertEqual(result["uuid"], "s3-1")
-        command = " ".join(runner.call_args.args[0])
-        self.assertNotIn("access-value", command)
-        self.assertNotIn("secret-value", command)
-        stdin_payload = runner.call_args.kwargs["input"]
-        self.assertIn("secret-value", stdin_payload)
+    def test_manifest_requires_stable_storage_uuid(self):
+        for storage_uuid in ("", "UPPERCASE", "too-short"):
+            value = self.manifest()
+            value["backup"]["storage_uuid"] = storage_uuid
+            with self.assertRaisesRegex(rb.BackupError, "storage_uuid"):
+                rb.load_manifest(self.write_manifest(value))
 
     def test_success_with_s3_warning_is_rejected(self):
         class Client:
