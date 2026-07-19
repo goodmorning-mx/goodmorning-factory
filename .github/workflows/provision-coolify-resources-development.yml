@@ -71,6 +71,7 @@ jobs:
           echo "::add-mask::${COOLIFY_API_TOKEN}"
 
       - name: Select affected resources-v2 manifests
+        id: select
         shell: bash
         run: |
           set -euo pipefail
@@ -96,7 +97,7 @@ jobs:
             done < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- 'products/*.json')
           fi
 
-          if [ ! -s "${selection_file}" ]; then
+          if [ ! -s "${selection_file}" ] && [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             for manifest in products/*.json; do
               if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v2" ]; then
                 printf '%s\n' "${manifest}" >> "${selection_file}"
@@ -106,14 +107,17 @@ jobs:
 
           sort -u -o "${selection_file}" "${selection_file}"
           if [ ! -s "${selection_file}" ]; then
-            echo "No resources-v2 manifests were selected."
-            exit 1
+            echo "No changed resources-v2 manifests were selected; this push is a safe no-op."
+            echo "selected=false" >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
           echo "Selected manifests:"
           sed 's/^/- /' "${selection_file}"
           echo "RESOURCE_MANIFESTS_FILE=${selection_file}" >> "${GITHUB_ENV}"
+          echo "selected=true" >> "${GITHUB_OUTPUT}"
 
       - name: Plan all resources-v2 products
+        if: steps.select.outputs.selected == 'true'
         shell: bash
         env:
           COOLIFY_ALLOW_RESOURCE_WRITES: 'false'
@@ -142,6 +146,7 @@ jobs:
           echo "Planned ${selected} selected resources-v2 product(s)."
 
       - name: Apply and deploy all resources-v2 products
+        if: steps.select.outputs.selected == 'true'
         shell: bash
         env:
           COOLIFY_ALLOW_RESOURCE_WRITES: 'true'
@@ -202,6 +207,7 @@ jobs:
           echo "Applied ${selected} selected resources-v2 product(s)."
 
       - name: Reconcile external development backup schedules
+        if: steps.select.outputs.selected == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -222,6 +228,7 @@ jobs:
           echo "Reconciled ${selected} selected external development backup schedule(s)."
 
       - name: Close resolved resources-v2 failure
+        if: steps.select.outputs.selected == 'true'
         if: success()
         shell: bash
         env:
