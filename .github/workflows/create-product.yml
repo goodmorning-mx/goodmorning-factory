@@ -45,7 +45,7 @@ jobs:
         with:
           ref: dev
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 0
 
       - name: Resolve product request
         id: request
