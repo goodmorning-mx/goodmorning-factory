@@ -151,10 +151,49 @@ def update_topics(owner: str, repo: str) -> list[str]:
     return data["names"]
 
 
+def inspect_existing_repository(args: argparse.Namespace, repo: dict[str, Any]) -> dict[str, Any]:
+    main = get_branch(args.owner, args.name, "main")
+    dev = get_branch(args.owner, args.name, "dev")
+    topics_response = request(
+        "GET",
+        f"/repos/{args.owner}/{args.name}/topics",
+        accept="application/vnd.github.mercy-preview+json",
+    ).data
+    topics = topics_response.get("names", []) if isinstance(topics_response, dict) else []
+    checks = {
+        "private": repo.get("private") is True,
+        "default_branch_dev": repo.get("default_branch") == "dev",
+        "main_branch": isinstance(main, dict),
+        "development_branch": isinstance(dev, dict),
+        "factory_topics": set(TOPICS).issubset(topics),
+    }
+    if not all(checks.values()):
+        failed = sorted(name for name, passed in checks.items() if not passed)
+        raise ProvisioningError(
+            f"Repository {args.owner}/{args.name} already exists but is incompatible with the GoodMorning factory contract.",
+            status="incompatible_existing",
+            partial={"owner": args.owner, "repository": args.name, "failed_checks": failed},
+            code=4,
+        )
+    return {
+        "status": "existing",
+        "owner": args.owner,
+        "repository": args.name,
+        "repository_url": repo.get("html_url"),
+        "template": f"{args.template_owner}/{args.template_repo}",
+        "main_branch": "main",
+        "development_branch": "dev",
+        "default_branch": "dev",
+        "private": True,
+        "topics": topics,
+    }
+
+
 def provision(args: argparse.Namespace) -> dict[str, Any]:
     validate_inputs(args)
-    if get_repo(args.owner, args.name) is not None:
-        raise ProvisioningError(f"Repository {args.owner}/{args.name} already exists; refusing to modify it.", status="already_exists", code=4)
+    existing = get_repo(args.owner, args.name)
+    if isinstance(existing, dict):
+        return inspect_existing_repository(args, existing)
 
     template = require_repo(args.template_owner, args.template_repo)
     if not template.get("is_template"):
