@@ -817,6 +817,7 @@ def discover(client: CoolifyClient, args: argparse.Namespace) -> dict[str, Any]:
         "environment_name": args.environment,
         "server_uuid": server_summary.get("uuid") or server_summary.get("id"),
         "github_app_uuid": github_app_summary.get("uuid") or github_app_summary.get("id"),
+        "github_app_id": github_app_summary.get("id"),
     }
     existing = discover_existing_resources(client, args.product, context, args)
     return {
@@ -1000,6 +1001,11 @@ def operational_summary(item: dict[str, Any]) -> dict[str, Any]:
         "dockerfile_location",
         "ports_exposes",
         "domains",
+        "fqdn",
+        "destination_uuid",
+        "github_app_uuid",
+        "source_uuid",
+        "source_id",
         "project_uuid",
         "environment_uuid",
         "server_uuid",
@@ -1048,6 +1054,15 @@ def bool_value(value: Any) -> bool | None:
     return None
 
 
+def github_app_identifier_matches(actual: Any, context: dict[str, Any]) -> bool:
+    accepted = {
+        str(value)
+        for value in (context.get("github_app_uuid"), context.get("github_app_id"))
+        if value not in (None, "")
+    }
+    return str(actual) in accepted
+
+
 
 def application_differences(item: dict[str, Any], expected: dict[str, Any], context: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     field_paths = {
@@ -1057,7 +1072,7 @@ def application_differences(item: dict[str, Any], expected: dict[str, Any], cont
         "base_directory": ("base_directory",),
         "dockerfile_location": ("dockerfile_location", "dockerfile"),
         "ports_exposes": ("ports_exposes",),
-        "domains": ("domains", "domain"),
+        "domains": ("domains", "domain", "fqdn"),
     }
     differences = []
     unverified = []
@@ -1068,10 +1083,10 @@ def application_differences(item: dict[str, Any], expected: dict[str, Any], cont
             unverified.append({"field": key, "expected": expected_value})
         elif not normalized_equal(key, actual, expected_value):
             differences.append({"field": key, "expected": expected_value, "actual": actual})
-    source_uuid = nested_field(item, "github_app_uuid", "source_uuid", "source.uuid", "github_app.uuid")
+    source_uuid = nested_field(item, "github_app_uuid", "source_uuid", "source_id", "source.uuid", "github_app.uuid")
     if source_uuid in (None, ""):
         unverified.append({"field": "github_app_uuid", "expected": context.get("github_app_uuid")})
-    elif context.get("github_app_uuid") and str(source_uuid) != str(context["github_app_uuid"]):
+    elif not github_app_identifier_matches(source_uuid, context):
         differences.append({"field": "github_app_uuid", "expected": context.get("github_app_uuid"), "actual": source_uuid})
     return differences, unverified
 
@@ -2085,7 +2100,7 @@ def backend_application_differences(item: dict[str, Any], args: argparse.Namespa
     paths = {
         "name": ("name",), "git_repository": ("git_repository", "repository"), "git_branch": ("git_branch", "branch"),
         "build_pack": ("build_pack", "buildpack"), "base_directory": ("base_directory",), "dockerfile_location": ("dockerfile_location", "dockerfile"),
-        "ports_exposes": ("ports_exposes",), "domains": ("domains", "domain"), "github_app_uuid": ("github_app_uuid", "source.uuid", "github_app.uuid"),
+        "ports_exposes": ("ports_exposes",), "domains": ("domains", "domain", "fqdn"), "github_app_uuid": ("github_app_uuid", "source_uuid", "source_id", "source.uuid", "github_app.uuid"),
         "destination_uuid": ("destination_uuid", "destination.uuid", "destination.id"),
     }
     diffs=[]; unver=[]
@@ -2093,6 +2108,9 @@ def backend_application_differences(item: dict[str, Any], args: argparse.Namespa
         actual = nested_field(item, *ps); exp = expected.get(key)
         if actual in (None, ""):
             unver.append({"field": key, "expected": exp})
+        elif key == "github_app_uuid":
+            if not github_app_identifier_matches(actual, context):
+                diffs.append({"field": key, "expected": exp, "actual": actual})
         elif key == "domains" and ":8000" in normalize_domain(actual):
             diffs.append({"field": key, "expected": exp, "actual": "contains_port"})
         elif not normalized_equal(key, actual, exp):
@@ -2320,7 +2338,7 @@ def frontend_application_differences(item: dict[str, Any], args: argparse.Namesp
     paths = {
         "name": ("name",), "git_repository": ("git_repository", "repository"), "git_branch": ("git_branch", "branch"),
         "build_pack": ("build_pack", "buildpack"), "base_directory": ("base_directory",), "dockerfile_location": ("dockerfile_location", "dockerfile"),
-        "ports_exposes": ("ports_exposes",), "domains": ("domains", "domain"), "github_app_uuid": ("github_app_uuid", "source.uuid", "github_app.uuid"),
+        "ports_exposes": ("ports_exposes",), "domains": ("domains", "domain", "fqdn"), "github_app_uuid": ("github_app_uuid", "source_uuid", "source_id", "source.uuid", "github_app.uuid"),
         "destination_uuid": ("destination_uuid", "destination.uuid", "destination.id"),
     }
     diffs=[]; unver=[]
@@ -2328,6 +2346,9 @@ def frontend_application_differences(item: dict[str, Any], args: argparse.Namesp
         actual = nested_field(item, *ps); exp = expected.get(key)
         if actual in (None, ""):
             unver.append({"field": key, "expected": exp})
+        elif key == "github_app_uuid":
+            if not github_app_identifier_matches(actual, context):
+                diffs.append({"field": key, "expected": exp, "actual": actual})
         elif key == "domains" and re.search(r":(?:80|3000|8000)(?:/|$)", normalize_domain(actual)):
             diffs.append({"field": key, "expected": exp, "actual": "contains_port"})
         elif not normalized_equal(key, actual, exp):
@@ -3367,6 +3388,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
         "environment_name": "dev",
         "server_uuid": server_uuid,
         "github_app_uuid": github_app_summary.get("uuid") or github_app_summary.get("id"),
+        "github_app_id": github_app_summary.get("id"),
         "destination_uuid": destination.get("uuid") if isinstance(destination, dict) else None,
         "git_repository": args.repository,
     }
