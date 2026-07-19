@@ -45,11 +45,29 @@ class CreateProductTests(unittest.TestCase):
         with self.assertRaises(cp.ProvisioningError):
             cp.validate_inputs(args(owner="other-org"))
 
-    def test_existing_repository_rejection(self):
-        with mock.patch.object(cp, "get_repo", return_value={"name": "test-product"}):
+    def test_compatible_existing_repository_is_reused(self):
+        repo = {
+            "name": "test-product",
+            "private": True,
+            "default_branch": "dev",
+            "html_url": "https://github.com/goodmorning-mx/test-product",
+        }
+        with mock.patch.object(cp, "get_repo", return_value=repo), \
+             mock.patch.object(cp, "get_branch", return_value={"commit": {"sha": "abc123"}}), \
+             mock.patch.object(cp, "request", return_value=cp.Response(200, {"names": cp.TOPICS}, {})):
+            result = cp.provision(args())
+        self.assertEqual(result["status"], "existing")
+        self.assertEqual(result["repository"], "test-product")
+
+    def test_incompatible_existing_repository_is_rejected(self):
+        repo = {"name": "test-product", "private": False, "default_branch": "main"}
+        with mock.patch.object(cp, "get_repo", return_value=repo), \
+             mock.patch.object(cp, "get_branch", return_value=None), \
+             mock.patch.object(cp, "request", return_value=cp.Response(200, {"names": []}, {})):
             with self.assertRaises(cp.ProvisioningError) as ctx:
                 cp.provision(args())
-        self.assertEqual(ctx.exception.status, "already_exists")
+        self.assertEqual(ctx.exception.status, "incompatible_existing")
+        self.assertIn("private", ctx.exception.partial["failed_checks"])
 
     def test_successful_template_generation_and_final_json_result(self):
         calls = []
