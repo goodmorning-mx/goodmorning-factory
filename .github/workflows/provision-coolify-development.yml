@@ -160,6 +160,12 @@ jobs:
           fi
 
           for manifest in "${manifests[@]}"; do
+            topology="$(jq -r '.topology // "compose-v1"' "${manifest}")"
+            if [ "${topology}" != "compose-v1" ]; then
+              echo "Skipping ${manifest}: topology=${topology}"
+              continue
+            fi
+
             product="$(jq -er '.product' "${manifest}")"
             repository="$(jq -er '.repository' "${manifest}")"
             branch="$(jq -er '.branch // "dev"' "${manifest}")"
