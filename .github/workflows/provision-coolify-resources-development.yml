@@ -11,6 +11,11 @@ on:
       - 'scripts/reconcile_resource_product.py'
       - '.github/workflows/provision-coolify-resources-development.yml'
   workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: Optional single resources-v2 manifest to reconcile.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -22,6 +27,7 @@ concurrency:
 
 jobs:
   reconcile-resources-v2:
+    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'catalog(factory): register product ') }}
     name: Reconcile resources-v2 products
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -65,13 +71,25 @@ jobs:
           echo "::add-mask::${COOLIFY_API_TOKEN}"
 
       - name: Select affected resources-v2 manifests
+        id: select
         shell: bash
         run: |
           set -euo pipefail
           selection_file="${RUNNER_TEMP}/resources-v2-manifests.txt"
           : > "${selection_file}"
 
-          if [ "${GITHUB_EVENT_NAME}" = "push" ] && [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+          requested_manifest="${{ inputs.manifest_path }}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${requested_manifest}" ]; then
+            if [[ ! "${requested_manifest}" =~ ^products/[a-z0-9][a-z0-9-]*\.json$ ]] || [ ! -f "${requested_manifest}" ]; then
+              echo "manifest_path must identify an existing products/<slug>.json file."
+              exit 1
+            fi
+            if [ "$(jq -r '.topology // empty' "${requested_manifest}")" != "resources-v2" ]; then
+              echo "Selected manifest is not resources-v2."
+              exit 1
+            fi
+            printf '%s\n' "${requested_manifest}" >> "${selection_file}"
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ] && [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
             while IFS= read -r manifest; do
               if [ -f "${manifest}" ] && [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v2" ]; then
                 printf '%s\n' "${manifest}" >> "${selection_file}"
@@ -79,7 +97,7 @@ jobs:
             done < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- 'products/*.json')
           fi
 
-          if [ ! -s "${selection_file}" ]; then
+          if [ ! -s "${selection_file}" ] && [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             for manifest in products/*.json; do
               if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v2" ]; then
                 printf '%s\n' "${manifest}" >> "${selection_file}"
@@ -89,14 +107,17 @@ jobs:
 
           sort -u -o "${selection_file}" "${selection_file}"
           if [ ! -s "${selection_file}" ]; then
-            echo "No resources-v2 manifests were selected."
-            exit 1
+            echo "No changed resources-v2 manifests were selected; this push is a safe no-op."
+            echo "selected=false" >> "${GITHUB_OUTPUT}"
+            exit 0
           fi
           echo "Selected manifests:"
           sed 's/^/- /' "${selection_file}"
           echo "RESOURCE_MANIFESTS_FILE=${selection_file}" >> "${GITHUB_ENV}"
+          echo "selected=true" >> "${GITHUB_OUTPUT}"
 
       - name: Plan all resources-v2 products
+        if: steps.select.outputs.selected == 'true'
         shell: bash
         env:
           COOLIFY_ALLOW_RESOURCE_WRITES: 'false'
@@ -125,6 +146,7 @@ jobs:
           echo "Planned ${selected} selected resources-v2 product(s)."
 
       - name: Apply and deploy all resources-v2 products
+        if: steps.select.outputs.selected == 'true'
         shell: bash
         env:
           COOLIFY_ALLOW_RESOURCE_WRITES: 'true'
@@ -185,6 +207,7 @@ jobs:
           echo "Applied ${selected} selected resources-v2 product(s)."
 
       - name: Reconcile external development backup schedules
+        if: steps.select.outputs.selected == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -205,7 +228,7 @@ jobs:
           echo "Reconciled ${selected} selected external development backup schedule(s)."
 
       - name: Close resolved resources-v2 failure
-        if: success()
+        if: steps.select.outputs.selected == 'true' && success()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

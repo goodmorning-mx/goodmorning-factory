@@ -13,6 +13,11 @@ class ConvergentResourcesWorkflowTests(unittest.TestCase):
         self.assertIn("RESOURCE_MANIFESTS_FILE", self.text)
         self.assertGreaterEqual(self.text.count('done < "${RESOURCE_MANIFESTS_FILE}"'), 3)
 
+    def test_code_only_push_is_safe_no_op(self):
+        self.assertIn("No changed resources-v2 manifests were selected; this push is a safe no-op.", self.text)
+        self.assertIn('echo "selected=false" >> "${GITHUB_OUTPUT}"', self.text)
+        self.assertGreaterEqual(self.text.count("steps.select.outputs.selected == 'true'"), 4)
+
     def test_retries_only_safe_partial_progress_with_a_hard_limit(self):
         self.assertIn("MAX_RECONCILE_ATTEMPTS: '6'", self.text)
         self.assertIn("RECONCILE_RETRY_BASE_SECONDS: '20'", self.text)
