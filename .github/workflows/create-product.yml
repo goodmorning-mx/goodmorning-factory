@@ -167,12 +167,14 @@ jobs:
 
       - name: Dispatch targeted Coolify reconciliation
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           set -euo pipefail
-          gh workflow run provision-coolify-resources-development.yml \
-            --ref dev \
-            -f manifest_path="${{ steps.catalog.outputs.manifest_path }}"
+          echo "::add-mask::${GH_TOKEN}"
+          jq -n \
+            --arg manifest "${{ steps.catalog.outputs.manifest_path }}" \
+            '{event_type: "reconcile-product", client_payload: {manifest_path: $manifest}}' \
+            | gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" --input -
 
       - name: Wait for verified development deployment
         env:
