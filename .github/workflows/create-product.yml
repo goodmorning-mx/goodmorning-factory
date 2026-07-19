@@ -6,6 +6,13 @@ on:
       - dev
     paths:
       - 'requests/*.json'
+  pull_request:
+    branches:
+      - dev
+    types:
+      - closed
+    paths:
+      - 'requests/*.json'
   workflow_dispatch:
     inputs:
       product_name:
@@ -33,6 +40,7 @@ concurrency:
 
 jobs:
   create-product:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.merged == true }}
     name: Provision product repository
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -53,6 +61,15 @@ jobs:
             product_name="${{ github.event.inputs.product_name }}"
             description="${{ github.event.inputs.description }}"
             confirm_provision="${{ github.event.inputs.confirm_provision }}"
+          elif [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            mapfile -t requests < <(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.merge_commit_sha }}" -- 'requests/*.json')
+            if [ "${#requests[@]}" -ne 1 ] || [ ! -f "${requests[0]}" ]; then
+              echo "A merged product request PR must add or change exactly one requests/<product>.json file."
+              exit 1
+            fi
+            product_name="$(jq -er '.product_name' "${requests[0]}")"
+            description="$(jq -er '.description' "${requests[0]}")"
+            confirm_provision="$(jq -r '.confirm_provision // false' "${requests[0]}")"
           else
             mapfile -t requests < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- 'requests/*.json')
             if [ "${#requests[@]}" -ne 1 ] || [ ! -f "${requests[0]}" ]; then
