@@ -450,6 +450,34 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
         api = next(item for item in result["discovery"]["existing_resources"]["classification"] if item["name"] == "ledger-api-dev")
         self.assertEqual(api["status"], "compatibility_unverified")
 
+    def test_application_omitted_project_and_environment_uses_strict_server_fallback(self):
+        application = {
+            "uuid": "api-1", "name": "ledger-api-dev", "type": "application",
+            "server_uuid": "server-1", "destination_uuid": "bk8cw0gkswgo04o0s88sk0kg",
+            "github_app_uuid": "app-1", "git_repository": "goodmorning-mx/ledger",
+            "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend",
+            "dockerfile_location": "/Dockerfile", "ports_exposes": "8000",
+            "domains": "https://api.dev.ledger.goodmorning.mx", "instant_deploy": False,
+            "is_auto_deploy_enabled": True, "autogenerate_domain": False,
+            "health_check_enabled": True, "health_check_path": "/health",
+            "health_check_port": "8000", "health_check_method": "GET",
+            "health_check_scheme": "http", "health_check_return_code": 200,
+        }
+        client = self.client(**{
+            "/applications": [application],
+            "/applications/api-1": application,
+        })
+
+        result = pp.provision(args(), client_factory=lambda: client)
+        backend = result["backend_application"]
+
+        self.assertEqual(backend["status"], "exists")
+        self.assertFalse(backend["matches"][0]["scope_api_verified"])
+        self.assertEqual(
+            backend["matches"][0]["scope_verification_source"],
+            pp.APPLICATION_SCOPE_FALLBACK_SOURCE,
+        )
+
     def test_legacy_compose_product_dev_is_reported_separately(self):
         client = self.client(
             **{
