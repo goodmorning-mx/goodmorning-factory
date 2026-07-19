@@ -2,6 +2,20 @@
 
 The canonical GoodMorning product lifecycle begins with a dedicated private GitHub repository. Shared smoke-test repositories are not the product source contract.
 
+## Declarative request
+
+Agents can create one reviewed file at `requests/<product>.json`:
+
+```json
+{
+  "product_name": "example-product",
+  "description": "Example GoodMorning product",
+  "confirm_provision": true
+}
+```
+
+Merging that single request into `dev` starts the complete pipeline. The workflow-dispatch form remains available for an operator.
+
 ## One-command pipeline
 
 Dispatch **Create GoodMorning product repository** with a DNS-safe product name, description, and confirmation.
