@@ -79,7 +79,7 @@ jobs:
 
           requested_manifest="${{ inputs.manifest_path }}"
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${requested_manifest}" ]; then
-            if [[ ! "${requested_manifest}" =~ ^products/[a-z0-9][a-z0-9-]*\\.json$ ]] || [ ! -f "${requested_manifest}" ]; then
+            if [[ ! "${requested_manifest}" =~ ^products/[a-z0-9][a-z0-9-]*\.json$ ]] || [ ! -f "${requested_manifest}" ]; then
               echo "manifest_path must identify an existing products/<slug>.json file."
               exit 1
             fi
