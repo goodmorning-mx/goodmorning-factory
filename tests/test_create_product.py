@@ -34,7 +34,7 @@ class CreateProductTests(unittest.TestCase):
 
     def test_excessive_length(self):
         with self.assertRaises(cp.ProvisioningError):
-            cp.validate_name("a" * 101)
+            cp.validate_name("a" * 64)
 
     def test_reserved_names(self):
         for name in cp.RESERVED:
