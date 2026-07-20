@@ -1,18 +1,6 @@
 name: Reconcile one GoodMorning development product
 
 on:
-  repository_dispatch:
-    types:
-      - reconcile-product
-  push:
-    branches:
-      - dev
-    paths:
-      - 'products/*.json'
-      - 'scripts/provision_product_development.py'
-      - 'scripts/reconcile_database_backups.py'
-      - 'scripts/reconcile_resource_product.py'
-      - '.github/workflows/provision-coolify-resources-development.yml'
   workflow_dispatch:
     inputs:
       manifest_path:
