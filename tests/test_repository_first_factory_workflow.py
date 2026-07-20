@@ -23,14 +23,15 @@ class RepositoryFirstFactoryWorkflowTests(unittest.TestCase):
     def test_create_pipeline_registers_then_dispatches_then_waits(self):
         register = self.create.index("Register repository-first product manifest")
         sentinel = self.create.index("Create deployment verification sentinel")
-        dispatch = self.create.index("Dispatch targeted Coolify reconciliation")
-        wait = self.create.index("Wait for verified development deployment")
+        dispatch = self.create.index("Reconcile and verify targeted Coolify product")
+        wait = self.create.index("Verify Oracle database backup")
         self.assertLess(register, sentinel)
         self.assertLess(sentinel, dispatch)
         self.assertLess(dispatch, wait)
         self.assertIn("scripts/register_product_manifest.py", self.create)
-        self.assertIn("gh workflow run reconcile-product-development.yml", self.create)
-        self.assertIn('manifest_path="${{ steps.catalog.outputs.manifest_path }}"', self.create)
+        self.assertIn("scripts/reconcile_resource_product.py", self.create)
+        self.assertIn("scripts/reconcile_database_backups.py", self.create)
+        self.assertIn('manifest="${{ steps.catalog.outputs.manifest_path }}"', self.create)
 
     def test_create_pipeline_uses_factory_app_and_template(self):
         self.assertIn("actions/create-github-app-token@v2", self.create)
