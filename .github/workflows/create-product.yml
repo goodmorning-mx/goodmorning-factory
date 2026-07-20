@@ -39,6 +39,18 @@ jobs:
     name: Provision product repository
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'localhost' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0' }}
+      COOLIFY_GITHUB_APP_NAME: ${{ vars.COOLIFY_GITHUB_APP_NAME || 'goodmorning-mx-coolify' }}
+      COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
+      OCI_S3_ACCESS_KEY: ${{ secrets.OCI_S3_ACCESS_KEY }}
+      OCI_S3_SECRET_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+      OCI_S3_BUCKET: ${{ vars.OCI_S3_BUCKET }}
+      OCI_S3_REGION: ${{ vars.OCI_S3_REGION }}
+      OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
     steps:
       - name: Check out factory dev
         uses: actions/checkout@v4
@@ -165,39 +177,60 @@ jobs:
           fi
           echo "issue_number=${issue_number}" >> "${GITHUB_OUTPUT}"
 
-      - name: Dispatch targeted Coolify reconciliation
+      - name: Reconcile and verify targeted Coolify product
         env:
-          GH_TOKEN: ${{ github.token }}
+          COOLIFY_ALLOW_RESOURCE_WRITES: 'true'
+          COOLIFY_ALLOW_DATABASE_START: 'true'
+          COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES: 'true'
+          COOLIFY_ALLOW_BACKEND_ENV_WRITES: 'true'
+          COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES: 'true'
+          COOLIFY_ALLOW_FRONTEND_ENV_WRITES: 'true'
+          COOLIFY_ALLOW_DEPLOYMENTS: 'true'
+          COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'true'
+          COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'true'
         run: |
           set -euo pipefail
-          echo "::add-mask::${GH_TOKEN}"
-          gh workflow run reconcile-product-development.yml \
-            --repo "${GITHUB_REPOSITORY}" \
-            --ref dev \
-            -f manifest_path="${{ steps.catalog.outputs.manifest_path }}"
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+          manifest="${{ steps.catalog.outputs.manifest_path }}"
+          converged=false
+          for attempt in $(seq 1 6); do
+            set +e
+            python scripts/reconcile_resource_product.py \
+              --manifest "${manifest}" \
+              --phase apply \
+              --operation deploy-full \
+              --server "${COOLIFY_SERVER_NAME}" \
+              --github-app "${COOLIFY_GITHUB_APP_NAME}" \
+              --destination-uuid "${COOLIFY_DESTINATION_UUID}"
+            code=$?
+            set -e
+            if [ "${code}" -eq 0 ]; then
+              converged=true
+              break
+            fi
+            [ "${attempt}" -eq 6 ] || sleep $((20 * attempt))
+          done
+          if [ "${converged}" != "true" ]; then
+            echo "Targeted Coolify reconciliation did not converge."
+            exit 1
+          fi
 
-      - name: Wait for verified development deployment
+      - name: Verify Oracle database backup
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${OCI_S3_ACCESS_KEY}"
+          echo "::add-mask::${OCI_S3_SECRET_KEY}"
+          python scripts/reconcile_database_backups.py \
+            --manifest "${{ steps.catalog.outputs.manifest_path }}" \
+            --backup-now true
+
+      - name: Close verified deployment sentinel
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ steps.sentinel.outputs.issue_number }}
         run: |
-          set -euo pipefail
-          for attempt in $(seq 1 165); do
-            state="$(gh issue view "${ISSUE_NUMBER}" --json state --jq '.state')"
-            if [ "${state}" = "CLOSED" ]; then
-              echo "Repository-first product deployment verified."
-              exit 0
-            fi
-            failed="$(gh issue view "${ISSUE_NUMBER}" --json comments --jq '[.comments[].body | contains("The automatic Coolify resources-v2 development reconciliation failed.")] | any')"
-            if [ "${failed}" = "true" ]; then
-              echo "Coolify reconciliation reported a sanitized failure in issue #${ISSUE_NUMBER}."
-              exit 1
-            fi
-            echo "Waiting for Coolify verification (${attempt}/165)..."
-            sleep 20
-          done
-          echo "Timed out waiting for verified Coolify reconciliation."
-          exit 1
+          gh issue close "${ISSUE_NUMBER}" --reason completed \
+            --comment "Repository, frontend, API, PostgreSQL and Oracle backup verified by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
 
       - name: Publish provisioning summary
         if: always()
