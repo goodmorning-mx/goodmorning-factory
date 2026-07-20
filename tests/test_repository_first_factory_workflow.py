@@ -4,7 +4,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 CREATE_WORKFLOW = ROOT / ".github" / "workflows" / "create-product.yml"
-RESOURCE_WORKFLOW = ROOT / ".github" / "workflows" / "provision-coolify-resources-development.yml"
+RESOURCE_WORKFLOW = ROOT / ".github" / "workflows" / "reconcile-product-development.yml"
 
 
 class RepositoryFirstFactoryWorkflowTests(unittest.TestCase):
@@ -29,9 +29,8 @@ class RepositoryFirstFactoryWorkflowTests(unittest.TestCase):
         self.assertLess(sentinel, dispatch)
         self.assertLess(dispatch, wait)
         self.assertIn("scripts/register_product_manifest.py", self.create)
-        self.assertIn('--arg manifest "${{ steps.catalog.outputs.manifest_path }}"', self.create)
-        self.assertIn('"repos/${GITHUB_REPOSITORY}/dispatches"', self.create)
-        self.assertIn('event_type: "reconcile-product"', self.create)
+        self.assertIn("gh workflow run reconcile-product-development.yml", self.create)
+        self.assertIn('manifest_path="${{ steps.catalog.outputs.manifest_path }}"', self.create)
 
     def test_create_pipeline_uses_factory_app_and_template(self):
         self.assertIn("actions/create-github-app-token@v2", self.create)
@@ -45,7 +44,6 @@ class RepositoryFirstFactoryWorkflowTests(unittest.TestCase):
         self.assertIn("manifest_path must identify an existing products/<slug>.json file.", self.resources)
         self.assertIn('requested_manifest="${{ inputs.manifest_path }}"', self.resources)
         self.assertIn('requested_manifest="${{ github.event.client_payload.manifest_path }}"', self.resources)
-        self.assertIn("repository_dispatch:", self.resources)
         self.assertIn("catalog(factory): register product ", self.resources)
 
     def test_catalog_push_is_skipped_and_dispatch_is_targeted(self):

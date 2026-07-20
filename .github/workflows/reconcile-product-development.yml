@@ -1,0 +1,272 @@
+name: Reconcile one GoodMorning development product
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: Optional single resources-v2 manifest to reconcile.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: goodmorning-factory-resources-v2-dev
+  cancel-in-progress: false
+
+jobs:
+  reconcile-resources-v2:
+    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'catalog(factory): register product ') }}
+    name: Reconcile resources-v2 products
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'localhost' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0' }}
+      COOLIFY_GITHUB_APP_NAME: ${{ vars.COOLIFY_GITHUB_APP_NAME || 'goodmorning-mx-coolify' }}
+      COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
+      OCI_S3_ACCESS_KEY: ${{ secrets.OCI_S3_ACCESS_KEY }}
+      OCI_S3_SECRET_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+      OCI_S3_BUCKET: ${{ vars.OCI_S3_BUCKET }}
+      OCI_S3_REGION: ${{ vars.OCI_S3_REGION }}
+      OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
+      MAX_RECONCILE_ATTEMPTS: '6'
+      RECONCILE_RETRY_BASE_SECONDS: '20'
+    steps:
+      - name: Check out factory dev
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Validate development authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_REF}" != "refs/heads/dev" ]; then
+            echo "resources-v2 reconciliation is restricted to Factory dev."
+            exit 1
+          fi
+          if [ -z "${COOLIFY_BASE_URL:-}" ] || [ -z "${COOLIFY_API_TOKEN:-}" ]; then
+            echo "COOLIFY_BASE_URL and COOLIFY_API_TOKEN are required."
+            exit 1
+          fi
+          if [ "${COOLIFY_ALLOW_REAL_DEPLOYMENT:-}" != "true" ]; then
+            echo "COOLIFY_ALLOW_REAL_DEPLOYMENT=true is required."
+            exit 1
+          fi
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+
+      - name: Select affected resources-v2 manifests
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          selection_file="${RUNNER_TEMP}/resources-v2-manifests.txt"
+          : > "${selection_file}"
+
+          requested_manifest="${{ inputs.manifest_path }}"
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            requested_manifest="${{ github.event.client_payload.manifest_path }}"
+            if [ -z "${requested_manifest}" ]; then
+              echo "repository_dispatch requires client_payload.manifest_path."
+              exit 1
+            fi
+          fi
+          if { [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; } && [ -n "${requested_manifest}" ]; then
+            if [[ ! "${requested_manifest}" =~ ^products/[a-z0-9][a-z0-9-]*\.json$ ]] || [ ! -f "${requested_manifest}" ]; then
+              echo "manifest_path must identify an existing products/<slug>.json file."
+              exit 1
+            fi
+            if [ "$(jq -r '.topology // empty' "${requested_manifest}")" != "resources-v2" ]; then
+              echo "Selected manifest is not resources-v2."
+              exit 1
+            fi
+            printf '%s\n' "${requested_manifest}" >> "${selection_file}"
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ] && [ -n "${{ github.event.before }}" ] && [ "${{ github.event.before }}" != "0000000000000000000000000000000000000000" ]; then
+            while IFS= read -r manifest; do
+              if [ -f "${manifest}" ] && [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v2" ]; then
+                printf '%s\n' "${manifest}" >> "${selection_file}"
+              fi
+            done < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- 'products/*.json')
+          fi
+
+          if [ ! -s "${selection_file}" ] && [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            for manifest in products/*.json; do
+              if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v2" ]; then
+                printf '%s\n' "${manifest}" >> "${selection_file}"
+              fi
+            done
+          fi
+
+          sort -u -o "${selection_file}" "${selection_file}"
+          if [ ! -s "${selection_file}" ]; then
+            echo "No changed resources-v2 manifests were selected; this push is a safe no-op."
+            echo "selected=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "Selected manifests:"
+          sed 's/^/- /' "${selection_file}"
+          echo "RESOURCE_MANIFESTS_FILE=${selection_file}" >> "${GITHUB_ENV}"
+          echo "selected=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Plan all resources-v2 products
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        env:
+          COOLIFY_ALLOW_RESOURCE_WRITES: 'false'
+          COOLIFY_ALLOW_DATABASE_START: 'false'
+          COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES: 'false'
+          COOLIFY_ALLOW_BACKEND_ENV_WRITES: 'false'
+          COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES: 'false'
+          COOLIFY_ALLOW_FRONTEND_ENV_WRITES: 'false'
+          COOLIFY_ALLOW_DEPLOYMENTS: 'false'
+          COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'false'
+          COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'false'
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+          selected=0
+          while IFS= read -r manifest; do
+            selected=$((selected + 1))
+            python scripts/reconcile_resource_product.py \
+              --manifest "${manifest}" \
+              --phase plan \
+              --operation plan \
+              --server "${COOLIFY_SERVER_NAME}" \
+              --github-app "${COOLIFY_GITHUB_APP_NAME}" \
+              --destination-uuid "${COOLIFY_DESTINATION_UUID}"
+          done < "${RESOURCE_MANIFESTS_FILE}"
+          echo "Planned ${selected} selected resources-v2 product(s)."
+
+      - name: Apply and deploy all resources-v2 products
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        env:
+          COOLIFY_ALLOW_RESOURCE_WRITES: 'true'
+          COOLIFY_ALLOW_DATABASE_START: 'true'
+          COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES: 'true'
+          COOLIFY_ALLOW_BACKEND_ENV_WRITES: 'true'
+          COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES: 'true'
+          COOLIFY_ALLOW_FRONTEND_ENV_WRITES: 'true'
+          COOLIFY_ALLOW_DEPLOYMENTS: 'true'
+          COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'true'
+          COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'true'
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+          status_file="${RUNNER_TEMP}/resources-v2-reconcile.log"
+          : > "${status_file}"
+          selected=0
+          while IFS= read -r manifest; do
+            selected=$((selected + 1))
+            product="$(jq -er '.product' "${manifest}")"
+            converged=false
+            for attempt in $(seq 1 "${MAX_RECONCILE_ATTEMPTS}"); do
+              attempt_file="${RUNNER_TEMP}/${product}-reconcile-${attempt}.json"
+              echo "Reconciling resources-v2 product ${product} (attempt ${attempt}/${MAX_RECONCILE_ATTEMPTS})"
+              set +e
+              python scripts/reconcile_resource_product.py \
+                --manifest "${manifest}" \
+                --phase apply \
+                --operation deploy-full \
+                --server "${COOLIFY_SERVER_NAME}" \
+                --github-app "${COOLIFY_GITHUB_APP_NAME}" \
+                --destination-uuid "${COOLIFY_DESTINATION_UUID}" 2>&1 | tee "${attempt_file}" | tee -a "${status_file}"
+              reconcile_code=${PIPESTATUS[0]}
+              set -e
+
+              status="$(jq -r '.status // "error"' "${attempt_file}" 2>/dev/null || echo error)"
+              if [ "${reconcile_code}" -eq 0 ]; then
+                converged=true
+                echo "Product ${product} converged on attempt ${attempt}."
+                break
+              fi
+              if [ "${status}" != "partial" ]; then
+                echo "Product ${product} returned non-retryable status ${status} (exit ${reconcile_code})."
+                exit "${reconcile_code}"
+              fi
+              if [ "${attempt}" -ge "${MAX_RECONCILE_ATTEMPTS}" ]; then
+                break
+              fi
+              delay=$((RECONCILE_RETRY_BASE_SECONDS * attempt))
+              echo "Product ${product} is progressing safely; retrying in ${delay}s."
+              sleep "${delay}"
+            done
+            if [ "${converged}" != "true" ]; then
+              echo "Reconciliation did not converge for ${product} after ${MAX_RECONCILE_ATTEMPTS} attempts."
+              exit 1
+            fi
+          done < "${RESOURCE_MANIFESTS_FILE}"
+          echo "Applied ${selected} selected resources-v2 product(s)."
+
+      - name: Reconcile external development backup schedules
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+          echo "::add-mask::${OCI_S3_ACCESS_KEY}"
+          echo "::add-mask::${OCI_S3_SECRET_KEY}"
+          status_file="${RUNNER_TEMP}/resources-v2-reconcile.log"
+          selected=0
+          while IFS= read -r manifest; do
+            if [ "$(jq -r '.backup.enabled // false' "${manifest}")" != "true" ]; then
+              continue
+            fi
+            selected=$((selected + 1))
+            python scripts/reconcile_database_backups.py \
+              --manifest "${manifest}" \
+              --backup-now true 2>&1 | tee -a "${status_file}"
+          done < "${RESOURCE_MANIFESTS_FILE}"
+          echo "Reconciled ${selected} selected external development backup schedule(s)."
+
+      - name: Close resolved resources-v2 failure
+        if: steps.select.outputs.selected == 'true' && success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="[automation] Coolify resources-v2 development reconciliation failed"
+          existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue close "${existing}" \
+              --reason completed \
+              --comment "Resolved automatically by successful development reconciliation: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
+      - name: Report sanitized resources-v2 failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          status_file="${RUNNER_TEMP}/resources-v2-reconcile.log"
+          issue_body="${RUNNER_TEMP}/resources-v2-issue.md"
+          {
+            echo "The automatic Coolify resources-v2 development reconciliation failed."
+            echo
+            echo "- Commit: ${{ github.sha }}"
+            echo "- Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo '```text'
+            if [ -s "${status_file}" ]; then
+              tail -n 200 "${status_file}"
+            else
+              echo "The workflow failed before the apply phase produced output."
+            fi
+            echo '```'
+          } > "${issue_body}"
+          title="[automation] Coolify resources-v2 development reconciliation failed"
+          existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body-file "${issue_body}"
+          else
+            gh issue create --title "${title}" --body-file "${issue_body}"
+          fi
