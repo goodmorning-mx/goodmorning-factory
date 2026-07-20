@@ -33,6 +33,12 @@ class RepositoryFirstFactoryWorkflowTests(unittest.TestCase):
         self.assertIn("scripts/reconcile_database_backups.py", self.create)
         self.assertIn('manifest="${{ steps.catalog.outputs.manifest_path }}"', self.create)
 
+    def test_sentinel_is_product_specific_and_parses_create_url_directly(self):
+        self.assertIn('title="[automation] Verify repository-first product ${product}"', self.create)
+        self.assertIn('issue_url="$(gh issue create', self.create)
+        self.assertIn('issue_number="${issue_url##*/}"', self.create)
+        self.assertIn('[[ "${issue_number}" =~ ^[0-9]+$ ]]', self.create)
+
     def test_create_pipeline_uses_factory_app_and_template(self):
         self.assertIn("actions/create-github-app-token@v2", self.create)
         self.assertIn("GOODMORNING_FACTORY_APP_ID", self.create)
