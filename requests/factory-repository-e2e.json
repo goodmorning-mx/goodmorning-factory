@@ -2,6 +2,6 @@
   "product_name": "factory-repository-e2e",
   "description": "End-to-end validation of the GoodMorning repository-first product factory",
   "confirm_provision": true,
-  "retry": 5,
-  "reason": "Validate freshly registered single-dispatch workflow"
+  "retry": 6,
+  "reason": "Validate ephemeral Actions dispatch token"
 }
