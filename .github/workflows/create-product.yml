@@ -163,16 +163,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          title="[automation] Coolify resources-v2 development reconciliation failed"
-          issue_number="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          product="${{ steps.request.outputs.product_name }}"
+          title="[automation] Verify repository-first product ${product}"
+          issue_number="$(gh issue list --state open --search "\"${title}\" in:title" --json number,title --jq ".[] | select(.title == \"${title}\") | .number" | head -n 1)"
           if [ -z "${issue_number}" ]; then
-            gh issue create \
+            issue_url="$(gh issue create \
               --title "${title}" \
-              --body "Verification sentinel for repository-first product \`${{ steps.request.outputs.product_name }}\`. This issue closes only after frontend, API, private PostgreSQL, and Oracle backup verification succeed."
-            issue_number="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+              --body "Verification sentinel for repository-first product \`${product}\`. This issue closes only after frontend, API, private PostgreSQL, and Oracle backup verification succeed.")"
+            issue_number="${issue_url##*/}"
           fi
-          if [ -z "${issue_number}" ]; then
-            echo "Unable to create or find the deployment verification issue."
+          if ! [[ "${issue_number}" =~ ^[0-9]+$ ]]; then
+            echo "Unable to create or parse the deployment verification issue number."
             exit 1
           fi
           echo "issue_number=${issue_number}" >> "${GITHUB_OUTPUT}"
