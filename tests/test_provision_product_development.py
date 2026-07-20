@@ -506,6 +506,18 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
         self.assertEqual(differences, [])
         self.assertEqual(unverified, [])
 
+    def test_dockerfile_application_is_not_misclassified_by_dormant_compose_fields(self):
+        application = {
+            "build_pack": "dockerfile",
+            "type": "application",
+            "docker_compose_location": "/docker-compose.yaml",
+            "docker_compose_raw": "services: {}",
+        }
+
+        self.assertFalse(pp.is_compose_application(application))
+        self.assertTrue(pp.is_compose_application({"build_pack": "dockercompose"}))
+        self.assertTrue(pp.is_compose_application({"docker_compose_location": "/compose.yaml"}))
+
     def test_legacy_compose_product_dev_is_reported_separately(self):
         client = self.client(
             **{
