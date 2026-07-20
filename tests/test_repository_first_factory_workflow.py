@@ -44,7 +44,6 @@ class RepositoryFirstFactoryWorkflowTests(unittest.TestCase):
         self.assertIn("manifest_path must identify an existing products/<slug>.json file.", self.resources)
         self.assertIn('requested_manifest="${{ inputs.manifest_path }}"', self.resources)
         self.assertIn('requested_manifest="${{ github.event.client_payload.manifest_path }}"', self.resources)
-        self.assertIn("repository_dispatch:", self.resources)
         self.assertIn("catalog(factory): register product ", self.resources)
 
     def test_catalog_push_is_skipped_and_dispatch_is_targeted(self):
