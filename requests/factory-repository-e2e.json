@@ -2,6 +2,6 @@
   "product_name": "factory-repository-e2e",
   "description": "End-to-end validation of the GoodMorning repository-first product factory",
   "confirm_provision": true,
-  "retry": 9,
-  "reason": "Clean acceptance after removing legacy Coolify Compose resources"
+  "retry": 10,
+  "reason": "Acceptance after fixing Dockerfile versus Compose classification"
 }
