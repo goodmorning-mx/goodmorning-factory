@@ -981,8 +981,29 @@ def resource_kind(item: dict[str, Any]) -> str:
 
 
 def is_compose_application(item: dict[str, Any]) -> bool:
-    raw = " ".join(str(field(item, name) or "") for name in ("build_pack", "buildpack", "type", "docker_compose_location", "docker_compose_raw"))
-    return "compose" in raw.lower()
+    """Classify real Compose resources without trusting dormant Coolify fields.
+
+    Coolify can include docker_compose fields for every application, including
+    Dockerfile applications. When a build pack is present it is authoritative.
+    """
+
+    build_pack = str(field(item, "build_pack", "buildpack") or "").strip().lower()
+    normalized_build_pack = re.sub(r"[^a-z0-9]", "", build_pack)
+    if normalized_build_pack:
+        return normalized_build_pack in {"compose", "dockercompose"}
+
+    explicit_type = " ".join(
+        str(field(item, name) or "") for name in ("type", "kind", "resource_type")
+    ).lower()
+    if "compose" in explicit_type:
+        return True
+
+    compose_raw = field(item, "docker_compose_raw")
+    if compose_raw not in (None, "", {}, []):
+        return True
+
+    compose_location = str(field(item, "docker_compose_location") or "").strip()
+    return bool(compose_location)
 
 
 def operational_summary(item: dict[str, Any]) -> dict[str, Any]:
