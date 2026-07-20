@@ -2,6 +2,6 @@
   "product_name": "factory-repository-e2e",
   "description": "End-to-end validation of the GoodMorning repository-first product factory",
   "confirm_provision": true,
-  "retry": 8,
-  "reason": "Retry after transient Coolify missing deployment container"
+  "retry": 9,
+  "reason": "Clean acceptance after removing legacy Coolify Compose resources"
 }
