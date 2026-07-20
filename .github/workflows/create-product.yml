@@ -171,10 +171,10 @@ jobs:
         run: |
           set -euo pipefail
           echo "::add-mask::${GH_TOKEN}"
-          jq -n \
-            --arg manifest "${{ steps.catalog.outputs.manifest_path }}" \
-            '{event_type: "reconcile-product", client_payload: {manifest_path: $manifest}}' \
-            | gh api --method POST "repos/${GITHUB_REPOSITORY}/dispatches" --input -
+          gh workflow run reconcile-product-development.yml \
+            --repo "${GITHUB_REPOSITORY}" \
+            --ref dev \
+            -f manifest_path="${{ steps.catalog.outputs.manifest_path }}"
 
       - name: Wait for verified development deployment
         env:
