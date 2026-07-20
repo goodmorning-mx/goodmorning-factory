@@ -167,7 +167,7 @@ jobs:
 
       - name: Dispatch targeted Coolify reconciliation
         env:
-          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
           echo "::add-mask::${GH_TOKEN}"
