@@ -155,7 +155,17 @@ jobs:
             --factory-branch dev \
             > catalog-result.json
           cat catalog-result.json
-          echo "manifest_path=$(jq -er '.manifest_path' catalog-result.json)" >> "${GITHUB_OUTPUT}"
+          manifest_path="$(jq -er '.manifest_path' catalog-result.json)"
+          mkdir -p "$(dirname "${manifest_path}")"
+          gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "/repos/goodmorning-mx/goodmorning-factory/contents/${manifest_path}?ref=dev" \
+            > "${manifest_path}"
+          jq -e \
+            --arg product "${{ steps.request.outputs.product_name }}" \
+            '.topology == "resources-v2" and .product == $product' \
+            "${manifest_path}" > /dev/null
+          echo "manifest_path=${manifest_path}" >> "${GITHUB_OUTPUT}"
 
       - name: Create deployment verification sentinel
         id: sentinel
