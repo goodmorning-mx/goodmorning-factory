@@ -1,0 +1,5 @@
+{
+  "product_name": "goodmorning-store",
+  "description": "Portal de distribución de aplicaciones web instalables de GoodMorning, con catálogo, instalación PWA y métricas centralizadas.",
+  "confirm_provision": true
+}
