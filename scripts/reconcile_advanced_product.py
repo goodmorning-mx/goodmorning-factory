@@ -459,6 +459,16 @@ def _ensure_applications(
                 if actual != str(expected[key]):
                     raise ReconcileError(f"Existing application {name!r} is incompatible in {key!r}; automatic replacement is forbidden.")
             actions.append({"resource": name, "kind": "application", "action": "reused"})
+        if not client.apply:
+            actions.append(
+                {
+                    "resource": name,
+                    "kind": "environment",
+                    "action": "would_reconcile",
+                    "keys": [item["key"] for item in app["environment"]],
+                }
+            )
+            continue
         desired = _environment_values(app, database_urls, redis_urls, legacy_values)
         current = {str(_field(item, "key")): item for item in _items(client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}/envs"))}
         for variable in desired:

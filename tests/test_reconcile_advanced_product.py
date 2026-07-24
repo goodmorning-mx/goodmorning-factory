@@ -28,6 +28,30 @@ class FakeClient:
         return values.get(path, [])
 
 
+class ExistingAppPlanClient(FakeClient):
+    def get(self, path):
+        if path == "/projects":
+            return [{"uuid": "project-1", "name": "helloworldv2"}]
+        if path == "/projects/project-1":
+            return {"environments": [{"uuid": "environment-1", "name": "dev"}]}
+        if path == "/applications":
+            return [
+                {
+                    "uuid": "api-1",
+                    "name": "helloworldv2-api-dev",
+                    "git_repository": "goodmorning-mx/helloworldv2",
+                    "git_branch": "dev",
+                    "build_pack": "dockerfile",
+                    "base_directory": "/",
+                    "dockerfile_location": "/backend/Dockerfile",
+                    "ports_exposes": "8000",
+                }
+            ]
+        if path == "/applications/api-1":
+            return self.get("/applications")[0]
+        return super().get(path)
+
+
 class ReconcileAdvancedProductTests(unittest.TestCase):
     def test_plan_is_read_only_and_lists_every_resource(self):
         client = FakeClient()
@@ -42,6 +66,24 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual(result["status"], "planned")
         self.assertTrue(result["legacy_retained"])
         self.assertIn("helloworldv2-mobile-dev", result["resources"]["applications"])
+        self.assertFalse(client.writes)
+
+    def test_plan_does_not_resolve_or_write_existing_application_environment(self):
+        client = ExistingAppPlanClient()
+        value = contract.validate_manifest(manifest())
+        value["applications"] = [value["applications"][0]]
+        result = advanced.reconcile(
+            value,
+            client=client,
+            server_name="localhost",
+            destination_uuid="destination",
+            confirm_product=None,
+            deploy=False,
+        )
+        self.assertIn(
+            "would_reconcile",
+            [action["action"] for action in result["actions"]],
+        )
         self.assertFalse(client.writes)
 
     def test_apply_requires_write_switch(self):
