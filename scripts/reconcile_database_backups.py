@@ -140,15 +140,23 @@ def select_database(databases: Any, product: str, expected_name: str | None = No
     if len(matches) != 1:
         raise BackupError(f"Expected exactly one Coolify database named {expected_name}; found {len(matches)}")
     database = matches[0]
-    database_type = str(database.get("type", "")).lower()
-    image = str(database.get("image", "")).lower()
-    if "postgres" not in database_type and "postgres" not in image:
-        raise BackupError(f"{expected_name} is not PostgreSQL")
     if database.get("is_public") not in {False, 0, None}:
         raise BackupError(f"{expected_name} must remain private")
     uuid = database.get("uuid")
     if not isinstance(uuid, str) or not uuid:
         raise BackupError(f"{expected_name} has no stable UUID")
+    return database
+
+
+def validate_postgres_database(database: Any, expected_name: str) -> dict[str, Any]:
+    if not isinstance(database, dict):
+        raise BackupError(f"{expected_name} detail is unavailable")
+    database_type = str(database.get("type", "")).lower()
+    image = str(database.get("image", "")).lower()
+    if "postgres" not in database_type and "postgres" not in image and "timescale" not in image:
+        raise BackupError(f"{expected_name} is not PostgreSQL")
+    if database.get("is_public") not in {False, 0, None}:
+        raise BackupError(f"{expected_name} must remain private")
     return database
 
 
@@ -300,6 +308,10 @@ def reconcile(manifest_path: Path, backup_now: bool) -> dict[str, Any]:
         client.call("GET", "/databases"),
         manifest["product"],
         manifest.get("_backup_database_name"),
+    )
+    database = validate_postgres_database(
+        client.call("GET", f"/databases/{database['uuid']}"),
+        manifest.get("_backup_database_name") or f"{manifest['product']}-postgres-dev",
     )
     storage_uuid = manifest["backup"]["storage_uuid"]
     backup_uuid, previous_ids = reconcile_schedule(

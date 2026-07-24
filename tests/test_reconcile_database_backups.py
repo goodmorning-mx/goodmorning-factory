@@ -58,11 +58,24 @@ class BackupContractTests(unittest.TestCase):
                 {"uuid": "1", "name": "ledger-postgres-dev", "type": "postgresql"},
                 {"uuid": "2", "name": "ledger-postgres-dev", "type": "postgresql"},
             ],
-            [{"uuid": "1", "name": "ledger-postgres-dev", "type": "mysql"}],
             [{"uuid": "1", "name": "ledger-postgres-dev", "type": "postgresql", "is_public": True}],
         ):
             with self.assertRaises(rb.BackupError):
                 rb.select_database(databases, "ledger")
+
+    def test_database_engine_is_validated_from_detail(self):
+        self.assertEqual(
+            rb.validate_postgres_database(
+                {"uuid": "1", "image": "timescale/timescaledb:latest-pg16"},
+                "ledger-timescaledb-dev",
+            )["uuid"],
+            "1",
+        )
+        with self.assertRaisesRegex(rb.BackupError, "not PostgreSQL"):
+            rb.validate_postgres_database(
+                {"uuid": "1", "type": "mysql"},
+                "ledger-timescaledb-dev",
+            )
 
     def test_resources_v3_selects_the_declared_backed_up_database(self):
         value = self.manifest(
