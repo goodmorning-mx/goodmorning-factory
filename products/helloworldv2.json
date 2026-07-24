@@ -1,0 +1,286 @@
+{
+  "topology": "resources-v3",
+  "product": "helloworldv2",
+  "repository": "goodmorning-mx/helloworldv2",
+  "branch": "dev",
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "legacy": {
+    "application_uuid": "v9mt5bwuatwhofgyxbxh3gsk",
+    "retain": true,
+    "environment_keys": [
+      "APIKEY",
+      "APISECRET",
+      "BASE_PATH",
+      "CTRADER_ENABLED",
+      "CTRADER_SYMBOLS",
+      "CTRADER_CLIENT_ID",
+      "CTRADER_CLIENT_SECRET",
+      "CTRADER_ACCESS_TOKEN",
+      "CTRADER_REFRESH_TOKEN",
+      "CTRADER_HOST",
+      "CTRADER_PORT"
+    ]
+  },
+  "applications": [
+    {
+      "name": "api",
+      "role": "api",
+      "dockerfile": "/backend/Dockerfile",
+      "port": 8000,
+      "domain": "https://api.dev.helloworldv2.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "persistent_volume": {
+        "name": "helloworldv2-backend-data",
+        "mount_path": "/app/data"
+      },
+      "environment": [
+        {
+          "key": "APIKEY",
+          "source": "legacy_env"
+        },
+        {
+          "key": "APISECRET",
+          "source": "legacy_env"
+        },
+        {
+          "key": "BASE_PATH",
+          "source": "literal",
+          "value": ""
+        },
+        {
+          "key": "BACKEND_HOST",
+          "source": "literal",
+          "value": "0.0.0.0"
+        },
+        {
+          "key": "BACKEND_PORT",
+          "source": "literal",
+          "value": "8000"
+        },
+        {
+          "key": "CTRADER_ENABLED",
+          "source": "legacy_env"
+        },
+        {
+          "key": "CTRADER_SYMBOLS",
+          "source": "legacy_env"
+        },
+        {
+          "key": "CTRADER_CLIENT_ID",
+          "source": "legacy_env"
+        },
+        {
+          "key": "CTRADER_CLIENT_SECRET",
+          "source": "legacy_env"
+        },
+        {
+          "key": "CTRADER_ACCESS_TOKEN",
+          "source": "legacy_env"
+        },
+        {
+          "key": "CTRADER_REFRESH_TOKEN",
+          "source": "legacy_env"
+        },
+        {
+          "key": "CTRADER_HOST",
+          "source": "legacy_env"
+        },
+        {
+          "key": "CTRADER_PORT",
+          "source": "legacy_env"
+        },
+        {
+          "key": "TRADING_MODE",
+          "source": "literal",
+          "value": "paper"
+        },
+        {
+          "key": "LIVE_TRADING_CONFIRMATION",
+          "source": "literal",
+          "value": ""
+        },
+        {
+          "key": "DATA_DIR",
+          "source": "literal",
+          "value": "/app/data"
+        },
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "resource": "timescaledb"
+        },
+        {
+          "key": "REDIS_URL",
+          "source": "redis_url",
+          "resource": "redis"
+        },
+        {
+          "key": "TZ",
+          "source": "literal",
+          "value": "America/Mexico_City"
+        }
+      ]
+    },
+    {
+      "name": "desktop",
+      "role": "frontend",
+      "dockerfile": "/frontend/Dockerfile",
+      "port": 8050,
+      "domain": "https://dev.helloworldv2.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "BACKEND_URL",
+          "source": "literal",
+          "value": "https://api.dev.helloworldv2.goodmorning.mx"
+        },
+        {
+          "key": "REDIS_URL",
+          "source": "redis_url",
+          "resource": "redis"
+        },
+        {
+          "key": "FRONTEND_HOST",
+          "source": "literal",
+          "value": "0.0.0.0"
+        },
+        {
+          "key": "FRONTEND_PORT",
+          "source": "literal",
+          "value": "8050"
+        },
+        {
+          "key": "TZ",
+          "source": "literal",
+          "value": "America/Mexico_City"
+        }
+      ]
+    },
+    {
+      "name": "mobile",
+      "role": "mobile",
+      "dockerfile": "/mobile/Dockerfile",
+      "port": 8060,
+      "domain": "https://mobile.dev.helloworldv2.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "API_UPSTREAM",
+          "source": "literal",
+          "value": "https://api.dev.helloworldv2.goodmorning.mx"
+        },
+        {
+          "key": "DESKTOP_UPSTREAM",
+          "source": "literal",
+          "value": "https://dev.helloworldv2.goodmorning.mx"
+        },
+        {
+          "key": "TZ",
+          "source": "literal",
+          "value": "America/Mexico_City"
+        }
+      ]
+    },
+    {
+      "name": "ingestion",
+      "role": "worker",
+      "dockerfile": "/backend/Dockerfile.worker",
+      "port": 8000,
+      "domain": null,
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "APIKEY",
+          "source": "legacy_env"
+        },
+        {
+          "key": "APISECRET",
+          "source": "legacy_env"
+        },
+        {
+          "key": "BASE_PATH",
+          "source": "literal",
+          "value": ""
+        },
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "resource": "timescaledb"
+        },
+        {
+          "key": "REDIS_URL",
+          "source": "redis_url",
+          "resource": "redis"
+        },
+        {
+          "key": "INGESTION_SYMBOLS",
+          "source": "literal",
+          "value": "BTCUSDT"
+        },
+        {
+          "key": "INGESTION_DAYS",
+          "source": "literal",
+          "value": "7"
+        },
+        {
+          "key": "INGESTION_INTERVAL_SECONDS",
+          "source": "literal",
+          "value": "30"
+        },
+        {
+          "key": "BINANCE_STREAM_URL",
+          "source": "literal",
+          "value": "wss://fstream.binance.com/ws"
+        },
+        {
+          "key": "CTRADER_ENABLED",
+          "source": "literal",
+          "value": "false"
+        },
+        {
+          "key": "TRADING_MODE",
+          "source": "literal",
+          "value": "paper"
+        },
+        {
+          "key": "TZ",
+          "source": "literal",
+          "value": "America/Mexico_City"
+        }
+      ]
+    }
+  ],
+  "databases": [
+    {
+      "name": "timescaledb",
+      "engine": "timescaledb",
+      "version": "16",
+      "image": "timescale/timescaledb:latest-pg16",
+      "public": false,
+      "backup": true
+    }
+  ],
+  "redis": [
+    {
+      "name": "redis",
+      "version": "7.4",
+      "image": "redis:7.4-alpine",
+      "public": false,
+      "persistent": true
+    }
+  ],
+  "backup": {
+    "enabled": true,
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
+    "frequency": "0 3 * * *",
+    "local_retention_count": 1,
+    "local_retention_days": 1,
+    "s3_retention_count": 7,
+    "s3_retention_days": 7,
+    "timeout_seconds": 1800
+  }
+}
