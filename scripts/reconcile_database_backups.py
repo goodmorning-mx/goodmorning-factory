@@ -53,8 +53,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise BackupError(f"Could not read manifest {path}: {exc}") from exc
-    if manifest.get("topology") != "resources-v2":
-        raise BackupError("Database backups are restricted to resources-v2 products")
+    if manifest.get("topology") not in {"resources-v2", "resources-v3"}:
+        raise BackupError("Database backups are restricted to resources-v2 and resources-v3 products")
     if manifest.get("branch") != "dev":
         raise BackupError("Database backup reconciliation is restricted to dev")
     product = manifest.get("product")
@@ -81,6 +81,16 @@ def load_manifest(path: Path) -> dict[str, Any]:
     ):
         if not isinstance(backup.get(field), int) or backup[field] < 1:
             raise BackupError(f"Backup field {field} must be a positive integer")
+    if manifest.get("topology") == "resources-v3":
+        databases = manifest.get("databases")
+        selected = [
+            item
+            for item in databases if isinstance(databases, list) and isinstance(item, dict)
+            and item.get("backup") is True
+        ] if isinstance(databases, list) else []
+        if len(selected) != 1 or not isinstance(selected[0].get("name"), str):
+            raise BackupError("resources-v3 backup reconciliation requires exactly one backed-up database")
+        manifest["_backup_database_name"] = f"{product}-{selected[0]['name']}-dev"
     return manifest
 
 
@@ -122,10 +132,10 @@ class CoolifyClient:
             raise BackupError(f"Coolify {method} {path} returned invalid JSON") from exc
 
 
-def select_database(databases: Any, product: str) -> dict[str, Any]:
+def select_database(databases: Any, product: str, expected_name: str | None = None) -> dict[str, Any]:
     if not isinstance(databases, list):
         raise BackupError("Coolify databases response must be a list")
-    expected_name = f"{product}-postgres-dev"
+    expected_name = expected_name or f"{product}-postgres-dev"
     matches = [item for item in databases if isinstance(item, dict) and item.get("name") == expected_name]
     if len(matches) != 1:
         raise BackupError(f"Expected exactly one Coolify database named {expected_name}; found {len(matches)}")
@@ -286,7 +296,11 @@ def verify_object(
 def reconcile(manifest_path: Path, backup_now: bool) -> dict[str, Any]:
     manifest = load_manifest(manifest_path)
     client = CoolifyClient(required_env("COOLIFY_BASE_URL"), required_env("COOLIFY_API_TOKEN"))
-    database = select_database(client.call("GET", "/databases"), manifest["product"])
+    database = select_database(
+        client.call("GET", "/databases"),
+        manifest["product"],
+        manifest.get("_backup_database_name"),
+    )
     storage_uuid = manifest["backup"]["storage_uuid"]
     backup_uuid, previous_ids = reconcile_schedule(
         client,

@@ -1,0 +1,151 @@
+name: Provision Coolify advanced development products
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - "products/*.json"
+      - "scripts/advanced_product_contract.py"
+      - "scripts/reconcile_advanced_product.py"
+      - "scripts/reconcile_database_backups.py"
+      - ".github/workflows/provision-coolify-advanced-development.yml"
+  workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: Optional single resources-v3 manifest.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: goodmorning-factory-resources-v3-dev
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile resources-v3
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'localhost' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0' }}
+      COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
+      OCI_S3_ACCESS_KEY: ${{ secrets.OCI_S3_ACCESS_KEY }}
+      OCI_S3_SECRET_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+      OCI_S3_BUCKET: ${{ vars.OCI_S3_BUCKET }}
+      OCI_S3_REGION: ${{ vars.OCI_S3_REGION }}
+      OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Validate authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF}" = "refs/heads/dev"
+          test -n "${COOLIFY_BASE_URL:-}"
+          test -n "${COOLIFY_API_TOKEN:-}"
+          test "${COOLIFY_ALLOW_REAL_DEPLOYMENT:-}" = "true"
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+
+      - name: Select resources-v3 manifests
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          selection="${RUNNER_TEMP}/resources-v3-manifests.txt"
+          : > "${selection}"
+          requested="${{ inputs.manifest_path }}"
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${requested}" ]; then
+            [[ "${requested}" =~ ^products/[a-z0-9][a-z0-9-]*\.json$ ]]
+            test -f "${requested}"
+            test "$(jq -r '.topology // empty' "${requested}")" = "resources-v3"
+            printf '%s\n' "${requested}" >> "${selection}"
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            while IFS= read -r manifest; do
+              if [ -f "${manifest}" ] && [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v3" ]; then
+                printf '%s\n' "${manifest}" >> "${selection}"
+              fi
+            done < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- "products/*.json")
+          else
+            for manifest in products/*.json; do
+              if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v3" ]; then
+                printf '%s\n' "${manifest}" >> "${selection}"
+              fi
+            done
+          fi
+          sort -u -o "${selection}" "${selection}"
+          if [ ! -s "${selection}" ]; then
+            echo "No resources-v3 manifests selected."
+            echo "selected=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "ADVANCED_MANIFESTS=${selection}" >> "${GITHUB_ENV}"
+          echo "selected=true" >> "${GITHUB_OUTPUT}"
+
+      - name: Plan selected products
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r manifest; do
+            python scripts/reconcile_advanced_product.py \
+              --manifest "${manifest}" \
+              --phase plan \
+              --server "${COOLIFY_SERVER_NAME}" \
+              --destination-uuid "${COOLIFY_DESTINATION_UUID}"
+          done < "${ADVANCED_MANIFESTS}"
+
+      - name: Apply and deploy selected products
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        env:
+          COOLIFY_ALLOW_ADVANCED_WRITES: "true"
+        run: |
+          set -euo pipefail
+          while IFS= read -r manifest; do
+            product="$(jq -er '.product' "${manifest}")"
+            python scripts/reconcile_advanced_product.py \
+              --manifest "${manifest}" \
+              --phase apply \
+              --server "${COOLIFY_SERVER_NAME}" \
+              --destination-uuid "${COOLIFY_DESTINATION_UUID}" \
+              --confirm-product "${product}" \
+              --deploy
+          done < "${ADVANCED_MANIFESTS}"
+
+      - name: Reconcile external database backups
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${OCI_S3_ACCESS_KEY}"
+          echo "::add-mask::${OCI_S3_SECRET_KEY}"
+          while IFS= read -r manifest; do
+            python scripts/reconcile_database_backups.py \
+              --manifest "${manifest}" \
+              --backup-now true
+          done < "${ADVANCED_MANIFESTS}"
+
+      - name: Report failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="[automation] Coolify resources-v3 development reconciliation failed"
+          body="Resources-v3 development reconciliation failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "${body}"
+          else
+            gh issue create --title "${title}" --body "${body}"
+          fi

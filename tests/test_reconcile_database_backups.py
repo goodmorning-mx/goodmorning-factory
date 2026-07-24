@@ -64,6 +64,34 @@ class BackupContractTests(unittest.TestCase):
             with self.assertRaises(rb.BackupError):
                 rb.select_database(databases, "ledger")
 
+    def test_resources_v3_selects_the_declared_backed_up_database(self):
+        value = self.manifest(
+            topology="resources-v3",
+            databases=[
+                {
+                    "name": "timescaledb",
+                    "engine": "timescaledb",
+                    "backup": True,
+                }
+            ],
+        )
+        loaded = rb.load_manifest(self.write_manifest(value))
+        self.assertEqual(loaded["_backup_database_name"], "ledger-timescaledb-dev")
+        selected = rb.select_database(
+            [
+                {
+                    "uuid": "db-advanced",
+                    "name": "ledger-timescaledb-dev",
+                    "type": "postgresql",
+                    "image": "timescale/timescaledb:latest-pg16",
+                    "is_public": False,
+                }
+            ],
+            "ledger",
+            loaded["_backup_database_name"],
+        )
+        self.assertEqual(selected["uuid"], "db-advanced")
+
     def test_payload_is_s3_enabled_and_retained(self):
         backup = self.manifest()["backup"]
         payload = rb.desired_backup_payload(backup, "storage-1", True)
