@@ -105,6 +105,15 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual([item["key"] for item in values], ["APIKEY", "DATABASE_URL"])
         self.assertNotIn("top-secret", str(advanced._redacted({"environment": values})))
 
+    def test_empty_literal_is_a_valid_environment_value(self):
+        values = advanced._environment_values(
+            {"environment": [{"key": "BASE_PATH", "source": "literal", "value": ""}]},
+            {},
+            {},
+            {},
+        )
+        self.assertEqual(values[0]["value"], "")
+
     def test_reviewed_redis_config_is_base64_encoded_for_coolify_api(self):
         self.assertEqual(
             base64.b64decode(advanced._redis_conf()).decode("utf-8"),

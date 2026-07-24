@@ -397,7 +397,7 @@ def _environment_values(
             value = redis_urls.get(item["resource"])
         else:
             value = legacy_values.get(item["legacy_key"])
-        if not isinstance(value, str) or not value:
+        if not isinstance(value, str) or (source != "literal" and not value):
             raise ReconcileError(f"Environment source for {item['key']!r} is unavailable.")
         values.append(
             {
