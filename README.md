@@ -32,6 +32,18 @@ Development PostgreSQL resources declare daily external backups that Factory ver
 See `docs/coolify-resources-v2.md` for the canonical contract and
 `scripts/provision_product_development.py` for the audited provisioner.
 
+## Advanced products
+
+Products that require multiple public applications, private workers, Redis, or
+a reviewed PostgreSQL-compatible image use the additive `resources-v3`
+contract. `resources-v2` remains the default and is not widened implicitly.
+Advanced resources are independently deployable native Coolify resources, while
+the previous Compose application is retained throughout migration.
+
+See `docs/coolify-resources-v3.md`,
+`scripts/advanced_product_contract.py`, and
+`scripts/reconcile_advanced_product.py`.
+
 ## Compose v1 rollback path
 
 The previous single-Application Docker Compose topology remains supported as
