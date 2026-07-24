@@ -111,6 +111,19 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
             "appendonly yes\nmaxmemory 256mb\nmaxmemory-policy allkeys-lru\n",
         )
 
+    def test_scope_check_accepts_omitted_collection_fields(self):
+        context = {"project_uuid": "project", "environment_uuid": "environment"}
+        self.assertFalse(advanced._scope_conflicts({"uuid": "resource"}, context))
+        self.assertFalse(
+            advanced._scope_conflicts(
+                {"project_uuid": "project", "environment_uuid": "environment"},
+                context,
+            )
+        )
+        self.assertTrue(
+            advanced._scope_conflicts({"project_uuid": "another-project"}, context)
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
