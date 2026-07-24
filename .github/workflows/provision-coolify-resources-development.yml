@@ -30,7 +30,7 @@ concurrency:
 
 jobs:
   reconcile-resources-v2:
-    if: ${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'catalog(factory): register product ') }}
+    if: "${{ github.event_name != 'push' || !startsWith(github.event.head_commit.message, 'catalog(factory): register product ') }}"
     name: Reconcile resources-v2 products
     runs-on: ubuntu-latest
     timeout-minutes: 60
