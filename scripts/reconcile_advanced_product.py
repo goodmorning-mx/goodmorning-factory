@@ -209,10 +209,23 @@ def _ensure_project_environment(client: Coolify, manifest: dict[str, Any], conte
         actions.append({"resource": "dev", "kind": "environment", "action": "reused"})
 
 
-def _scoped(item: dict[str, Any], context: dict[str, str | None]) -> bool:
-    project = str(_field(item, "project_uuid", "project.uuid") or "")
-    environment = str(_field(item, "environment_uuid", "environment.uuid") or "")
-    return project == str(context["project_uuid"]) and environment == str(context["environment_uuid"])
+def _scope_conflicts(item: dict[str, Any], context: dict[str, str | None]) -> bool:
+    """Reject an explicit scope mismatch without inventing absent list fields.
+
+    Coolify's collection endpoints do not consistently include project and
+    environment UUIDs.  Names are globally unique in those collections, so an
+    omitted scope is safe to resolve by UUID and reuse; a UUID that is present
+    and differs from the selected scope remains a hard failure.
+    """
+    project = _field(item, "project_uuid", "project.uuid")
+    environment = _field(item, "environment_uuid", "environment.uuid")
+    return (
+        (project is not None and str(project) != str(context["project_uuid"]))
+        or (
+            environment is not None
+            and str(environment) != str(context["environment_uuid"])
+        )
+    )
 
 
 def _password() -> str:
@@ -253,7 +266,7 @@ def _ensure_databases(
     for item in manifest["databases"]:
         resource_name = f"{product}-{item['name']}-dev"
         found = _unique(existing, resource_name, "database")
-        if found and not _scoped(found, context):
+        if found and _scope_conflicts(found, context):
             raise ReconcileError(f"Database {resource_name!r} exists outside the selected scope.")
         if not found:
             if not client.apply:
@@ -285,7 +298,7 @@ def _ensure_databases(
     for item in manifest["redis"]:
         resource_name = f"{product}-{item['name']}-dev"
         found = _unique(existing, resource_name, "Redis")
-        if found and not _scoped(found, context):
+        if found and _scope_conflicts(found, context):
             raise ReconcileError(f"Redis {resource_name!r} exists outside the selected scope.")
         if not found:
             if not client.apply:
@@ -420,7 +433,7 @@ def _ensure_applications(
     for app in manifest["applications"]:
         name = f"{product}-{app['name']}-dev"
         found = _unique(existing, name, "application")
-        if found and not _scoped(found, context):
+        if found and _scope_conflicts(found, context):
             raise ReconcileError(f"Application {name!r} exists outside the selected scope.")
         if not found:
             if not client.apply:
