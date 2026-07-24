@@ -1,4 +1,5 @@
 import os
+import base64
 import unittest
 from unittest.mock import patch
 
@@ -103,6 +104,12 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         )
         self.assertEqual([item["key"] for item in values], ["APIKEY", "DATABASE_URL"])
         self.assertNotIn("top-secret", str(advanced._redacted({"environment": values})))
+
+    def test_reviewed_redis_config_is_base64_encoded_for_coolify_api(self):
+        self.assertEqual(
+            base64.b64decode(advanced._redis_conf()).decode("utf-8"),
+            "appendonly yes\nmaxmemory 256mb\nmaxmemory-policy allkeys-lru\n",
+        )
 
 
 if __name__ == "__main__":

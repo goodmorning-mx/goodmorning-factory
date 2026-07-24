@@ -9,6 +9,7 @@ application to newly created applications, but are never returned or logged.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import secrets
@@ -218,6 +219,12 @@ def _password() -> str:
     return secrets.token_urlsafe(32)
 
 
+def _redis_conf() -> str:
+    return base64.b64encode(
+        b"appendonly yes\nmaxmemory 256mb\nmaxmemory-policy allkeys-lru\n"
+    ).decode("ascii")
+
+
 def _ensure_databases(
     client: Coolify,
     manifest: dict[str, Any],
@@ -290,7 +297,7 @@ def _ensure_databases(
                 "description": "Factory-managed private persistent Redis development resource.",
                 "image": item["image"],
                 "redis_password": _password(),
-                "redis_conf": "appendonly yes\nmaxmemory 256mb\nmaxmemory-policy allkeys-lru",
+                "redis_conf": _redis_conf(),
             }
             created = client.post("/databases/redis", payload)
             identifier = _uuid(created, "Redis")
