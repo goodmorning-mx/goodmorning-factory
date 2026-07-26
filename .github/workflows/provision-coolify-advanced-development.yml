@@ -75,6 +75,18 @@ jobs:
                 printf '%s\n' "${manifest}" >> "${selection}"
               fi
             done < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- "products/*.json")
+            if [ ! -s "${selection}" ] && ! git diff --quiet "${{ github.event.before }}" "${GITHUB_SHA}" -- \
+              scripts/advanced_product_contract.py \
+              scripts/reconcile_advanced_product.py \
+              scripts/reconcile_database_backups.py \
+              .github/workflows/provision-coolify-advanced-development.yml; then
+              echo "Control-plane implementation changed; selecting the full resources-v3 catalog."
+              for manifest in products/*.json; do
+                if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v3" ]; then
+                  printf '%s\n' "${manifest}" >> "${selection}"
+                fi
+              done
+            fi
           else
             for manifest in products/*.json; do
               if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v3" ]; then
@@ -134,6 +146,21 @@ jobs:
               --manifest "${manifest}" \
               --backup-now true
           done < "${ADVANCED_MANIFESTS}"
+
+      - name: Close resolved resources-v3 failure
+        if: steps.select.outputs.selected == 'true' && success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="[automation] Coolify resources-v3 development reconciliation failed"
+          existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue close "${existing}" \
+              --reason completed \
+              --comment "Resolved automatically by successful development reconciliation: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
 
       - name: Report failure
         if: failure()
