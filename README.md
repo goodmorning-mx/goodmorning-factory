@@ -8,8 +8,9 @@ with independently visible Frontend, Backend and PostgreSQL resources.
 
 One Coolify Project represents one product. Its `dev` environment contains a
 Frontend Application, Backend Application and native private PostgreSQL 16
-Database. Production will reuse the same contract from branch `main` only after
-the development path is verified and Abel explicitly approves production.
+Database. Production reuses the same isolated-resource contract from branch `main`.
+It is promoted only through the explicitly confirmed production workflow after
+a read-only plan and verified pre-deployment backup.
 
 The product repository owns the runtime contract:
 
@@ -29,7 +30,7 @@ Development onboarding is catalog-driven: a reviewed `resources-v2` manifest in
 
 Development PostgreSQL resources declare daily external backups that Factory verifies against Oracle Object Storage.
 
-See `docs/coolify-resources-v2.md` for the canonical contract and
+See `docs/coolify-resources-v2.md` and `docs/production-release-contract.md` for the canonical contracts and
 `scripts/provision_product_development.py` for the audited provisioner.
 
 ## Advanced products
