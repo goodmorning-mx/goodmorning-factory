@@ -107,6 +107,21 @@ jobs:
             done < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- 'products/*.json')
           fi
 
+          if [ ! -s "${selection_file}" ] && [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            if ! git diff --quiet "${{ github.event.before }}" "${GITHUB_SHA}" -- \
+              scripts/provision_product_development.py \
+              scripts/reconcile_resource_product.py \
+              scripts/reconcile_database_backups.py \
+              .github/workflows/provision-coolify-resources-development.yml; then
+              echo "Control-plane implementation changed; selecting the full resources-v2 catalog."
+              for manifest in products/*.json; do
+                if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v2" ]; then
+                  printf '%s\n' "${manifest}" >> "${selection_file}"
+                fi
+              done
+            fi
+          fi
+
           if [ ! -s "${selection_file}" ] && [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
             for manifest in products/*.json; do
               if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v2" ]; then
