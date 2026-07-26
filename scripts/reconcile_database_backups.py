@@ -53,10 +53,14 @@ def load_manifest(path: Path) -> dict[str, Any]:
         manifest = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise BackupError(f"Could not read manifest {path}: {exc}") from exc
-    if manifest.get("topology") not in {"resources-v2", "resources-v3"}:
-        raise BackupError("Database backups are restricted to resources-v2 and resources-v3 products")
-    if manifest.get("branch") != "dev":
-        raise BackupError("Database backup reconciliation is restricted to dev")
+    topology = manifest.get("topology")
+    if topology not in {"resources-v2", "resources-v3", "resources-v2-production"}:
+        raise BackupError("Database backups are restricted to reviewed resource products")
+    production = topology == "resources-v2-production"
+    expected_branch = "main" if production else "dev"
+    if manifest.get("branch") != expected_branch:
+        raise BackupError(f"Database backup reconciliation for {topology} requires branch {expected_branch}")
+    manifest["_backup_environment"] = "production" if production else "dev"
     product = manifest.get("product")
     if not isinstance(product, str) or not product or not all(
         character.islower() or character.isdigit() or character == "-" for character in product
@@ -81,7 +85,9 @@ def load_manifest(path: Path) -> dict[str, Any]:
     ):
         if not isinstance(backup.get(field), int) or backup[field] < 1:
             raise BackupError(f"Backup field {field} must be a positive integer")
-    if manifest.get("topology") == "resources-v3":
+    if topology == "resources-v2-production":
+        manifest["_backup_database_name"] = f"{product}-postgres-prod"
+    elif topology == "resources-v3":
         databases = manifest.get("databases")
         selected = [
             item
@@ -324,7 +330,7 @@ def reconcile(manifest_path: Path, backup_now: bool) -> dict[str, Any]:
     result: dict[str, Any] = {
         "status": "scheduled",
         "product": manifest["product"],
-        "environment": "dev",
+        "environment": manifest.get("_backup_environment", "dev"),
         "database_uuid": database["uuid"],
         "backup_uuid": backup_uuid,
         "storage_uuid": storage_uuid,

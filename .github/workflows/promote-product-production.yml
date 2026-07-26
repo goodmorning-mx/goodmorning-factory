@@ -1,0 +1,189 @@
+name: Promote one GoodMorning product to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: Exact production/<product>.json manifest.
+        required: true
+        type: string
+      confirmation:
+        description: Type deploy:<product>:production exactly.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: goodmorning-factory-production
+  cancel-in-progress: false
+
+jobs:
+  reconcile-production:
+    name: Reconcile one production product
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: production
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'localhost' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0' }}
+      COOLIFY_GITHUB_APP_NAME: ${{ vars.COOLIFY_GITHUB_APP_NAME || 'goodmorning-mx-coolify' }}
+      COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
+      OCI_S3_ACCESS_KEY: ${{ secrets.OCI_S3_ACCESS_KEY }}
+      OCI_S3_SECRET_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+      OCI_S3_BUCKET: ${{ vars.OCI_S3_BUCKET }}
+      OCI_S3_REGION: ${{ vars.OCI_S3_REGION }}
+      OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
+    steps:
+      - name: Check out reviewed Factory dev
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          persist-credentials: false
+
+      - name: Validate exact production authorization
+        id: authorize
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="${{ inputs.manifest_path }}"
+          [[ "${manifest}" =~ ^production/[a-z0-9][a-z0-9-]*\.json$ ]]
+          test -f "${manifest}"
+          product="$(jq -er '.product' "${manifest}")"
+          test "$(jq -r '.topology' "${manifest}")" = "resources-v2-production"
+          test "$(jq -r '.confirm_production // false' "${manifest}")" = "true"
+          test "${{ inputs.confirmation }}" = "deploy:${product}:production"
+          test -n "${COOLIFY_BASE_URL:-}"
+          test -n "${COOLIFY_API_TOKEN:-}"
+          test "${COOLIFY_ALLOW_REAL_DEPLOYMENT:-}" = "true"
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+          echo "manifest=${manifest}" >> "${GITHUB_OUTPUT}"
+          echo "product=${product}" >> "${GITHUB_OUTPUT}"
+
+      - name: Plan production changes read-only
+        shell: bash
+        env:
+          COOLIFY_ALLOW_RESOURCE_WRITES: 'false'
+          COOLIFY_ALLOW_DATABASE_START: 'false'
+          COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES: 'false'
+          COOLIFY_ALLOW_BACKEND_ENV_WRITES: 'false'
+          COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES: 'false'
+          COOLIFY_ALLOW_FRONTEND_ENV_WRITES: 'false'
+          COOLIFY_ALLOW_DEPLOYMENTS: 'false'
+          COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'false'
+          COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'false'
+        run: |
+          python scripts/reconcile_resource_product_production.py \
+            --manifest "${{ steps.authorize.outputs.manifest }}" \
+            --phase plan --operation plan \
+            --server "${COOLIFY_SERVER_NAME}" \
+            --github-app "${COOLIFY_GITHUB_APP_NAME}" \
+            --destination-uuid "${COOLIFY_DESTINATION_UUID}"
+
+      - name: Provision isolated production resources
+        shell: bash
+        env:
+          COOLIFY_ALLOW_RESOURCE_WRITES: 'true'
+          COOLIFY_ALLOW_DATABASE_START: 'true'
+          COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES: 'true'
+          COOLIFY_ALLOW_BACKEND_ENV_WRITES: 'true'
+          COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES: 'true'
+          COOLIFY_ALLOW_FRONTEND_ENV_WRITES: 'true'
+          COOLIFY_ALLOW_DEPLOYMENTS: 'false'
+          COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'false'
+          COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'false'
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 6); do
+            set +e
+            python scripts/reconcile_resource_product_production.py \
+              --manifest "${{ steps.authorize.outputs.manifest }}" \
+              --phase apply --operation provision \
+              --server "${COOLIFY_SERVER_NAME}" \
+              --github-app "${COOLIFY_GITHUB_APP_NAME}" \
+              --destination-uuid "${COOLIFY_DESTINATION_UUID}"
+            code=$?
+            set -e
+            [ "${code}" -eq 0 ] && exit 0
+            [ "${attempt}" -eq 6 ] || sleep $((20 * attempt))
+          done
+          exit 1
+
+      - name: Verify pre-deployment production backup
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${OCI_S3_ACCESS_KEY}"
+          echo "::add-mask::${OCI_S3_SECRET_KEY}"
+          python scripts/reconcile_database_backups.py \
+            --manifest "${{ steps.authorize.outputs.manifest }}" \
+            --backup-now true
+
+      - name: Deploy API then frontend
+        shell: bash
+        env:
+          COOLIFY_ALLOW_RESOURCE_WRITES: 'true'
+          COOLIFY_ALLOW_DATABASE_START: 'true'
+          COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES: 'true'
+          COOLIFY_ALLOW_BACKEND_ENV_WRITES: 'true'
+          COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES: 'true'
+          COOLIFY_ALLOW_FRONTEND_ENV_WRITES: 'true'
+          COOLIFY_ALLOW_DEPLOYMENTS: 'true'
+          COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'true'
+          COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'true'
+        run: |
+          set -euo pipefail
+          for attempt in $(seq 1 6); do
+            set +e
+            python scripts/reconcile_resource_product_production.py \
+              --manifest "${{ steps.authorize.outputs.manifest }}" \
+              --phase apply --operation deploy-full \
+              --server "${COOLIFY_SERVER_NAME}" \
+              --github-app "${COOLIFY_GITHUB_APP_NAME}" \
+              --destination-uuid "${COOLIFY_DESTINATION_UUID}"
+            code=$?
+            set -e
+            [ "${code}" -eq 0 ] && exit 0
+            [ "${attempt}" -eq 6 ] || sleep $((20 * attempt))
+          done
+          exit 1
+
+      - name: Verify post-deployment production backup
+        shell: bash
+        run: |
+          python scripts/reconcile_database_backups.py \
+            --manifest "${{ steps.authorize.outputs.manifest }}" \
+            --backup-now true
+
+      - name: Publish production summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## Production promotion verified"
+            echo
+            echo "- Product: \`${{ steps.authorize.outputs.product }}\`"
+            echo "- Frontend: https://${{ steps.authorize.outputs.product }}.goodmorning.mx"
+            echo "- API: https://api.${{ steps.authorize.outputs.product }}.goodmorning.mx/health"
+            echo "- Source branch: \`main\`"
+            echo "- Backups: pre-deployment and post-deployment verified"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Report sanitized production failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="[automation] GoodMorning production reconciliation failed"
+          body="Production reconciliation failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "${body}"
+          else
+            gh issue create --title "${title}" --body "${body}"
+          fi
