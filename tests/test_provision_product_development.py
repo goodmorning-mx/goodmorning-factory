@@ -221,13 +221,13 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
         self.assertEqual(backend["create_payload_preview"]["git_repository"], "goodmorning-mx/ledger")
         self.assertEqual(backend["create_payload_preview"]["destination_uuid"], "bk8cw0gkswgo04o0s88sk0kg")
         self.assertFalse(backend["create_payload_preview"]["instant_deploy"])
-        self.assertTrue(backend["create_payload_preview"]["is_auto_deploy_enabled"])
+        self.assertFalse(backend["create_payload_preview"]["is_auto_deploy_enabled"])
         self.assertFalse(backend["create_payload_preview"]["autogenerate_domain"])
         self.assertEqual(backend["create_payload_preview"]["health_check_path"], "/health")
         self.assertEqual(frontend["create_payload_preview"]["ports_exposes"], "80")
         self.assertEqual(frontend["create_payload_preview"]["domains"], "https://dev.ledger.goodmorning.mx")
         self.assertIn("is_auto_deploy_enabled", backend["create_payload_preview"])
-        self.assertTrue(backend["desired_state"]["deployment_policy"]["auto_deploy_enabled"])
+        self.assertFalse(backend["desired_state"]["deployment_policy"]["auto_deploy_enabled"])
         self.assertEqual(result["discovery"]["github_app"], {"name": "goodmorning-mx-coolify", "uuid": "app-1"})
 
     def test_rejects_any_non_dev_branch_or_environment(self):
@@ -458,7 +458,7 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
             "git_branch": "dev", "build_pack": "dockerfile", "base_directory": "/backend",
             "dockerfile_location": "/Dockerfile", "ports_exposes": "8000",
             "domains": "https://api.dev.ledger.goodmorning.mx", "instant_deploy": False,
-            "is_auto_deploy_enabled": True, "autogenerate_domain": False,
+            "is_auto_deploy_enabled": False, "autogenerate_domain": False,
             "health_check_enabled": True, "health_check_path": "/health",
             "health_check_port": "8000", "health_check_method": "GET",
             "health_check_scheme": "http", "health_check_return_code": 200,
@@ -491,7 +491,7 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
             "build_pack": "dockerfile", "base_directory": "/backend",
             "dockerfile_location": "/Dockerfile", "ports_exposes": "8000",
             "fqdn": "https://api.dev.ledger.goodmorning.mx",
-            "instant_deploy": False, "is_auto_deploy_enabled": True,
+            "instant_deploy": False, "is_auto_deploy_enabled": False,
             "autogenerate_domain": False, "health_check_enabled": True,
             "health_check_path": "/health", "health_check_port": "8000",
             "health_check_method": "GET", "health_check_scheme": "http",
@@ -1600,7 +1600,7 @@ class Stage4ReviewCorrectionTests(unittest.TestCase):
 
 class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
     def healthy_client(self, **overrides):
-        app = {"uuid":"api-1","name":"ledger-api-dev","type":"application","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"bk8cw0gkswgo04o0s88sk0kg","github_app_uuid":"app-1","git_repository":"https://github.com/goodmorning-mx/ledger.git","git_branch":"dev","build_pack":"dockerfile","base_directory":"/backend","dockerfile_location":"/Dockerfile","ports_exposes":"8000","domains":"https://api.dev.ledger.goodmorning.mx","instant_deploy":False,"is_auto_deploy_enabled":True,"autogenerate_domain":False,"health_check_enabled":True,"health_check_path":"/health","health_check_port":"8000","health_check_method":"GET","health_check_scheme":"http","health_check_return_code":200}
+        app = {"uuid":"api-1","name":"ledger-api-dev","type":"application","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"bk8cw0gkswgo04o0s88sk0kg","github_app_uuid":"app-1","git_repository":"https://github.com/goodmorning-mx/ledger.git","git_branch":"dev","build_pack":"dockerfile","base_directory":"/backend","dockerfile_location":"/Dockerfile","ports_exposes":"8000","domains":"https://api.dev.ledger.goodmorning.mx","instant_deploy":False,"is_auto_deploy_enabled":False,"autogenerate_domain":False,"health_check_enabled":True,"health_check_path":"/health","health_check_port":"8000","health_check_method":"GET","health_check_scheme":"http","health_check_return_code":200}
         base={"/applications":[app],"/applications/api-1":app,"/applications/api-1/envs":[] ,"/databases/db-1":{"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"healthy","internal_db_url":"postgresql://user:p%40ss@host:5432/db"},"/databases":[{"uuid":"db-1","name":"ledger-postgres-dev","type":"postgresql","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","version":"16","is_public":False,"status":"healthy"}]}
         base.update(overrides)
         return self.client(**base)
@@ -1619,7 +1619,7 @@ class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
         self.assertEqual(r["backend_environment"]["status"], "planned")
 
     def test_stage5_backend_incompatibilities(self):
-        for field,value in [("git_repository","bad/repo"),("git_branch","main"),("github_app_uuid","wrong"),("base_directory","/api"),("dockerfile_location","/Dockerfile.api"),("ports_exposes","8001"),("domains","https://api.dev.ledger.goodmorning.mx:8000"),("is_auto_deploy_enabled",False),("health_check_path","/bad")]:
+        for field,value in [("git_repository","bad/repo"),("git_branch","main"),("github_app_uuid","wrong"),("base_directory","/api"),("dockerfile_location","/Dockerfile.api"),("ports_exposes","8001"),("domains","https://api.dev.ledger.goodmorning.mx:8000"),("is_auto_deploy_enabled",True),("health_check_path","/bad")]:
             app=self.healthy_client().payloads["/applications/api-1"].copy(); app[field]=value
             c=self.healthy_client(**{"/applications":[app],"/applications/api-1":app})
             r=pp.provision(args(), client_factory=lambda:c)
@@ -1954,14 +1954,14 @@ class Stage5BackendApplicationTests(ProductDevelopmentProvisionerTests):
 
 class Stage6FrontendApplicationTests(ProductDevelopmentProvisionerTests):
     def frontend_app(self, **overrides):
-        data = {"uuid":"front-1", "name":"ledger-frontend-dev", "type":"application", "project_uuid":"project-1", "environment_uuid":"env-1", "server_uuid":"server-1", "destination_uuid":"bk8cw0gkswgo04o0s88sk0kg", "github_app_uuid":"app-1", "git_repository":"goodmorning-mx/ledger", "git_branch":"dev", "build_pack":"dockerfile", "base_directory":"/frontend", "dockerfile_location":"/Dockerfile", "ports_exposes":"80", "domains":"https://dev.ledger.goodmorning.mx", "instant_deploy":False, "is_auto_deploy_enabled":True, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/", "health_check_port":"80", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
+        data = {"uuid":"front-1", "name":"ledger-frontend-dev", "type":"application", "project_uuid":"project-1", "environment_uuid":"env-1", "server_uuid":"server-1", "destination_uuid":"bk8cw0gkswgo04o0s88sk0kg", "github_app_uuid":"app-1", "git_repository":"goodmorning-mx/ledger", "git_branch":"dev", "build_pack":"dockerfile", "base_directory":"/frontend", "dockerfile_location":"/Dockerfile", "ports_exposes":"80", "domains":"https://dev.ledger.goodmorning.mx", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/", "health_check_port":"80", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
         data.update(overrides)
         return data
 
 
 
     def backend_app(self, **overrides):
-        data = {"uuid":"api-1", "name":"ledger-api-dev", "type":"application", "project_uuid":"project-1", "environment_uuid":"env-1", "server_uuid":"server-1", "destination_uuid":"bk8cw0gkswgo04o0s88sk0kg", "github_app_uuid":"app-1", "git_repository":"goodmorning-mx/ledger", "git_branch":"dev", "build_pack":"dockerfile", "base_directory":"/backend", "dockerfile_location":"/Dockerfile", "ports_exposes":"8000", "domains":"https://api.dev.ledger.goodmorning.mx", "instant_deploy":False, "is_auto_deploy_enabled":True, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/health", "health_check_port":"8000", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
+        data = {"uuid":"api-1", "name":"ledger-api-dev", "type":"application", "project_uuid":"project-1", "environment_uuid":"env-1", "server_uuid":"server-1", "destination_uuid":"bk8cw0gkswgo04o0s88sk0kg", "github_app_uuid":"app-1", "git_repository":"goodmorning-mx/ledger", "git_branch":"dev", "build_pack":"dockerfile", "base_directory":"/backend", "dockerfile_location":"/Dockerfile", "ports_exposes":"8000", "domains":"https://api.dev.ledger.goodmorning.mx", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/health", "health_check_port":"8000", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
         data.update(overrides)
         return data
 
@@ -2052,7 +2052,7 @@ class Stage6FrontendApplicationTests(ProductDevelopmentProvisionerTests):
         context={"project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"bk8cw0gkswgo04o0s88sk0kg","github_app_uuid":"app-1","git_repository":"goodmorning-mx/ledger"}
         self.assertEqual(pp.classify_frontend_application([self.frontend_app()], args(), context)["status"], "exists")
         self.assertEqual(pp.classify_frontend_application([self.frontend_app(), self.frontend_app(uuid="front-2")], args(), context)["status"], "duplicate")
-        for field,value in (("git_repository","bad/repo"),("git_branch","main"),("github_app_uuid","bad"),("destination_uuid","bad"),("base_directory","/web"),("dockerfile_location","Dockerfile"),("ports_exposes","3000"),("domains","https://dev.ledger.goodmorning.mx:80"),("is_auto_deploy_enabled",False),("health_check_path","/health")):
+        for field,value in (("git_repository","bad/repo"),("git_branch","main"),("github_app_uuid","bad"),("destination_uuid","bad"),("base_directory","/web"),("dockerfile_location","Dockerfile"),("ports_exposes","3000"),("domains","https://dev.ledger.goodmorning.mx:80"),("is_auto_deploy_enabled",True),("health_check_path","/health")):
             self.assertEqual(pp.classify_frontend_application([self.frontend_app(**{field:value})], args(), context)["status"], "incompatible", field)
 
     def test_stage6_frontend_payload_and_domain_validation(self):
@@ -2072,7 +2072,7 @@ class Stage6FrontendApplicationTests(ProductDevelopmentProvisionerTests):
 
     def test_stage6_apply_gates_and_post_then_verify(self):
         front=self.frontend_app()
-        api={**self.client().payloads["/applications"][0], "destination_uuid":"bk8cw0gkswgo04o0s88sk0kg", "instant_deploy":False, "is_auto_deploy_enabled":True, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/health", "health_check_port":"8000", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
+        api={**self.client().payloads["/applications"][0], "destination_uuid":"bk8cw0gkswgo04o0s88sk0kg", "instant_deploy":False, "is_auto_deploy_enabled":False, "autogenerate_domain":False, "health_check_enabled":True, "health_check_path":"/health", "health_check_port":"8000", "health_check_method":"GET", "health_check_scheme":"http", "health_check_return_code":200}
         c=self.client(**{"/applications":[api], "/applications/api-1":api, "/applications/front-1":front, "/applications/front-1/envs":[]})
         with mock.patch.dict(os.environ,{"COOLIFY_ALLOW_RESOURCE_WRITES":"true","COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES":"true","COOLIFY_ALLOW_FRONTEND_ENV_WRITES":"true"}, clear=False):
             r=pp.provision(args(dry_run=False, apply=True, confirm_product="ledger", confirm_frontend_application="ledger-frontend-dev", confirm_frontend_environment="ledger-frontend-dev"), client_factory=lambda:c)
@@ -2130,7 +2130,7 @@ class Stage6FrontendApplicationTests(ProductDevelopmentProvisionerTests):
 class Stage7BackendDeploymentTests(unittest.TestCase):
     def base_client(self, **overrides):
         db_url = "postgresql://user:p%40ss@postgres:5432/ledger_dev"
-        app = {"uuid":"api-1","id":"api-1","name":"ledger-api-dev","type":"application","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"bk8cw0gkswgo04o0s88sk0kg","git_repository":"goodmorning-mx/ledger","git_branch":"dev","build_pack":"dockerfile","base_directory":"/backend","dockerfile_location":"/Dockerfile","ports_exposes":"8000","domains":"https://api.dev.ledger.goodmorning.mx","github_app_uuid":"app-1","instant_deploy":False,"is_auto_deploy_enabled":True,"autogenerate_domain":False,"health_check_enabled":True,"health_check_path":"/health","health_check_port":"8000","health_check_method":"GET","health_check_scheme":"http","health_check_return_code":200,"status":"running:healthy"}
+        app = {"uuid":"api-1","id":"api-1","name":"ledger-api-dev","type":"application","project_uuid":"project-1","environment_uuid":"env-1","server_uuid":"server-1","destination_uuid":"bk8cw0gkswgo04o0s88sk0kg","git_repository":"goodmorning-mx/ledger","git_branch":"dev","build_pack":"dockerfile","base_directory":"/backend","dockerfile_location":"/Dockerfile","ports_exposes":"8000","domains":"https://api.dev.ledger.goodmorning.mx","github_app_uuid":"app-1","instant_deploy":False,"is_auto_deploy_enabled":False,"autogenerate_domain":False,"health_check_enabled":True,"health_check_path":"/health","health_check_port":"8000","health_check_method":"GET","health_check_scheme":"http","health_check_return_code":200,"status":"running:healthy"}
         payloads={
             "/projects":[{"uuid":"project-1","name":"ledger"}],
             "/projects/project-1":{"uuid":"project-1","name":"ledger","environments":[{"uuid":"env-1","name":"dev"}]},
