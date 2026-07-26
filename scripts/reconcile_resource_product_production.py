@@ -55,6 +55,8 @@ def validate_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         raise ManifestError("backend_base_directory must be '/backend'.")
     if manifest.get("frontend_base_directory", "/frontend") != "/frontend":
         raise ManifestError("frontend_base_directory must be '/frontend'.")
+    if manifest.get("confirm_production") is not True:
+        raise ManifestError("confirm_production must be true for every production reconciliation.")
 
     return dict(manifest)
 
