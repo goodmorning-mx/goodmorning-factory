@@ -17,5 +17,6 @@
     "s3_retention_count": 30,
     "s3_retention_days": 30,
     "timeout_seconds": 1800
-  }
+  },
+  "promotion_policy": "auto-on-main"
 }
