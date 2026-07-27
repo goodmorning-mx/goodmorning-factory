@@ -167,6 +167,21 @@ jobs:
             "${manifest_path}" > /dev/null
           echo "manifest_path=${manifest_path}" >> "${GITHUB_OUTPUT}"
 
+      - name: Register automatic production manifest
+        id: production-catalog
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BACKUP_STORAGE_UUID: ${{ vars.COOLIFY_BACKUP_STORAGE_UUID || 'c1rrntk8wv4cf3tl3wqviwp3' }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${GH_TOKEN}"
+          python3 scripts/register_production_manifest.py \
+            --product "${{ steps.request.outputs.product_name }}" \
+            --backup-storage-uuid "${BACKUP_STORAGE_UUID}" \
+            --factory-branch dev \
+            > production-catalog-result.json
+          cat production-catalog-result.json
+
       - name: Create deployment verification sentinel
         id: sentinel
         env:
