@@ -1,6 +1,9 @@
 name: Promote one GoodMorning product to production
 
 on:
+  repository_dispatch:
+    types:
+      - promote-product
   workflow_dispatch:
     inputs:
       manifest_path:
@@ -17,7 +20,7 @@ permissions:
   issues: write
 
 concurrency:
-  group: goodmorning-factory-production
+  group: goodmorning-factory-production-${{ github.event.client_payload.product || inputs.manifest_path }}
   cancel-in-progress: false
 
 jobs:
@@ -45,24 +48,83 @@ jobs:
           ref: dev
           persist-credentials: false
 
-      - name: Validate exact production authorization
+      - name: Create source verification token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
+          private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
+          owner: goodmorning-mx
+
+      - name: Validate production release authorization
         id: authorize
         shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REQUESTED_MANIFEST: ${{ inputs.manifest_path }}
+          REQUESTED_CONFIRMATION: ${{ inputs.confirmation }}
+          EVENT_PRODUCT: ${{ github.event.client_payload.product }}
+          EVENT_REPOSITORY: ${{ github.event.client_payload.repository }}
+          EVENT_SOURCE_BRANCH: ${{ github.event.client_payload.source_branch }}
+          EVENT_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          EVENT_SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id }}
         run: |
           set -euo pipefail
-          manifest="${{ inputs.manifest_path }}"
-          [[ "${manifest}" =~ ^production/[a-z0-9][a-z0-9-]*\.json$ ]]
+          echo "::add-mask::${GH_TOKEN}"
+
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            product="${EVENT_PRODUCT}"
+            repository="${EVENT_REPOSITORY}"
+            source_branch="${EVENT_SOURCE_BRANCH}"
+            source_sha="${EVENT_SOURCE_SHA}"
+            source_run_id="${EVENT_SOURCE_RUN_ID}"
+            manifest="production/${product}.json"
+            [[ "${source_run_id}" =~ ^[0-9]+$ ]]
+          else
+            manifest="${REQUESTED_MANIFEST}"
+            [[ "${manifest}" =~ ^production/[a-z0-9][a-z0-9-]*\.json$ ]]
+            test -f "${manifest}"
+            product="$(jq -er '.product' "${manifest}")"
+            repository="$(jq -er '.repository' "${manifest}")"
+            source_branch="$(jq -er '.branch' "${manifest}")"
+            source_sha="$(gh api "/repos/${repository}/branches/${source_branch}" --jq '.commit.sha')"
+            test "${REQUESTED_CONFIRMATION}" = "deploy:${product}:production"
+          fi
+
+          [[ "${product}" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          test "${repository}" = "goodmorning-mx/${product}"
+          test "${source_branch}" = "main"
+          [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
           test -f "${manifest}"
-          product="$(jq -er '.product' "${manifest}")"
           test "$(jq -r '.topology' "${manifest}")" = "resources-v2-production"
+          test "$(jq -r '.product' "${manifest}")" = "${product}"
+          test "$(jq -r '.repository' "${manifest}")" = "${repository}"
+          test "$(jq -r '.branch' "${manifest}")" = "${source_branch}"
           test "$(jq -r '.confirm_production // false' "${manifest}")" = "true"
-          test "${{ inputs.confirmation }}" = "deploy:${product}:production"
+
+          current_sha="$(gh api "/repos/${repository}/branches/${source_branch}" --jq '.commit.sha')"
+          test "${current_sha}" = "${source_sha}"
+
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            test "$(jq -r '.promotion_policy // empty' "${manifest}")" = "auto-on-main"
+            run_json="$(gh api "/repos/${repository}/actions/runs/${source_run_id}")"
+            test "$(jq -r '.name' <<<"${run_json}")" = "CI"
+            test "$(jq -r '.event' <<<"${run_json}")" = "push"
+            test "$(jq -r '.conclusion' <<<"${run_json}")" = "success"
+            test "$(jq -r '.head_branch' <<<"${run_json}")" = "main"
+            test "$(jq -r '.head_sha' <<<"${run_json}")" = "${source_sha}"
+          fi
+
           test -n "${COOLIFY_BASE_URL:-}"
           test -n "${COOLIFY_API_TOKEN:-}"
           test "${COOLIFY_ALLOW_REAL_DEPLOYMENT:-}" = "true"
           echo "::add-mask::${COOLIFY_API_TOKEN}"
-          echo "manifest=${manifest}" >> "${GITHUB_OUTPUT}"
-          echo "product=${product}" >> "${GITHUB_OUTPUT}"
+          {
+            echo "manifest=${manifest}"
+            echo "product=${product}"
+            echo "repository=${repository}"
+            echo "source_sha=${source_sha}"
+          } >> "${GITHUB_OUTPUT}"
 
       - name: Plan production changes read-only
         shell: bash
