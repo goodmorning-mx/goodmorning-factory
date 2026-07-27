@@ -49,6 +49,9 @@ jobs:
           test -f tests/test_provision_product_development.py
           test -f scripts/reconcile_database_backups.py
           test -f tests/test_reconcile_database_backups.py
+          test -f scripts/register_production_manifest.py
+          test -f tests/test_register_production_manifest.py
+          test -f tests/test_release_automation_contract.py
           test -f scripts/provision_product_production.py
           test -f scripts/reconcile_resource_product_production.py
           test -f tests/test_production_contract.py
