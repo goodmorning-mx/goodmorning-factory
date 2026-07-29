@@ -175,7 +175,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "::add-mask::${GH_TOKEN}"
-          python3 scripts/register_production_manifest.py \
+          python3 -m scripts.register_production_manifest \
             --product "${{ steps.request.outputs.product_name }}" \
             --backup-storage-uuid "${BACKUP_STORAGE_UUID}" \
             --factory-branch dev \
