@@ -1,5 +1,5 @@
 {
   "product_name": "emi",
-  "description": "Producto Emi de GoodMorning.",
+  "description": "Producto Emi provisionado y desplegado por GoodMorning Factory.",
   "confirm_provision": true
 }
