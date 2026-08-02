@@ -1,0 +1,5 @@
+{
+  "product_name": "eventosarias",
+  "description": "Producto Eventos Arias provisionado por GoodMorning Factory en desarrollo para migrar el prototipo existente al estándar Frontend, FastAPI y PostgreSQL.",
+  "confirm_provision": true
+}
