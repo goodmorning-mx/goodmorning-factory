@@ -52,6 +52,13 @@ ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create
 ALLOWED_PATCH_KINDS = {"backend_env_update", "frontend_env_update"}
 FORBIDDEN_ENDPOINT_RE = re.compile(r"/(restart|stop|rollback)(?:/|$)|/applications/[^/]+/(?:start|restart|stop|rollback)(?:/|$)|/deployments/[^/]+/cancel(?:/|$)", re.I)
 NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
+FRONTEND_CONFLICT_REDISCOVERY_ATTEMPTS = 3
+FRONTEND_CONFLICT_REDISCOVERY_BASE_DELAY_SECONDS = 2.0
+FRONTEND_UNADOPTABLE_STATUSES = {"duplicate", "incompatible", "compatibility_unverified", "scope_unverified", "out_of_scope"}
+# Every Frontend status that must fail the run closed. ``out_of_scope`` is
+# included because conflict recovery can now surface a visible resource that
+# belongs to another scope, and such a resource must never read as ready.
+FRONTEND_BLOCKING_STATUSES = {"duplicate", "compatibility_unverified", "scope_unverified", "out_of_scope", "recreate_required", "blocked", "created_unverified", "write_outcome_unknown"}
 
 
 class ProvisioningError(Exception):
@@ -2416,6 +2423,76 @@ def exact_frontend_matches(client: CoolifyClient, args: argparse.Namespace) -> l
     return [i for i in item_list(client.get("/applications")) if str(field(i,"name") or "") == name]
 
 
+def discovered_frontend_matches(client: CoolifyClient, args: argparse.Namespace) -> list[dict[str, Any]]:
+    """List every exact Frontend name match and hydrate each one by UUID.
+
+    Hydration is mandatory: the Coolify Application list projection omits the
+    identity, scope, repository, branch, domain, port, Dockerfile, destination,
+    and GitHub App fields that classification requires, so an unhydrated item
+    can only ever classify as unverified.
+    """
+
+    matches=[]
+    for item in exact_frontend_matches(client,args):
+        uuid=field(item,"uuid","id")
+        if uuid:
+            try: item=hydrate_application_by_uuid(client,uuid,item)
+            except ProvisioningError: pass
+        matches.append(item)
+    return matches
+
+
+def frontend_conflict_backoff_delay(attempt: int) -> float:
+    """Short exponential backoff between Frontend conflict rediscovery attempts."""
+
+    return FRONTEND_CONFLICT_REDISCOVERY_BASE_DELAY_SECONDS * (2 ** max(int(attempt) - 1, 0))
+
+
+def recover_frontend_after_conflict(client: CoolifyClient, args: argparse.Namespace, context: dict[str, Any], *, attempts: int = FRONTEND_CONFLICT_REDISCOVERY_ATTEMPTS, sleeper: Callable[[float], None] | None = None) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+    """Rediscover and verify the Frontend Application after a Coolify 409/422.
+
+    A Coolify conflict means the write was rejected, never that a resource is
+    usable. Coolify can also make a just-written Application readable only after
+    a short delay, so a single instantaneous rediscovery fails closed against a
+    resource that does exist. This retries discovery (never the POST) with a
+    short exponential backoff, hydrates every match by UUID, and classifies with
+    the unmodified :func:`classify_frontend_application` identity, scope,
+    repository, branch, domain, port, Dockerfile, destination, and GitHub App
+    rules.
+
+    Returns ``(classification | None, diagnostics)``. A classification is
+    returned only once discovery observes a resource: ``exists`` is the sole
+    reusable outcome, and every other observed status is returned unadopted so
+    the caller can fail closed. ``None`` means no resource ever became visible.
+    """
+
+    sleeper = sleeper or (lambda seconds: None if seconds <= 0 else __import__("time").sleep(seconds))
+    total = max(int(attempts), 1)
+    observations: list[dict[str, Any]] = []
+    recovered: dict[str, Any] | None = None
+    performed = 0
+    for attempt in range(1, total + 1):
+        performed = attempt
+        try:
+            matches = discovered_frontend_matches(client, args)
+        except ProvisioningError as exc:
+            observations.append({"attempt": attempt, "status": "rediscovery_failed", "error_type": exc.error_type})
+        else:
+            classified = classify_frontend_application(matches, args, context)
+            status = classified.get("status")
+            observations.append({"attempt": attempt, "status": status, "match_count": len(matches)})
+            if status != "absent":
+                # Either a single compatible resource to reuse, or a visible
+                # resource that must never be adopted. Both are terminal:
+                # waiting longer cannot make an incompatible, out-of-scope, or
+                # duplicated resource safe to reuse.
+                recovered = classified
+                break
+        if attempt < total:
+            sleeper(frontend_conflict_backoff_delay(attempt))
+    return recovered, {"rediscovery_attempts": performed, "rediscovery_max_attempts": total, "rediscovery_observations": observations}
+
+
 def backend_allows_frontend(backend: dict[str, Any]) -> bool:
     """Return True only for a verified compatible Backend Application.
 
@@ -2428,23 +2505,17 @@ def backend_allows_frontend(backend: dict[str, Any]) -> bool:
     return backend.get("status") in {"exists", "created"} and bool(backend.get("uuid"))
 
 
-def ensure_frontend_application(client: CoolifyClient, args: argparse.Namespace, context: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]], backend: dict[str, Any]) -> dict[str, Any]:
+def ensure_frontend_application(client: CoolifyClient, args: argparse.Namespace, context: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]], backend: dict[str, Any], *, sleeper: Callable[[float], None] | None = None) -> dict[str, Any]:
     if hasattr(client, "bind_frontend_application_bindings"):
         client.bind_frontend_application_bindings(dict(context))
-    matches=[]
-    for m in exact_frontend_matches(client,args):
-        uuid=field(m,"uuid","id")
-        if uuid:
-            try: m=hydrate_application_by_uuid(client,uuid,m)
-            except ProvisioningError: pass
-        matches.append(m)
+    matches=discovered_frontend_matches(client,args)
     classified=classify_frontend_application(matches,args,context)
     st=classified["status"]
     if st == "exists":
         if hasattr(client, "bind_frontend_application_uuid"):
             client.bind_frontend_application_uuid(classified.get("uuid"), context)
         actions.append(ActionRecord("frontend_application","reuse","exists",verified=True).to_dict()); return classified
-    if st in {"duplicate","incompatible","compatibility_unverified","scope_unverified","out_of_scope"}:
+    if st in FRONTEND_UNADOPTABLE_STATUSES:
         return {**classified, "status": "recreate_required" if st=="incompatible" else st}
     if not backend_allows_frontend(backend):
         status = "planned_after_backend" if not mode.is_apply else "blocked"
@@ -2463,14 +2534,20 @@ def ensure_frontend_application(client: CoolifyClient, args: argparse.Namespace,
             actions.append(ActionRecord("frontend_application","create","write_outcome_unknown",request_attempted=True,write_outcome_unknown=True).to_dict())
             return {"name":frontend_application_name(args.product),"status":"write_outcome_unknown","request_attempted":True,"write_outcome_unknown":True}
         if exc.http_status in {409,422}:
-            rematches=[hydrate_application_by_uuid(client, field(m,"uuid","id"), m) if field(m,"uuid","id") else m for m in exact_frontend_matches(client,args)]
-            recovered=classify_frontend_application(rematches,args,context)
-            if recovered.get("status")=="exists":
+            # The POST is never repeated inside one execution: Coolify rejected
+            # it, so only discovery is retried until a resource becomes visible.
+            recovered, diagnostics = recover_frontend_after_conflict(client, args, context, sleeper=sleeper)
+            recovered_status = recovered.get("status") if recovered else None
+            if recovered_status == "exists":
                 if hasattr(client, "bind_frontend_application_uuid"):
                     client.bind_frontend_application_uuid(recovered.get("uuid"), context)
                 actions.append(ActionRecord("frontend_application","recover_after_conflict","exists",request_attempted=True,verified=True,recovered_after_conflict=True).to_dict())
-                return {**recovered,"recovered_after_conflict":True}
-            return {"name": frontend_application_name(args.product), "status":"blocked", "reason":"conflict_without_verified_resource"}
+                return {**recovered,"recovered_after_conflict":True,"conflict_http_status":exc.http_status,**diagnostics}
+            if recovered_status in FRONTEND_UNADOPTABLE_STATUSES:
+                actions.append(ActionRecord("frontend_application","recover_after_conflict",recovered_status,request_attempted=True).to_dict())
+                return {**recovered,"status":"recreate_required" if recovered_status=="incompatible" else recovered_status,"reason":"conflict_with_unadoptable_resource","conflict_http_status":exc.http_status,**diagnostics}
+            actions.append(ActionRecord("frontend_application","recover_after_conflict","conflict_without_verified_resource",request_attempted=True).to_dict())
+            return {"name": frontend_application_name(args.product), "status":"blocked", "reason":"conflict_without_verified_resource", "conflict_http_status": exc.http_status, **diagnostics}
         raise
     item=resp.data.get("data") if isinstance(resp.data,dict) and isinstance(resp.data.get("data"),dict) else resp.data
     uuid=field(item,"uuid","id") if isinstance(item,dict) else None
@@ -3501,7 +3578,7 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
     backend_deployment, backend_runtime_readiness, backend_smoke_check, deploy_blockers = execute_backend_deployment(client, args, mode, backend, deploy_preflight_ok, actions)
     blockers.extend(deploy_blockers)
     frontend = ensure_frontend_application(client, args, context, mode, actions, backend)
-    if frontend.get("status") in {"duplicate", "compatibility_unverified", "scope_unverified", "recreate_required", "blocked", "created_unverified", "write_outcome_unknown"}:
+    if frontend.get("status") in FRONTEND_BLOCKING_STATUSES:
         blockers.append({"resource": "frontend_application", "status": frontend.get("status")})
     frontend_env = reconcile_frontend_environment(client, args, frontend, backend, mode, actions) if frontend.get("status") in {"exists", "created"} else {"status": "blocked" if mode.is_apply else "planned", "variables": [], "blockers": []}
     blockers.extend(frontend_env.get("blockers", []))
