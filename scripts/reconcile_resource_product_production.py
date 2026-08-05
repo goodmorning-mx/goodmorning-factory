@@ -141,9 +141,13 @@ def main(argv: list[str] | None = None) -> int:
     if __package__ in (None, ""):
         sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-    from scripts.provision_product_production import main as provision_main
+    from scripts import provision_product_production as provisioner
+    from scripts.production_application_conflict_recovery import (
+        install_application_conflict_recovery,
+    )
 
-    return provision_main(provisioner_argv)
+    install_application_conflict_recovery(provisioner)
+    return provisioner.main(provisioner_argv)
 
 
 if __name__ == "__main__":
