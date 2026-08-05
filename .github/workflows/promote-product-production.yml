@@ -155,9 +155,9 @@ jobs:
           COOLIFY_ALLOW_BACKEND_ENV_WRITES: 'true'
           COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES: 'true'
           COOLIFY_ALLOW_FRONTEND_ENV_WRITES: 'true'
-          COOLIFY_ALLOW_DEPLOYMENTS: 'false'
-          COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'false'
-          COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'false'
+          COOLIFY_ALLOW_DEPLOYMENTS: 'true'
+          COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'true'
+          COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'true'
         run: |
           set -euo pipefail
           for attempt in $(seq 1 6); do
