@@ -122,6 +122,20 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def normalize_exit_code(*, operation: str, provisioner_exit_code: int) -> int:
+    """Treat non-deployment partial provisioning as a successful hand-off.
+
+    The underlying provisioner uses exit code 1 for ``status=partial`` because
+    deployment gates are closed. During the explicit ``provision`` operation,
+    closed deployment gates are expected: the workflow performs deployment in a
+    later audited step. Preserve every other exit code unchanged.
+    """
+
+    if operation == "provision" and provisioner_exit_code == 1:
+        return 0
+    return provisioner_exit_code
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
@@ -147,7 +161,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     install_application_conflict_recovery(provisioner)
-    return provisioner.main(provisioner_argv)
+    return normalize_exit_code(
+        operation=args.operation,
+        provisioner_exit_code=provisioner.main(provisioner_argv),
+    )
 
 
 if __name__ == "__main__":
