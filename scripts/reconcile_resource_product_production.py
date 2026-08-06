@@ -125,15 +125,35 @@ def build_parser() -> argparse.ArgumentParser:
 def normalize_exit_code(*, operation: str, provisioner_exit_code: int) -> int:
     """Treat non-deployment partial provisioning as a successful hand-off.
 
-    The underlying provisioner uses exit code 1 for ``status=partial`` because
-    deployment gates are closed. During the explicit ``provision`` operation,
-    closed deployment gates are expected: the workflow performs deployment in a
-    later audited step. Preserve every other exit code unchanged.
+    The underlying provisioner uses exit code 1 for non-terminal provisioning
+    states such as ``partial`` or ``created_unverified``. During the explicit
+    ``provision`` operation, deployment is intentionally deferred to a later
+    audited workflow step. Preserve every other operation and exit code.
     """
 
     if operation == "provision" and provisioner_exit_code == 1:
         return 0
     return provisioner_exit_code
+
+
+def run_provisioner(provisioner: Any, provisioner_argv: list[str]) -> int:
+    """Run the legacy provisioner and convert SystemExit into a numeric code.
+
+    The provisioner is also a CLI and may raise ``SystemExit`` instead of
+    returning its final code. The adapter must observe that code so it can apply
+    the operation-specific hand-off policy without swallowing unexpected errors.
+    """
+
+    try:
+        result = provisioner.main(provisioner_argv)
+    except SystemExit as exc:
+        code = exc.code
+        if code is None:
+            return 0
+        if isinstance(code, int):
+            return code
+        return 1
+    return int(result or 0)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -163,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     install_application_conflict_recovery(provisioner)
     return normalize_exit_code(
         operation=args.operation,
-        provisioner_exit_code=provisioner.main(provisioner_argv),
+        provisioner_exit_code=run_provisioner(provisioner, provisioner_argv),
     )
 
 
