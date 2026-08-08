@@ -424,6 +424,235 @@ class FrontendConflictRediscoveryTests(unittest.TestCase):
         self.assertEqual(result["status"], "recreate_required")
         self.assertIsNone(client.bound_uuid)
 
+    def replacement_contract(self):
+        return {
+            "legacy_uuid": "front-1",
+            "confirmation": "replace-source:ledger-frontend-prod",
+            "candidate_name": "ledger-frontend-prod-candidate",
+            "quarantine_name": "ledger-frontend-prod-legacy",
+            "required_gates": ["deployment", "runtime", "domain_swap", "smoke"],
+        }
+
+    def test_replacement_reuses_isolated_source_verified_candidate(self):
+        legacy = self.frontend_item()
+        legacy.pop("github_app_uuid")
+        candidate = self.frontend_item(
+            "front-2",
+            name="ledger-frontend-prod-candidate",
+            domains="",
+        )
+        listing = [legacy, candidate]
+        client = FrontendConflictClient(
+            [listing, listing],
+            details={"front-1": legacy, "front-2": candidate},
+        )
+        client._gm_frontend_source_replacement_contract = self.replacement_contract()
+
+        result, actions, _sleeps = self.run_ensure(client)
+
+        self.assertEqual(result["status"], "exists")
+        self.assertEqual(result["name"], "ledger-frontend-prod")
+        self.assertEqual(result["actual_name"], "ledger-frontend-prod-candidate")
+        self.assertEqual(result["uuid"], "front-2")
+        self.assertEqual(
+            result["replacement"]["status"],
+            "candidate_ready_for_deployment",
+        )
+        self.assertEqual(client.bound_uuid, "front-2")
+        self.assertEqual([action["action"] for action in actions], ["reuse_candidate"])
+
+    def test_replacement_creates_isolated_candidate_without_public_domain(self):
+        legacy = self.frontend_item()
+        legacy.pop("github_app_uuid")
+        candidate = self.frontend_item(
+            "front-2",
+            name="ledger-frontend-prod-candidate",
+            domains="",
+        )
+
+        class Client(FrontendConflictClient):
+            def __init__(self):
+                super().__init__(
+                    [[legacy], [legacy]],
+                    details={"front-1": legacy, "front-2": candidate},
+                )
+                self.replacement_payloads = []
+
+            def create_frontend_replacement_application(self, payload):
+                self.replacement_payloads.append(dict(payload))
+                return production.Response(201, {"uuid": "front-2"}, {})
+
+        client = Client()
+        client._gm_frontend_source_replacement_contract = self.replacement_contract()
+
+        result, actions, _sleeps = self.run_ensure(client)
+
+        self.assertEqual(result["status"], "created")
+        self.assertEqual(result["uuid"], "front-2")
+        self.assertEqual(result["actual_name"], "ledger-frontend-prod-candidate")
+        self.assertEqual(result["replacement"]["status"], "candidate_ready_for_deployment")
+        self.assertEqual(len(client.replacement_payloads), 1)
+        self.assertEqual(client.replacement_payloads[0]["domains"], "")
+        self.assertEqual(
+            client.replacement_payloads[0]["github_app_uuid"],
+            "github-app-1",
+        )
+        self.assertEqual(client.bound_uuid, "front-2")
+        self.assertEqual(
+            [action["action"] for action in actions],
+            ["attempt_create_candidate", "create_candidate"],
+        )
+
+    def test_replacement_recovers_candidate_promoted_before_legacy_quarantine(self):
+        legacy = self.frontend_item()
+        legacy.pop("github_app_uuid")
+        promoted = self.frontend_item("front-2")
+        client = FrontendConflictClient(
+            [[legacy, promoted]],
+            details={"front-1": legacy, "front-2": promoted},
+        )
+        client._gm_frontend_source_replacement_contract = self.replacement_contract()
+
+        result, _actions, _sleeps = self.run_ensure(client)
+
+        self.assertEqual(result["status"], "exists")
+        self.assertEqual(result["uuid"], "front-2")
+        self.assertEqual(result["actual_name"], "ledger-frontend-prod")
+        self.assertEqual(
+            result["replacement"]["status"],
+            "candidate_promoted_legacy_pending",
+        )
+
+    def test_replacement_create_and_patch_contracts_are_exact(self):
+        mode = production.ExecutionMode(
+            name="apply",
+            product="ledger",
+            confirm_product="ledger",
+            allow_resource_writes=True,
+            allow_frontend_application_writes=True,
+            confirm_frontend_application="ledger-frontend-prod",
+            deploy_frontend=True,
+            allow_deployments=True,
+            allow_frontend_deployment=True,
+            confirm_frontend_deployment="ledger-frontend-prod",
+        )
+        client = production.CoolifyClient(
+            "https://coolify.example.test",
+            "token",
+            mode=mode,
+        )
+        client._gm_frontend_source_replacement_contract = self.replacement_contract()
+        client.bind_frontend_application_bindings(self.context())
+        candidate_payload = production.frontend_replacement_create_payload(
+            self.args(),
+            self.context(),
+            "ledger-frontend-prod-candidate",
+        )
+        client._check_request(
+            "POST",
+            production.POST_FRONTEND_APPLICATION_CREATE,
+            post_kind="frontend_replacement_create",
+            json_body=candidate_payload,
+        )
+        client.bind_frontend_application_uuid("front-2", self.context())
+        promote, quarantine = client.bind_frontend_replacement_promotion(
+            "front-1",
+            "front-2",
+        )
+        client._check_request(
+            "PATCH",
+            "/applications/front-2",
+            post_kind="frontend_replacement_promote",
+            json_body=promote,
+        )
+        client._check_request(
+            "PATCH",
+            "/applications/front-1",
+            post_kind="frontend_replacement_quarantine",
+            json_body=quarantine,
+        )
+        with self.assertRaises(production.ProvisioningError):
+            client._check_request(
+                "PATCH",
+                "/applications/front-3",
+                post_kind="frontend_replacement_promote",
+                json_body=promote,
+            )
+        unsafe = dict(quarantine, domains="https://ledger.goodmorning.mx")
+        with self.assertRaises(production.ProvisioningError):
+            client._check_request(
+                "PATCH",
+                "/applications/front-1",
+                post_kind="frontend_replacement_quarantine",
+                json_body=unsafe,
+            )
+
+    def test_domain_swap_promotes_candidate_then_quarantines_legacy(self):
+        legacy = self.frontend_item()
+        legacy.pop("github_app_uuid")
+        candidate = self.frontend_item(
+            "front-2",
+            name="ledger-frontend-prod-candidate",
+            domains="",
+        )
+
+        class Client:
+            frontend_application_bindings = self.context()
+
+            def __init__(self):
+                self.items = {
+                    "front-1": dict(legacy),
+                    "front-2": dict(candidate),
+                }
+                self.promotions = []
+
+            def get(self, path):
+                identifier = path.rsplit("/", 1)[-1]
+                return dict(self.items[identifier])
+
+            def promote_frontend_replacement(self, legacy_uuid, candidate_uuid):
+                self.promotions.append((legacy_uuid, candidate_uuid))
+                self.items[candidate_uuid].update(
+                    name="ledger-frontend-prod",
+                    domains="https://ledger.goodmorning.mx",
+                )
+                self.items[legacy_uuid].update(
+                    name="ledger-frontend-prod-legacy",
+                    domains="",
+                    fqdn="",
+                )
+
+        client = Client()
+        frontend = {
+            "name": "ledger-frontend-prod",
+            "actual_name": "ledger-frontend-prod-candidate",
+            "uuid": "front-2",
+            "status": "exists",
+            "replacement": {
+                "status": "candidate_ready_for_deployment",
+                "legacy_uuid": "front-1",
+                "candidate_uuid": "front-2",
+                "candidate_name": "ledger-frontend-prod-candidate",
+                "quarantine_name": "ledger-frontend-prod-legacy",
+                "required_gates": ["deployment", "runtime", "domain_swap", "smoke"],
+            },
+        }
+        actions = []
+
+        verified, blockers = production.finalize_frontend_replacement(
+            client,
+            self.args(),
+            frontend,
+            actions,
+        )
+
+        self.assertTrue(verified)
+        self.assertEqual(blockers, [])
+        self.assertEqual(client.promotions, [("front-1", "front-2")])
+        self.assertEqual(frontend["actual_name"], "ledger-frontend-prod")
+        self.assertEqual(frontend["replacement"]["status"], "domain_swap_verified")
+        self.assertTrue(actions[-1]["verified"])
+
     def test_every_unadoptable_status_fails_the_run_closed(self):
         self.assertTrue(
             production.FRONTEND_UNADOPTABLE_STATUSES - {"incompatible"} <= production.FRONTEND_BLOCKING_STATUSES,
