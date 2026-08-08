@@ -16,10 +16,72 @@ REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 TOPOLOGY = "resources-v2-production"
 OPERATIONS = {"plan", "provision", "deploy-backend", "deploy-full"}
 PHASES = {"plan", "apply"}
+LEGACY_FRONTEND_MIGRATION_KEYS = {"uuid", "confirmation", "expected"}
+LEGACY_FRONTEND_EXPECTED_KEYS = {
+    "name",
+    "git_repository",
+    "git_branch",
+    "build_pack",
+    "base_directory",
+    "dockerfile_location",
+    "ports_exposes",
+    "domains",
+}
+COOLIFY_UUID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{5,63}$")
 
 
 class ManifestError(ValueError):
     pass
+
+
+def validate_legacy_frontend_migration(manifest: dict[str, Any]) -> None:
+    """Validate an exact, one-time adoption contract for a legacy frontend.
+
+    This contract is optional. When present, it authorizes migration of one
+    observed Coolify Application UUID only if every recorded legacy field still
+    matches. Any drift fails closed before a PATCH is attempted.
+    """
+
+    migration = manifest.get("legacy_frontend_migration")
+    if migration is None:
+        return
+    if not isinstance(migration, dict) or set(migration) != LEGACY_FRONTEND_MIGRATION_KEYS:
+        raise ManifestError(
+            "legacy_frontend_migration must contain exactly uuid, confirmation, and expected."
+        )
+
+    product = manifest.get("product")
+    identifier = migration.get("uuid")
+    if not isinstance(identifier, str) or not COOLIFY_UUID_RE.fullmatch(identifier):
+        raise ManifestError("legacy_frontend_migration.uuid must be one exact Coolify UUID.")
+    if migration.get("confirmation") != f"migrate:{product}-frontend-prod":
+        raise ManifestError(
+            "legacy_frontend_migration.confirmation must match the production frontend exactly."
+        )
+
+    expected = migration.get("expected")
+    if not isinstance(expected, dict) or set(expected) != LEGACY_FRONTEND_EXPECTED_KEYS:
+        raise ManifestError(
+            "legacy_frontend_migration.expected does not match the approved legacy identity contract."
+        )
+    if not isinstance(expected.get("name"), str) or not expected["name"].strip():
+        raise ManifestError("legacy frontend name must be non-empty.")
+    if not isinstance(expected.get("git_repository"), str) or not REPOSITORY_RE.fullmatch(
+        expected["git_repository"]
+    ):
+        raise ManifestError("legacy frontend repository must be an owner/repository identifier.")
+    if expected.get("git_branch") != "main":
+        raise ManifestError("legacy frontend branch must be main.")
+    if expected.get("build_pack") != "dockerfile":
+        raise ManifestError("legacy frontend build_pack must be dockerfile.")
+    if not isinstance(expected.get("base_directory"), str) or not expected["base_directory"].startswith("/"):
+        raise ManifestError("legacy frontend base_directory must be an absolute repository path.")
+    if expected.get("dockerfile_location") != "/Dockerfile":
+        raise ManifestError("legacy frontend Dockerfile location must be /Dockerfile.")
+    if str(expected.get("ports_exposes")) != "80":
+        raise ManifestError("legacy frontend must expose port 80.")
+    if expected.get("domains") != f"https://{manifest.get('production_domain')}":
+        raise ManifestError("legacy frontend domain must equal the production domain exactly.")
 
 
 def load_manifest(path: str | Path) -> dict[str, Any]:
@@ -58,6 +120,7 @@ def validate_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     if manifest.get("confirm_production") is not True:
         raise ManifestError("confirm_production must be true for every production reconciliation.")
 
+    validate_legacy_frontend_migration(manifest)
     return dict(manifest)
 
 
@@ -122,20 +185,6 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def normalize_exit_code(*, operation: str, provisioner_exit_code: int) -> int:
-    """Treat non-deployment partial provisioning as a successful hand-off.
-
-    The underlying provisioner uses exit code 1 for non-terminal provisioning
-    states such as ``partial`` or ``created_unverified``. During the explicit
-    ``provision`` operation, deployment is intentionally deferred to a later
-    audited workflow step. Preserve every other operation and exit code.
-    """
-
-    if operation == "provision" and provisioner_exit_code == 1:
-        return 0
-    return provisioner_exit_code
-
-
 def run_provisioner(provisioner: Any, provisioner_argv: list[str]) -> int:
     """Run the legacy provisioner and convert SystemExit into a numeric code.
 
@@ -180,11 +229,13 @@ def main(argv: list[str] | None = None) -> int:
         install_application_conflict_recovery,
     )
 
-    install_application_conflict_recovery(provisioner)
-    return normalize_exit_code(
-        operation=args.operation,
-        provisioner_exit_code=run_provisioner(provisioner, provisioner_argv),
+    install_application_conflict_recovery(
+        provisioner,
+        legacy_frontend_migration=manifest.get("legacy_frontend_migration"),
     )
+    # Preserve every provisioner exit code. Non-zero means reconciliation found
+    # a real blocker and must never be normalized into a deploy hand-off.
+    return run_provisioner(provisioner, provisioner_argv)
 
 
 if __name__ == "__main__":
