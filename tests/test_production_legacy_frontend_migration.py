@@ -117,6 +117,7 @@ class LegacyFrontendMigrationTests(unittest.TestCase):
             "legacy-front-1",
             self.target_payload(),
         )
+        self.assertIs(patch_payload["force_domain_override"], True)
 
         client._check_request(
             "PATCH",
@@ -133,6 +134,15 @@ class LegacyFrontendMigrationTests(unittest.TestCase):
             )
         changed = dict(patch_payload)
         changed["git_repository"] = "attacker/other"
+        with self.assertRaises(production.ProvisioningError):
+            client._check_request(
+                "PATCH",
+                "/applications/legacy-front-1",
+                post_kind="frontend_application_migrate",
+                json_body=changed,
+            )
+        changed = dict(patch_payload)
+        changed["force_domain_override"] = False
         with self.assertRaises(production.ProvisioningError):
             client._check_request(
                 "PATCH",
