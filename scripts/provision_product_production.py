@@ -46,10 +46,17 @@ BACKEND_ENV_KEYS = {"DATABASE_URL", "APP_ENV", "CORS_ORIGINS"}
 APPROVED_BACKEND_APPLICATION_FIELDS = {"name", "project_uuid", "environment_uuid", "environment_name", "server_uuid", "destination_uuid", "github_app_uuid", "git_repository", "git_branch", "build_pack", "base_directory", "dockerfile_location", "ports_exposes", "domains", "instant_deploy", "is_auto_deploy_enabled", "autogenerate_domain", "health_check_enabled", "health_check_path", "health_check_port", "health_check_method", "health_check_scheme", "health_check_return_code"}
 APPROVED_BACKEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline", "is_shown_once"}
 APPROVED_FRONTEND_APPLICATION_FIELDS = APPROVED_BACKEND_APPLICATION_FIELDS
+# Coolify's PATCH /applications/{uuid} accepts the creation contract except
+# environment_uuid and autogenerate_domain. The exact payload is bound before
+# the one-time legacy migration is allowlisted.
+APPROVED_FRONTEND_MIGRATION_FIELDS = APPROVED_FRONTEND_APPLICATION_FIELDS - {
+    "environment_uuid",
+    "autogenerate_domain",
+}
 APPROVED_FRONTEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline"}
 ENV_PAYLOAD_FIELDS = APPROVED_BACKEND_ENV_FIELDS
 ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start", "backend_application_create", "backend_env_create", "frontend_application_create", "frontend_env_create", "backend_deploy", "frontend_deploy"}
-ALLOWED_PATCH_KINDS = {"backend_env_update", "frontend_env_update"}
+ALLOWED_PATCH_KINDS = {"backend_env_update", "frontend_env_update", "frontend_application_migrate"}
 FORBIDDEN_ENDPOINT_RE = re.compile(r"/(restart|stop|rollback)(?:/|$)|/applications/[^/]+/(?:start|restart|stop|rollback)(?:/|$)|/deployments/[^/]+/cancel(?:/|$)", re.I)
 NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
 FRONTEND_CONFLICT_REDISCOVERY_ATTEMPTS = 3
@@ -314,6 +321,8 @@ class CoolifyClient:
         self.expected_frontend_application_uuid: str | None = None
         self.frontend_application_bindings: dict[str, Any] = {}
         self.expected_frontend_env_contract: dict[str, dict[str, Any]] | None = None
+        self.expected_frontend_migration_uuid: str | None = None
+        self.expected_frontend_migration_payload: dict[str, Any] | None = None
         self.backend_deployment_preconditions_ok = False
         self.frontend_deployment_preconditions_ok = False
 
@@ -366,6 +375,39 @@ class CoolifyClient:
             raise ProvisioningError("Refusing to change the verified Frontend Application UUID binding.", error_type="safety")
         self.expected_frontend_application_uuid = text
         self.bind_frontend_application_bindings(dict(bindings or {}))
+
+    def bind_frontend_application_migration(
+        self,
+        uuid: Any,
+        create_payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Bind one exact legacy UUID to the already validated target contract."""
+
+        text = str(uuid or "")
+        if not text or "," in text:
+            raise ProvisioningError("Legacy Frontend migration requires one exact UUID.", error_type="safety")
+        if self.expected_backend_application_uuid is not None and text == self.expected_backend_application_uuid:
+            raise ProvisioningError("Legacy Frontend UUID must not equal the Backend UUID.", error_type="safety")
+        self._validate_frontend_application_payload(create_payload)
+        patch_payload = {
+            key: create_payload[key]
+            for key in APPROVED_FRONTEND_MIGRATION_FIELDS
+        }
+        if set(patch_payload) != APPROVED_FRONTEND_MIGRATION_FIELDS:
+            raise ProvisioningError("Legacy Frontend migration payload is incomplete.", error_type="safety")
+        if self.expected_frontend_migration_uuid not in (None, text):
+            raise ProvisioningError("Refusing to change the bound legacy Frontend UUID.", error_type="safety")
+        if self.expected_frontend_migration_payload not in (None, patch_payload):
+            raise ProvisioningError("Refusing to change the bound legacy Frontend target.", error_type="safety")
+        self.expected_frontend_migration_uuid = text
+        self.expected_frontend_migration_payload = patch_payload
+        return dict(patch_payload)
+
+    def _frontend_application_migration_path_matches_binding(self, path: str) -> bool:
+        if self.expected_frontend_migration_uuid is None:
+            return False
+        encoded = urllib.parse.quote(self.expected_frontend_migration_uuid, safe="")
+        return path == f"/applications/{encoded}"
 
     def _frontend_env_path_matches_binding(self, path: str) -> bool:
         if self.expected_frontend_application_uuid is None:
@@ -437,6 +479,17 @@ class CoolifyClient:
         expected_repository = self.frontend_application_bindings.get("git_repository") or self.frontend_application_bindings.get("repository")
         if not expected_repository or normalize_repository(json_body.get("git_repository")) != normalize_repository(expected_repository):
             raise ProvisioningError("Frontend Application payload repository does not match the selected repository binding.", error_type="safety")
+
+    def _validate_frontend_application_migration_payload(
+        self,
+        json_body: dict[str, Any] | None,
+    ) -> None:
+        if self.expected_frontend_migration_uuid is None or self.expected_frontend_migration_payload is None:
+            raise ProvisioningError("Legacy Frontend migration requires a bound UUID and target.", error_type="safety")
+        if not isinstance(json_body, dict) or set(json_body) != APPROVED_FRONTEND_MIGRATION_FIELDS:
+            raise ProvisioningError("Legacy Frontend migration payload fields are not allowlisted.", error_type="safety")
+        if json_body != self.expected_frontend_migration_payload:
+            raise ProvisioningError("Legacy Frontend migration payload changed after binding.", error_type="safety")
 
     def _validate_frontend_env_payload(self, json_body: dict[str, Any] | None) -> None:
         if not isinstance(json_body, dict):
@@ -550,6 +603,11 @@ class CoolifyClient:
                 if not self._frontend_env_path_matches_binding(path):
                     raise ProvisioningError("PATCH endpoint is limited to env vars for the verified Frontend Application UUID binding.", error_type="safety", method=method, path=path)
                 self._validate_frontend_env_payload(json_body)
+            elif post_kind == "frontend_application_migrate" and getattr(self.mode, "frontend_application_writes_enabled", False):
+                self.mode.assert_write_gates()
+                if not self._frontend_application_migration_path_matches_binding(path):
+                    raise ProvisioningError("PATCH endpoint is limited to the explicitly bound legacy Frontend UUID.", error_type="safety", method=method, path=path)
+                self._validate_frontend_application_migration_payload(json_body)
             else:
                 raise ProvisioningError("Refusing non-read-only Coolify method PATCH. PATCH is allowed only for verified Application env variables after env gates.", error_type="safety", method=method, path=path)
         if method == "POST":
@@ -718,6 +776,17 @@ class CoolifyClient:
 
     def create_frontend_application(self, payload: dict[str, Any]) -> Response:
         return self.request("POST", POST_FRONTEND_APPLICATION_CREATE, json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_application_create")
+
+    def migrate_frontend_application(self, uuid: str, create_payload: dict[str, Any]) -> Response:
+        patch_payload = self.bind_frontend_application_migration(uuid, create_payload)
+        encoded = urllib.parse.quote(str(uuid), safe="")
+        return self.request(
+            "PATCH",
+            f"/applications/{encoded}",
+            json_body=patch_payload,
+            allowed_statuses={200, 201, 202},
+            post_kind="frontend_application_migrate",
+        )
 
     def create_frontend_env(self, uuid: str, payload: dict[str, Any]) -> Response:
         return self.request("POST", f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_env_create")
@@ -1042,9 +1111,16 @@ def operational_summary(item: dict[str, Any]) -> dict[str, Any]:
 
 def normalize_repository(value: Any) -> str:
     text = str(value or "").strip().removesuffix(".git")
-    prefix = "https://github.com/"
-    if text.startswith(prefix):
-        text = text[len(prefix):]
+    prefixes = (
+        "https://github.com/",
+        "http://github.com/",
+        "ssh://git@github.com/",
+        "git@github.com:",
+    )
+    for prefix in prefixes:
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
     return text.strip("/")
 
 
@@ -2550,6 +2626,7 @@ def ensure_frontend_application(client: CoolifyClient, args: argparse.Namespace,
             return {"name": frontend_application_name(args.product), "status":"blocked", "reason":"conflict_without_verified_resource", "conflict_http_status": exc.http_status, **diagnostics}
         raise
     item=resp.data.get("data") if isinstance(resp.data,dict) and isinstance(resp.data.get("data"),dict) else resp.data
+    legacy_migrated = bool(isinstance(item, dict) and item.get("_factory_legacy_migrated") is True)
     uuid=field(item,"uuid","id") if isinstance(item,dict) else None
     if not uuid:
         actions.append(ActionRecord("frontend_application","create","created_unverified",request_attempted=True,write_performed=True).to_dict())
@@ -2561,8 +2638,9 @@ def ensure_frontend_application(client: CoolifyClient, args: argparse.Namespace,
     if verified.get("status")=="exists":
         if hasattr(client, "bind_frontend_application_uuid"):
             client.bind_frontend_application_uuid(verified.get("uuid"), context)
-        actions.append(ActionRecord("frontend_application","create","created",request_attempted=True,write_performed=True,verified=True).to_dict())
-        return {**verified,"status":"created"}
+        action = "migrate_legacy" if legacy_migrated else "create"
+        actions.append(ActionRecord("frontend_application",action,"created",request_attempted=True,write_performed=True,verified=True).to_dict())
+        return {**verified,"status":"created","legacy_migrated":legacy_migrated}
     return {**verified,"status":"created_unverified","write_performed":True}
 
 
