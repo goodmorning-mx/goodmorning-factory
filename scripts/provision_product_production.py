@@ -47,12 +47,13 @@ APPROVED_BACKEND_APPLICATION_FIELDS = {"name", "project_uuid", "environment_uuid
 APPROVED_BACKEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline", "is_shown_once"}
 APPROVED_FRONTEND_APPLICATION_FIELDS = APPROVED_BACKEND_APPLICATION_FIELDS
 # Coolify's PATCH /applications/{uuid} accepts the creation contract except
-# environment_uuid and autogenerate_domain. The exact payload is bound before
-# the one-time legacy migration is allowlisted.
-APPROVED_FRONTEND_MIGRATION_FIELDS = APPROVED_FRONTEND_APPLICATION_FIELDS - {
-    "environment_uuid",
-    "autogenerate_domain",
-}
+# environment_uuid and autogenerate_domain. Domain conflicts on an update are
+# explicitly acknowledged with force_domain_override, but only after the exact
+# legacy UUID, identity, and currently-owned domain have been verified.
+APPROVED_FRONTEND_MIGRATION_FIELDS = (
+    APPROVED_FRONTEND_APPLICATION_FIELDS
+    - {"environment_uuid", "autogenerate_domain"}
+) | {"force_domain_override"}
 APPROVED_FRONTEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline"}
 ENV_PAYLOAD_FIELDS = APPROVED_BACKEND_ENV_FIELDS
 ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start", "backend_application_create", "backend_env_create", "frontend_application_create", "frontend_env_create", "backend_deploy", "frontend_deploy"}
@@ -392,7 +393,9 @@ class CoolifyClient:
         patch_payload = {
             key: create_payload[key]
             for key in APPROVED_FRONTEND_MIGRATION_FIELDS
+            if key != "force_domain_override"
         }
+        patch_payload["force_domain_override"] = True
         if set(patch_payload) != APPROVED_FRONTEND_MIGRATION_FIELDS:
             raise ProvisioningError("Legacy Frontend migration payload is incomplete.", error_type="safety")
         if self.expected_frontend_migration_uuid not in (None, text):
@@ -488,6 +491,8 @@ class CoolifyClient:
             raise ProvisioningError("Legacy Frontend migration requires a bound UUID and target.", error_type="safety")
         if not isinstance(json_body, dict) or set(json_body) != APPROVED_FRONTEND_MIGRATION_FIELDS:
             raise ProvisioningError("Legacy Frontend migration payload fields are not allowlisted.", error_type="safety")
+        if json_body.get("force_domain_override") is not True:
+            raise ProvisioningError("Legacy Frontend migration must explicitly acknowledge the verified domain conflict.", error_type="safety")
         if json_body != self.expected_frontend_migration_payload:
             raise ProvisioningError("Legacy Frontend migration payload changed after binding.", error_type="safety")
 
@@ -2609,7 +2614,11 @@ def ensure_frontend_application(client: CoolifyClient, args: argparse.Namespace,
         if exc.write_outcome_unknown:
             actions.append(ActionRecord("frontend_application","create","write_outcome_unknown",request_attempted=True,write_outcome_unknown=True).to_dict())
             return {"name":frontend_application_name(args.product),"status":"write_outcome_unknown","request_attempted":True,"write_outcome_unknown":True}
-        if exc.http_status in {409,422}:
+        if (
+            exc.http_status in {409, 422}
+            and exc.method in (None, "POST")
+            and exc.path in (None, POST_FRONTEND_APPLICATION_CREATE)
+        ):
             # The POST is never repeated inside one execution: Coolify rejected
             # it, so only discovery is retried until a resource becomes visible.
             recovered, diagnostics = recover_frontend_after_conflict(client, args, context, sleeper=sleeper)
