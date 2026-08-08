@@ -63,15 +63,22 @@ APPROVED_FRONTEND_MIGRATION_FIELDS = (
         "autogenerate_domain",
     }
 ) | {"force_domain_override"}
+APPROVED_FRONTEND_REPLACEMENT_PROMOTION_FIELDS = {
+    "name",
+    "domains",
+    "force_domain_override",
+}
+APPROVED_FRONTEND_REPLACEMENT_QUARANTINE_FIELDS = {"name", "domains"}
 APPROVED_FRONTEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline"}
 ENV_PAYLOAD_FIELDS = APPROVED_BACKEND_ENV_FIELDS
-ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start", "backend_application_create", "backend_env_create", "frontend_application_create", "frontend_env_create", "backend_deploy", "frontend_deploy"}
-ALLOWED_PATCH_KINDS = {"backend_env_update", "frontend_env_update", "frontend_application_migrate"}
+ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start", "backend_application_create", "backend_env_create", "frontend_application_create", "frontend_replacement_create", "frontend_env_create", "backend_deploy", "frontend_deploy"}
+ALLOWED_PATCH_KINDS = {"backend_env_update", "frontend_env_update", "frontend_application_migrate", "frontend_replacement_promote", "frontend_replacement_quarantine"}
 FORBIDDEN_ENDPOINT_RE = re.compile(r"/(restart|stop|rollback)(?:/|$)|/applications/[^/]+/(?:start|restart|stop|rollback)(?:/|$)|/deployments/[^/]+/cancel(?:/|$)", re.I)
 NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
 FRONTEND_CONFLICT_REDISCOVERY_ATTEMPTS = 3
 FRONTEND_CONFLICT_REDISCOVERY_BASE_DELAY_SECONDS = 2.0
 FRONTEND_SOURCE_VERIFICATION_GATES = ["deployment", "runtime", "smoke"]
+FRONTEND_SOURCE_REPLACEMENT_GATES = ["deployment", "runtime", "domain_swap", "smoke"]
 FRONTEND_UNADOPTABLE_STATUSES = {"duplicate", "incompatible", "compatibility_unverified", "scope_unverified", "out_of_scope"}
 # Every Frontend status that must fail the run closed. ``out_of_scope`` is
 # included because conflict recovery can now surface a visible resource that
@@ -334,6 +341,10 @@ class CoolifyClient:
         self.expected_frontend_env_contract: dict[str, dict[str, Any]] | None = None
         self.expected_frontend_migration_uuid: str | None = None
         self.expected_frontend_migration_payload: dict[str, Any] | None = None
+        self.expected_frontend_replacement_legacy_uuid: str | None = None
+        self.expected_frontend_replacement_candidate_uuid: str | None = None
+        self.expected_frontend_replacement_promotion_payload: dict[str, Any] | None = None
+        self.expected_frontend_replacement_quarantine_payload: dict[str, Any] | None = None
         self.backend_deployment_preconditions_ok = False
         self.frontend_deployment_preconditions_ok = False
 
@@ -422,6 +433,93 @@ class CoolifyClient:
         encoded = urllib.parse.quote(self.expected_frontend_migration_uuid, safe="")
         return path == f"/applications/{encoded}"
 
+    def bind_frontend_replacement_promotion(
+        self,
+        legacy_uuid: Any,
+        candidate_uuid: Any,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """Bind the two exact PATCH targets for a staged Frontend replacement."""
+
+        contract = getattr(self, "_gm_frontend_source_replacement_contract", None)
+        expected_keys = {
+            "legacy_uuid",
+            "confirmation",
+            "candidate_name",
+            "quarantine_name",
+            "required_gates",
+        }
+        if not isinstance(contract, dict) or set(contract) != expected_keys:
+            raise ProvisioningError(
+                "Frontend replacement promotion requires an exact manifest contract.",
+                error_type="safety",
+            )
+        legacy = str(legacy_uuid or "")
+        candidate = str(candidate_uuid or "")
+        canonical_name = self.mode.frontend_application_name
+        if (
+            not legacy
+            or not candidate
+            or legacy == candidate
+            or legacy != str(contract.get("legacy_uuid") or "")
+            or contract.get("confirmation") != f"replace-source:{canonical_name}"
+            or contract.get("candidate_name") != f"{canonical_name}-candidate"
+            or contract.get("quarantine_name") != f"{canonical_name}-legacy"
+            or contract.get("required_gates") != FRONTEND_SOURCE_REPLACEMENT_GATES
+        ):
+            raise ProvisioningError(
+                "Frontend replacement UUIDs or manifest contract changed before promotion.",
+                error_type="safety",
+            )
+        if candidate != str(self.expected_frontend_application_uuid or ""):
+            raise ProvisioningError(
+                "Frontend replacement candidate must equal the verified Frontend UUID binding.",
+                error_type="safety",
+            )
+        if candidate == str(self.expected_backend_application_uuid or ""):
+            raise ProvisioningError(
+                "Frontend replacement candidate must not equal the Backend UUID.",
+                error_type="safety",
+            )
+
+        promotion_payload = {
+            "name": canonical_name,
+            "domains": f"https://{self.mode.product}.goodmorning.mx",
+            "force_domain_override": True,
+        }
+        quarantine_payload = {
+            "name": str(contract["quarantine_name"]),
+            "domains": "",
+        }
+        bound_values = (
+            self.expected_frontend_replacement_legacy_uuid,
+            self.expected_frontend_replacement_candidate_uuid,
+            self.expected_frontend_replacement_promotion_payload,
+            self.expected_frontend_replacement_quarantine_payload,
+        )
+        new_values = (legacy, candidate, promotion_payload, quarantine_payload)
+        if any(value is not None for value in bound_values) and bound_values != new_values:
+            raise ProvisioningError(
+                "Refusing to change the bound Frontend replacement promotion.",
+                error_type="safety",
+            )
+        self.expected_frontend_replacement_legacy_uuid = legacy
+        self.expected_frontend_replacement_candidate_uuid = candidate
+        self.expected_frontend_replacement_promotion_payload = dict(promotion_payload)
+        self.expected_frontend_replacement_quarantine_payload = dict(quarantine_payload)
+        return dict(promotion_payload), dict(quarantine_payload)
+
+    def _frontend_replacement_promotion_path_matches_binding(self, path: str) -> bool:
+        identifier = self.expected_frontend_replacement_candidate_uuid
+        if identifier is None:
+            return False
+        return path == f"/applications/{urllib.parse.quote(identifier, safe='')}"
+
+    def _frontend_replacement_quarantine_path_matches_binding(self, path: str) -> bool:
+        identifier = self.expected_frontend_replacement_legacy_uuid
+        if identifier is None:
+            return False
+        return path == f"/applications/{urllib.parse.quote(identifier, safe='')}"
+
     def _frontend_env_path_matches_binding(self, path: str) -> bool:
         if self.expected_frontend_application_uuid is None:
             return False
@@ -505,6 +603,109 @@ class CoolifyClient:
             raise ProvisioningError("Legacy Frontend migration must explicitly acknowledge the verified domain conflict.", error_type="safety")
         if json_body != self.expected_frontend_migration_payload:
             raise ProvisioningError("Legacy Frontend migration payload changed after binding.", error_type="safety")
+
+    def _validate_frontend_replacement_create_payload(
+        self,
+        json_body: dict[str, Any] | None,
+    ) -> None:
+        contract = getattr(self, "_gm_frontend_source_replacement_contract", None)
+        if not isinstance(contract, dict):
+            raise ProvisioningError(
+                "Frontend replacement creation requires an exact manifest contract.",
+                error_type="safety",
+            )
+        if not isinstance(json_body, dict) or set(json_body) != APPROVED_FRONTEND_APPLICATION_FIELDS:
+            raise ProvisioningError(
+                "Frontend replacement payload fields do not match the approved Application contract.",
+                error_type="safety",
+            )
+        canonical_name = self.mode.frontend_application_name
+        checks = {
+            "name": contract.get("candidate_name"),
+            "git_branch": "main",
+            "build_pack": "dockerfile",
+            "base_directory": "/frontend",
+            "dockerfile_location": "/Dockerfile",
+            "ports_exposes": "80",
+            "domains": "",
+            "instant_deploy": False,
+            "is_auto_deploy_enabled": False,
+            "autogenerate_domain": False,
+            "health_check_enabled": True,
+            "health_check_path": "/",
+            "health_check_port": "80",
+            "health_check_method": "GET",
+            "health_check_scheme": "http",
+            "health_check_return_code": 200,
+        }
+        if (
+            contract.get("confirmation") != f"replace-source:{canonical_name}"
+            or contract.get("candidate_name") != f"{canonical_name}-candidate"
+            or contract.get("quarantine_name") != f"{canonical_name}-legacy"
+            or contract.get("required_gates") != FRONTEND_SOURCE_REPLACEMENT_GATES
+        ):
+            raise ProvisioningError(
+                "Frontend replacement manifest contract does not match this product.",
+                error_type="safety",
+            )
+        for key, expected in checks.items():
+            if json_body.get(key) != expected:
+                raise ProvisioningError(
+                    f"Frontend replacement payload field {key} changed from the isolated candidate contract.",
+                    error_type="safety",
+                )
+        for key in ("project_uuid", "environment_uuid", "server_uuid", "destination_uuid", "github_app_uuid"):
+            expected = self.frontend_application_bindings.get(key)
+            if expected not in (None, "") and str(json_body.get(key)) != str(expected):
+                raise ProvisioningError(
+                    f"Frontend replacement binding {key} does not match the selected binding.",
+                    error_type="safety",
+                )
+        if json_body.get("environment_name") != "production":
+            raise ProvisioningError(
+                "Frontend replacement must target the production environment.",
+                error_type="safety",
+            )
+        expected_repository = self.frontend_application_bindings.get("git_repository")
+        if (
+            not expected_repository
+            or normalize_repository(json_body.get("git_repository"))
+            != normalize_repository(expected_repository)
+        ):
+            raise ProvisioningError(
+                "Frontend replacement repository does not match the selected binding.",
+                error_type="safety",
+            )
+
+    def _validate_frontend_replacement_promotion_payload(
+        self,
+        json_body: dict[str, Any] | None,
+    ) -> None:
+        if (
+            not isinstance(json_body, dict)
+            or set(json_body) != APPROVED_FRONTEND_REPLACEMENT_PROMOTION_FIELDS
+            or json_body != self.expected_frontend_replacement_promotion_payload
+            or json_body.get("force_domain_override") is not True
+        ):
+            raise ProvisioningError(
+                "Frontend replacement promotion payload changed after binding.",
+                error_type="safety",
+            )
+
+    def _validate_frontend_replacement_quarantine_payload(
+        self,
+        json_body: dict[str, Any] | None,
+    ) -> None:
+        if (
+            not isinstance(json_body, dict)
+            or set(json_body) != APPROVED_FRONTEND_REPLACEMENT_QUARANTINE_FIELDS
+            or json_body != self.expected_frontend_replacement_quarantine_payload
+            or json_body.get("domains") != ""
+        ):
+            raise ProvisioningError(
+                "Frontend replacement quarantine payload changed after binding.",
+                error_type="safety",
+            )
 
     def _validate_frontend_env_payload(self, json_body: dict[str, Any] | None) -> None:
         if not isinstance(json_body, dict):
@@ -623,11 +824,21 @@ class CoolifyClient:
                 if not self._frontend_application_migration_path_matches_binding(path):
                     raise ProvisioningError("PATCH endpoint is limited to the explicitly bound legacy Frontend UUID.", error_type="safety", method=method, path=path)
                 self._validate_frontend_application_migration_payload(json_body)
+            elif post_kind == "frontend_replacement_promote" and getattr(self.mode, "frontend_deployment_enabled", False):
+                self.mode.assert_write_gates()
+                if not self._frontend_replacement_promotion_path_matches_binding(path):
+                    raise ProvisioningError("Frontend promotion PATCH must target the bound candidate UUID.", error_type="safety", method=method, path=path)
+                self._validate_frontend_replacement_promotion_payload(json_body)
+            elif post_kind == "frontend_replacement_quarantine" and getattr(self.mode, "frontend_deployment_enabled", False):
+                self.mode.assert_write_gates()
+                if not self._frontend_replacement_quarantine_path_matches_binding(path):
+                    raise ProvisioningError("Frontend quarantine PATCH must target the exact legacy UUID.", error_type="safety", method=method, path=path)
+                self._validate_frontend_replacement_quarantine_payload(json_body)
             else:
                 raise ProvisioningError("Refusing non-read-only Coolify method PATCH. PATCH is allowed only for verified Application env variables after env gates.", error_type="safety", method=method, path=path)
         if method == "POST":
             self.mode.assert_write_gates()
-            if path.startswith("/applications") and post_kind not in {"backend_application_create", "backend_env_create", "frontend_application_create", "frontend_env_create"}:
+            if path.startswith("/applications") and post_kind not in {"backend_application_create", "backend_env_create", "frontend_application_create", "frontend_replacement_create", "frontend_env_create"}:
                 raise ProvisioningError("Only Backend/Frontend Application creation/env writes are allowlisted for applications in Stage 6.", error_type="safety", method=method, path=path)
             if post_kind == "backend_application_create" and not getattr(self.mode, "backend_application_writes_enabled", False):
                 raise ProvisioningError("Backend Application creation requires COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES=true and exact --confirm-backend-application.", error_type="safety", method=method, path=path)
@@ -635,6 +846,8 @@ class CoolifyClient:
                 raise ProvisioningError("Backend env writes require COOLIFY_ALLOW_BACKEND_ENV_WRITES=true and exact --confirm-backend-environment.", error_type="safety", method=method, path=path)
             if post_kind == "frontend_application_create" and not getattr(self.mode, "frontend_application_writes_enabled", False):
                 raise ProvisioningError("Frontend Application creation requires COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES=true and exact --confirm-frontend-application.", error_type="safety", method=method, path=path)
+            if post_kind == "frontend_replacement_create" and not getattr(self.mode, "frontend_application_writes_enabled", False):
+                raise ProvisioningError("Frontend replacement creation requires the exact Frontend Application write gates.", error_type="safety", method=method, path=path)
             if post_kind == "frontend_env_create" and not getattr(self.mode, "frontend_env_writes_enabled", False):
                 raise ProvisioningError("Frontend env writes require COOLIFY_ALLOW_FRONTEND_ENV_WRITES=true and exact --confirm-frontend-environment.", error_type="safety", method=method, path=path)
             if post_kind == "backend_deploy":
@@ -665,6 +878,10 @@ class CoolifyClient:
                 if path != POST_FRONTEND_APPLICATION_CREATE:
                     raise ProvisioningError("Frontend Application creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
                 self._validate_frontend_application_payload(json_body)
+            if post_kind == "frontend_replacement_create":
+                if path != POST_FRONTEND_APPLICATION_CREATE:
+                    raise ProvisioningError("Frontend replacement creation POST endpoint is not allowlisted.", error_type="safety", method=method, path=path)
+                self._validate_frontend_replacement_create_payload(json_body)
             if post_kind == "frontend_env_create":
                 if not self._frontend_env_path_matches_binding(path):
                     raise ProvisioningError("Frontend env create endpoint is limited to the verified Frontend Application UUID binding.", error_type="safety", method=method, path=path)
@@ -792,6 +1009,9 @@ class CoolifyClient:
     def create_frontend_application(self, payload: dict[str, Any]) -> Response:
         return self.request("POST", POST_FRONTEND_APPLICATION_CREATE, json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_application_create")
 
+    def create_frontend_replacement_application(self, payload: dict[str, Any]) -> Response:
+        return self.request("POST", POST_FRONTEND_APPLICATION_CREATE, json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_replacement_create")
+
     def migrate_frontend_application(self, uuid: str, create_payload: dict[str, Any]) -> Response:
         patch_payload = self.bind_frontend_application_migration(uuid, create_payload)
         encoded = urllib.parse.quote(str(uuid), safe="")
@@ -802,6 +1022,44 @@ class CoolifyClient:
             allowed_statuses={200, 201, 202},
             post_kind="frontend_application_migrate",
         )
+
+    def promote_frontend_replacement(
+        self,
+        legacy_uuid: str,
+        candidate_uuid: str,
+    ) -> tuple[Response, Response]:
+        promotion_payload, quarantine_payload = self.bind_frontend_replacement_promotion(
+            legacy_uuid,
+            candidate_uuid,
+        )
+        candidate_response = self.request(
+            "PATCH",
+            f"/applications/{urllib.parse.quote(str(candidate_uuid), safe='')}",
+            json_body=promotion_payload,
+            allowed_statuses={200, 201, 202},
+            post_kind="frontend_replacement_promote",
+        )
+        try:
+            legacy_response = self.request(
+                "PATCH",
+                f"/applications/{urllib.parse.quote(str(legacy_uuid), safe='')}",
+                json_body=quarantine_payload,
+                allowed_statuses={200, 201, 202},
+                post_kind="frontend_replacement_quarantine",
+            )
+        except ProvisioningError as exc:
+            raise ProvisioningError(
+                "Frontend candidate was promoted but legacy quarantine did not complete.",
+                error_type=exc.error_type,
+                code=2,
+                http_status=exc.http_status,
+                method=exc.method,
+                path=exc.path,
+                write_performed=True,
+                write_outcome_unknown=exc.write_outcome_unknown,
+                request_attempted=True,
+            ) from exc
+        return candidate_response, legacy_response
 
     def create_frontend_env(self, uuid: str, payload: dict[str, Any]) -> Response:
         return self.request("POST", f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_env_create")
@@ -2460,8 +2718,24 @@ def frontend_payload_preview(payload: dict[str, Any]) -> dict[str, Any]:
     return redact(dict(payload))
 
 
-def frontend_application_differences(item: dict[str, Any], args: argparse.Namespace, context: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    expected = frontend_create_payload(args, context)
+def frontend_replacement_create_payload(
+    args: argparse.Namespace,
+    bindings: dict[str, Any],
+    candidate_name: str,
+) -> dict[str, Any]:
+    payload = frontend_create_payload(args, bindings)
+    payload["name"] = candidate_name
+    payload["domains"] = ""
+    return payload
+
+
+def frontend_application_differences(
+    item: dict[str, Any],
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    expected: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    expected = expected or frontend_create_payload(args, context)
     paths = {
         "name": ("name",), "git_repository": ("git_repository", "repository"), "git_branch": ("git_branch", "branch"),
         "build_pack": ("build_pack", "buildpack"), "base_directory": ("base_directory",), "dockerfile_location": ("dockerfile_location", "dockerfile"),
@@ -2472,6 +2746,8 @@ def frontend_application_differences(item: dict[str, Any], args: argparse.Namesp
     for key, ps in paths.items():
         actual = nested_field(item, *ps); exp = expected.get(key)
         if actual in (None, ""):
+            if key == "domains" and exp == "":
+                continue
             unver.append({"field": key, "expected": exp})
         elif key == "github_app_uuid":
             if not github_app_identifier_matches(actual, context):
@@ -2499,22 +2775,51 @@ def frontend_application_differences(item: dict[str, Any], args: argparse.Namesp
     return diffs, unver
 
 
-def classify_frontend_application(matches: list[dict[str, Any]], args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
-    name = frontend_application_name(args.product)
-    if not matches: return {"name": name, "status": "absent"}
+def classify_frontend_application_against(
+    matches: list[dict[str, Any]],
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    expected: dict[str, Any],
+) -> dict[str, Any]:
+    name = str(expected.get("name") or "")
+    if not matches:
+        return {"name": name, "status": "absent"}
     scoped=[]; reports=[]
     for item in matches:
         scope, details, scope_meta = application_scope_identity(item, context)
         reports.append({"resource": operational_summary(item), "scope": scope, "scope_details": details, **scope_meta})
-        if scope == "in_scope": scoped.append(item)
+        if scope == "in_scope":
+            scoped.append(item)
     if not scoped:
-        return {"name": name, "status": "out_of_scope" if all(r["scope"]=="out_of_scope" for r in reports) else "scope_unverified", "matches": reports}
-    if len(scoped)>1: return {"name": name, "status": "duplicate", "matches": [operational_summary(i) for i in scoped]}
-    item=scoped[0]
-    diffs, unver = frontend_application_differences(item,args,context)
-    if diffs: return {"name": name, "status": "incompatible", "uuid": field(item,"uuid","id"), "differences": diffs, "matches": reports}
-    if unver: return {"name": name, "status": "compatibility_unverified", "uuid": field(item,"uuid","id"), "unverified_fields": unver, "matches": reports}
-    return {"name": name, "status": "exists", "uuid": field(item,"uuid","id"), "matches": reports}
+        return {
+            "name": name,
+            "status": "out_of_scope" if all(report["scope"] == "out_of_scope" for report in reports) else "scope_unverified",
+            "matches": reports,
+        }
+    if len(scoped) > 1:
+        return {"name": name, "status": "duplicate", "matches": [operational_summary(item) for item in scoped]}
+    item = scoped[0]
+    differences, unverified = frontend_application_differences(
+        item,
+        args,
+        context,
+        expected,
+    )
+    identifier = field(item, "uuid", "id")
+    if differences:
+        return {"name": name, "status": "incompatible", "uuid": identifier, "differences": differences, "matches": reports}
+    if unverified:
+        return {"name": name, "status": "compatibility_unverified", "uuid": identifier, "unverified_fields": unverified, "matches": reports}
+    return {"name": name, "status": "exists", "uuid": identifier, "matches": reports}
+
+
+def classify_frontend_application(matches: list[dict[str, Any]], args: argparse.Namespace, context: dict[str, Any]) -> dict[str, Any]:
+    return classify_frontend_application_against(
+        matches,
+        args,
+        context,
+        frontend_create_payload(args, context),
+    )
 
 
 def deferred_frontend_source_verification(
@@ -2572,6 +2877,100 @@ def deferred_frontend_source_verification(
     }
 
 
+def frontend_source_replacement_contract(
+    client: CoolifyClient,
+    args: argparse.Namespace,
+) -> dict[str, Any] | None:
+    contract = getattr(client, "_gm_frontend_source_replacement_contract", None)
+    expected_keys = {
+        "legacy_uuid",
+        "confirmation",
+        "candidate_name",
+        "quarantine_name",
+        "required_gates",
+    }
+    canonical_name = frontend_application_name(args.product)
+    if (
+        not isinstance(contract, dict)
+        or set(contract) != expected_keys
+        or contract.get("confirmation") != f"replace-source:{canonical_name}"
+        or contract.get("candidate_name") != f"{canonical_name}-candidate"
+        or contract.get("quarantine_name") != f"{canonical_name}-legacy"
+        or contract.get("required_gates") != FRONTEND_SOURCE_REPLACEMENT_GATES
+        or not str(contract.get("legacy_uuid") or "")
+    ):
+        return None
+    return dict(contract)
+
+
+def frontend_source_replacement_is_required(
+    classified: dict[str, Any],
+    canonical_matches: list[dict[str, Any]],
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    contract: dict[str, Any],
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Recognize the exact legacy state or a partially completed safe swap."""
+
+    legacy_uuid = str(contract.get("legacy_uuid") or "")
+    legacy_matches = [
+        item
+        for item in canonical_matches
+        if str(field(item, "uuid", "id") or "") == legacy_uuid
+    ]
+    if len(legacy_matches) != 1:
+        return False, []
+
+    unverified = classified.get("unverified_fields")
+    initial_state = (
+        classified.get("status") == "compatibility_unverified"
+        and str(classified.get("uuid") or "") == legacy_uuid
+        and isinstance(unverified, list)
+        and len(unverified) == 1
+        and isinstance(unverified[0], dict)
+        and unverified[0].get("field") == "github_app_uuid"
+        and str(unverified[0].get("expected") or "")
+        == str(context.get("github_app_uuid") or "")
+    )
+    if initial_state:
+        return True, []
+
+    if classified.get("status") != "duplicate":
+        return False, []
+    promoted=[]
+    expected = frontend_create_payload(args, context)
+    for item in canonical_matches:
+        if str(field(item, "uuid", "id") or "") == legacy_uuid:
+            continue
+        candidate = classify_frontend_application_against(
+            [item],
+            args,
+            context,
+            expected,
+        )
+        if candidate.get("status") == "exists":
+            promoted.append(item)
+    return (len(promoted) == 1), promoted
+
+
+def discovered_frontend_matches_named(
+    client: CoolifyClient,
+    name: str,
+) -> list[dict[str, Any]]:
+    matches=[]
+    for item in item_list(client.get("/applications")):
+        if str(field(item, "name") or "") != name:
+            continue
+        identifier=field(item,"uuid","id")
+        if identifier:
+            try:
+                item=hydrate_application_by_uuid(client,identifier,item)
+            except ProvisioningError:
+                pass
+        matches.append(item)
+    return matches
+
+
 def exact_frontend_matches(client: CoolifyClient, args: argparse.Namespace) -> list[dict[str, Any]]:
     name=frontend_application_name(args.product)
     return [i for i in item_list(client.get("/applications")) if str(field(i,"name") or "") == name]
@@ -2586,14 +2985,10 @@ def discovered_frontend_matches(client: CoolifyClient, args: argparse.Namespace)
     can only ever classify as unverified.
     """
 
-    matches=[]
-    for item in exact_frontend_matches(client,args):
-        uuid=field(item,"uuid","id")
-        if uuid:
-            try: item=hydrate_application_by_uuid(client,uuid,item)
-            except ProvisioningError: pass
-        matches.append(item)
-    return matches
+    return discovered_frontend_matches_named(
+        client,
+        frontend_application_name(args.product),
+    )
 
 
 def frontend_conflict_backoff_delay(attempt: int) -> float:
@@ -2659,12 +3054,288 @@ def backend_allows_frontend(backend: dict[str, Any]) -> bool:
     return backend.get("status") in {"exists", "created"} and bool(backend.get("uuid"))
 
 
+def frontend_replacement_result(
+    args: argparse.Namespace,
+    candidate: dict[str, Any],
+    contract: dict[str, Any],
+    replacement_status: str,
+) -> dict[str, Any]:
+    actual_name = candidate.get("name") or contract.get("candidate_name")
+    return {
+        **candidate,
+        "name": frontend_application_name(args.product),
+        "actual_name": actual_name,
+        "replacement": {
+            "status": replacement_status,
+            "legacy_uuid": contract.get("legacy_uuid"),
+            "candidate_uuid": candidate.get("uuid"),
+            "candidate_name": contract.get("candidate_name"),
+            "quarantine_name": contract.get("quarantine_name"),
+            "required_gates": list(FRONTEND_SOURCE_REPLACEMENT_GATES),
+        },
+    }
+
+
+def ensure_frontend_replacement_candidate(
+    client: CoolifyClient,
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    mode: ExecutionMode,
+    actions: list[dict[str, Any]],
+    backend: dict[str, Any],
+    contract: dict[str, Any],
+    promoted_matches: list[dict[str, Any]],
+    *,
+    sleeper: Callable[[float], None] | None = None,
+) -> dict[str, Any]:
+    """Create or reuse an isolated, source-verified replacement candidate."""
+
+    candidate_name = str(contract["candidate_name"])
+    if promoted_matches:
+        expected = frontend_create_payload(args, context)
+        matches = promoted_matches
+        replacement_status = "candidate_promoted_legacy_pending"
+    else:
+        expected = frontend_replacement_create_payload(args, context, candidate_name)
+        matches = discovered_frontend_matches_named(client, candidate_name)
+        replacement_status = "candidate_ready_for_deployment"
+    classified = classify_frontend_application_against(
+        matches,
+        args,
+        context,
+        expected,
+    )
+    status = classified.get("status")
+    if status == "exists":
+        if hasattr(client, "bind_frontend_application_uuid"):
+            client.bind_frontend_application_uuid(classified.get("uuid"), context)
+        actions.append(
+            ActionRecord(
+                "frontend_replacement",
+                "reuse_candidate",
+                "exists",
+                verified=True,
+                details={"candidate_name": candidate_name},
+            ).to_dict()
+        )
+        return frontend_replacement_result(
+            args,
+            classified,
+            contract,
+            replacement_status,
+        )
+    if status in FRONTEND_UNADOPTABLE_STATUSES:
+        blocked = {
+            **classified,
+            "status": "recreate_required" if status == "incompatible" else status,
+        }
+        return frontend_replacement_result(
+            args,
+            blocked,
+            contract,
+            "candidate_unadoptable",
+        )
+    if not backend_allows_frontend(backend):
+        blocked_status = "planned_after_backend" if not mode.is_apply else "blocked"
+        return frontend_replacement_result(
+            args,
+            {
+                "name": candidate_name,
+                "status": blocked_status,
+                "reason": "backend_application_not_verified",
+            },
+            contract,
+            "candidate_blocked",
+        )
+    if not mode.is_apply:
+        actions.append(
+            ActionRecord(
+                "frontend_replacement",
+                "plan_create_candidate",
+                "would_create",
+            ).to_dict()
+        )
+        return frontend_replacement_result(
+            args,
+            {
+                "name": candidate_name,
+                "status": "would_create",
+                "create_payload_preview": frontend_payload_preview(expected),
+            },
+            contract,
+            "candidate_planned",
+        )
+    if not mode.frontend_application_writes_enabled:
+        return frontend_replacement_result(
+            args,
+            {
+                "name": candidate_name,
+                "status": "blocked",
+                "reason": "frontend_application_gates_incomplete",
+            },
+            contract,
+            "candidate_blocked",
+        )
+
+    actions.append(
+        ActionRecord(
+            "frontend_replacement",
+            "attempt_create_candidate",
+            "attempted",
+        ).to_dict()
+    )
+    try:
+        response = client.create_frontend_replacement_application(expected)
+    except ProvisioningError as exc:
+        if exc.write_outcome_unknown:
+            actions.append(
+                ActionRecord(
+                    "frontend_replacement",
+                    "create_candidate",
+                    "write_outcome_unknown",
+                    request_attempted=True,
+                    write_outcome_unknown=True,
+                ).to_dict()
+            )
+            return frontend_replacement_result(
+                args,
+                {
+                    "name": candidate_name,
+                    "status": "write_outcome_unknown",
+                    "request_attempted": True,
+                    "write_outcome_unknown": True,
+                },
+                contract,
+                "candidate_write_outcome_unknown",
+            )
+        if exc.http_status not in {409, 422} or exc.method not in (None, "POST"):
+            raise
+        sleeper = sleeper or (lambda seconds: None if seconds <= 0 else __import__("time").sleep(seconds))
+        recovered = None
+        for attempt in range(1, FRONTEND_CONFLICT_REDISCOVERY_ATTEMPTS + 1):
+            recovered_matches = discovered_frontend_matches_named(client, candidate_name)
+            recovered = classify_frontend_application_against(
+                recovered_matches,
+                args,
+                context,
+                expected,
+            )
+            if recovered.get("status") != "absent":
+                break
+            if attempt < FRONTEND_CONFLICT_REDISCOVERY_ATTEMPTS:
+                sleeper(frontend_conflict_backoff_delay(attempt))
+        if recovered is not None and recovered.get("status") == "exists":
+            if hasattr(client, "bind_frontend_application_uuid"):
+                client.bind_frontend_application_uuid(recovered.get("uuid"), context)
+            actions.append(
+                ActionRecord(
+                    "frontend_replacement",
+                    "recover_candidate_after_conflict",
+                    "exists",
+                    request_attempted=True,
+                    verified=True,
+                    recovered_after_conflict=True,
+                ).to_dict()
+            )
+            return frontend_replacement_result(
+                args,
+                recovered,
+                contract,
+                "candidate_ready_for_deployment",
+            )
+        return frontend_replacement_result(
+            args,
+            {
+                **(recovered or {"name": candidate_name}),
+                "status": "blocked",
+                "reason": "candidate_conflict_without_verified_resource",
+            },
+            contract,
+            "candidate_blocked",
+        )
+
+    item = response.data.get("data") if isinstance(response.data, dict) and isinstance(response.data.get("data"), dict) else response.data
+    identifier = field(item, "uuid", "id") if isinstance(item, dict) else None
+    if not identifier:
+        actions.append(
+            ActionRecord(
+                "frontend_replacement",
+                "create_candidate",
+                "created_unverified",
+                request_attempted=True,
+                write_performed=True,
+            ).to_dict()
+        )
+        return frontend_replacement_result(
+            args,
+            {"name": candidate_name, "status": "created_unverified", "write_performed": True},
+            contract,
+            "candidate_created_unverified",
+        )
+    try:
+        detail = hydrate_application_by_uuid(client, identifier, item)
+    except ProvisioningError:
+        detail = item
+    verified = classify_frontend_application_against(
+        [detail] if isinstance(detail, dict) else [],
+        args,
+        context,
+        expected,
+    )
+    if verified.get("status") != "exists":
+        return frontend_replacement_result(
+            args,
+            {**verified, "status": "created_unverified", "write_performed": True},
+            contract,
+            "candidate_created_unverified",
+        )
+    if hasattr(client, "bind_frontend_application_uuid"):
+        client.bind_frontend_application_uuid(verified.get("uuid"), context)
+    actions.append(
+        ActionRecord(
+            "frontend_replacement",
+            "create_candidate",
+            "created",
+            request_attempted=True,
+            write_performed=True,
+            verified=True,
+        ).to_dict()
+    )
+    return frontend_replacement_result(
+        args,
+        {**verified, "status": "created"},
+        contract,
+        "candidate_ready_for_deployment",
+    )
+
+
 def ensure_frontend_application(client: CoolifyClient, args: argparse.Namespace, context: dict[str, Any], mode: ExecutionMode, actions: list[dict[str, Any]], backend: dict[str, Any], *, sleeper: Callable[[float], None] | None = None) -> dict[str, Any]:
     if hasattr(client, "bind_frontend_application_bindings"):
         client.bind_frontend_application_bindings(dict(context))
     matches=discovered_frontend_matches(client,args)
     classified=classify_frontend_application(matches,args,context)
     st=classified["status"]
+    replacement_contract = frontend_source_replacement_contract(client, args)
+    if replacement_contract is not None:
+        replacement_required, promoted_matches = frontend_source_replacement_is_required(
+            classified,
+            matches,
+            args,
+            context,
+            replacement_contract,
+        )
+        if replacement_required:
+            return ensure_frontend_replacement_candidate(
+                client,
+                args,
+                context,
+                mode,
+                actions,
+                backend,
+                replacement_contract,
+                promoted_matches,
+                sleeper=sleeper,
+            )
     if st == "exists":
         if hasattr(client, "bind_frontend_application_uuid"):
             client.bind_frontend_application_uuid(classified.get("uuid"), context)
@@ -3468,7 +4139,7 @@ def frontend_deployment_preflight(args: argparse.Namespace, postgres: dict[str, 
     return (not blockers), blockers
 
 
-def poll_frontend_deployment(client: CoolifyClient, args: argparse.Namespace, deployment_uuid: str, frontend_uuid: str, sleeper: Callable[[float], None] | None = None, clock: Callable[[], float] | None = None) -> dict[str, Any]:
+def poll_frontend_deployment(client: CoolifyClient, args: argparse.Namespace, deployment_uuid: str, frontend_uuid: str, sleeper: Callable[[float], None] | None = None, clock: Callable[[], float] | None = None, expected_application_name: str | None = None) -> dict[str, Any]:
     sleeper=sleeper or (lambda seconds: None if seconds <= 0 else __import__("time").sleep(seconds)); clock=clock or __import__("time").monotonic
     start=clock(); attempts=0; errors=0; consecutive=0
     while clock() - start <= args.frontend_deployment_timeout:
@@ -3485,7 +4156,8 @@ def poll_frontend_deployment(client: CoolifyClient, args: argparse.Namespace, de
         resource_uuid=field(item,"resource_uuid","application_uuid")
         if resource_uuid not in (None, "") and str(resource_uuid) != str(frontend_uuid): return frontend_deployment_result("frontend_uuid_mismatch", deployment_uuid=deployment_uuid, poll_attempts=attempts, poll_errors=errors)
         app_name=field(item,"application_name")
-        if app_name not in (None, "") and str(app_name) != frontend_application_name(args.product): return frontend_deployment_result("application_name_mismatch", deployment_uuid=deployment_uuid, poll_attempts=attempts, poll_errors=errors)
+        expected_name = expected_application_name or frontend_application_name(args.product)
+        if app_name not in (None, "") and str(app_name) != expected_name: return frontend_deployment_result("application_name_mismatch", deployment_uuid=deployment_uuid, poll_attempts=attempts, poll_errors=errors)
         status=str(field(item,"status") or "")
         if status == "finished": return frontend_deployment_result("finished", deployment_uuid=deployment_uuid, terminal=True, verified=True, poll_attempts=attempts, poll_errors=errors)
         if status in {"failed", "cancelled-by-user"}: return frontend_deployment_result(status, deployment_uuid=deployment_uuid, terminal=True, poll_attempts=attempts, poll_errors=errors)
@@ -3494,12 +4166,13 @@ def poll_frontend_deployment(client: CoolifyClient, args: argparse.Namespace, de
     return frontend_deployment_result("deployment_timeout", deployment_uuid=deployment_uuid, poll_attempts=attempts, poll_errors=errors, timed_out=True)
 
 
-def read_frontend_runtime_once(client: CoolifyClient, args: argparse.Namespace, frontend_uuid: str) -> dict[str, Any]:
+def read_frontend_runtime_once(client: CoolifyClient, args: argparse.Namespace, frontend_uuid: str, expected_application_name: str | None = None) -> dict[str, Any]:
     data=client.get(f"/applications/{urllib.parse.quote(str(frontend_uuid), safe='')}")
     item=data.get("data") if isinstance(data,dict) and isinstance(data.get("data"),dict) else data
     if not isinstance(item,dict) or str(field(item,"uuid","id") or "") != str(frontend_uuid): return frontend_runtime_readiness_result("runtime_status_unverified")
     name=field(item,"name")
-    if name not in (None, "") and str(name) != frontend_application_name(args.product): return frontend_runtime_readiness_result("runtime_status_unverified")
+    expected_name = expected_application_name or frontend_application_name(args.product)
+    if name not in (None, "") and str(name) != expected_name: return frontend_runtime_readiness_result("runtime_status_unverified")
     status=str(field(item,"status","human_status") or "")
     if status in RUNTIME_HEALTHY_STATUSES: return frontend_runtime_readiness_result(status, healthy=True, verified=True)
     if status in RUNTIME_UNHEALTHY_STATUSES: return frontend_runtime_readiness_result(status, healthy=False, verified=True)
@@ -3507,12 +4180,12 @@ def read_frontend_runtime_once(client: CoolifyClient, args: argparse.Namespace, 
     return frontend_runtime_readiness_result("runtime_status_unverified")
 
 
-def verify_frontend_runtime(client: CoolifyClient, args: argparse.Namespace, frontend_uuid: str, sleeper: Callable[[float], None] | None = None, clock: Callable[[], float] | None = None) -> dict[str, Any]:
+def verify_frontend_runtime(client: CoolifyClient, args: argparse.Namespace, frontend_uuid: str, sleeper: Callable[[float], None] | None = None, clock: Callable[[], float] | None = None, expected_application_name: str | None = None) -> dict[str, Any]:
     sleeper=sleeper or (lambda seconds: None if seconds <= 0 else __import__("time").sleep(seconds)); clock=clock or __import__("time").monotonic
     start=clock(); attempts=0; errors=0; consecutive=0; last_status="runtime_timeout"
     while clock() - start <= args.frontend_runtime_timeout:
         attempts += 1
-        try: result=read_frontend_runtime_once(client,args,frontend_uuid)
+        try: result=read_frontend_runtime_once(client,args,frontend_uuid,expected_application_name)
         except ProvisioningError:
             errors += 1; consecutive += 1
             if consecutive > args.frontend_runtime_max_poll_errors: return frontend_runtime_readiness_result("runtime_poll_failed", poll_attempts=attempts, poll_errors=errors)
@@ -3528,8 +4201,154 @@ def frontend_deployment_request_action(status: str, exc: ProvisioningError | Non
     return ActionRecord("frontend_deployment", "request", status, request_attempted=True if exc is None else exc.request_attempted, write_performed=True if exc is None else exc.write_performed, write_outcome_unknown=False if exc is None else exc.write_outcome_unknown).to_dict()
 
 
+def finalize_frontend_replacement(
+    client: CoolifyClient,
+    args: argparse.Namespace,
+    frontend: dict[str, Any],
+    actions: list[dict[str, Any]],
+) -> tuple[bool, list[dict[str, Any]]]:
+    """Transfer the public identity only after candidate deployment/runtime pass."""
+
+    replacement = frontend.get("replacement")
+    if not isinstance(replacement, dict):
+        return True, []
+    candidate_uuid = str(frontend.get("uuid") or "")
+    legacy_uuid = str(replacement.get("legacy_uuid") or "")
+    state = str(replacement.get("status") or "")
+    if (
+        not candidate_uuid
+        or not legacy_uuid
+        or candidate_uuid == legacy_uuid
+        or state not in {"candidate_ready_for_deployment", "candidate_promoted_legacy_pending"}
+    ):
+        replacement["status"] = "domain_swap_blocked"
+        return False, [{"resource": "frontend_replacement", "reason": "replacement_identity_unverified"}]
+
+    try:
+        candidate_before = hydrate_application_by_uuid(client, candidate_uuid, {})
+        legacy_before = hydrate_application_by_uuid(client, legacy_uuid, {})
+    except ProvisioningError:
+        replacement["status"] = "domain_swap_blocked"
+        return False, [{"resource": "frontend_replacement", "reason": "pre_swap_hydration_failed"}]
+
+    if state == "candidate_promoted_legacy_pending":
+        candidate_expected = frontend_create_payload(args, client.frontend_application_bindings)
+    else:
+        candidate_expected = frontend_replacement_create_payload(
+            args,
+            client.frontend_application_bindings,
+            str(replacement.get("candidate_name") or ""),
+        )
+    candidate_classification = classify_frontend_application_against(
+        [candidate_before],
+        args,
+        client.frontend_application_bindings,
+        candidate_expected,
+    )
+    legacy_name = str(field(legacy_before, "name") or "")
+    legacy_domain = normalize_domain(nested_field(legacy_before, "domains", "domain", "fqdn"))
+    canonical_name = frontend_application_name(args.product)
+    canonical_domain = frontend_domain(args.product)
+    legacy_state_valid = (
+        str(field(legacy_before, "uuid", "id") or "") == legacy_uuid
+        and legacy_name == canonical_name
+        and legacy_domain == canonical_domain
+    )
+    if candidate_classification.get("status") != "exists" or not legacy_state_valid:
+        replacement["status"] = "domain_swap_blocked"
+        return False, [{"resource": "frontend_replacement", "reason": "pre_swap_identity_drift"}]
+    if not hasattr(client, "promote_frontend_replacement"):
+        replacement["status"] = "domain_swap_blocked"
+        return False, [{"resource": "frontend_replacement", "reason": "promotion_client_unavailable"}]
+
+    actions.append(
+        ActionRecord(
+            "frontend_replacement",
+            "attempt_domain_swap",
+            "attempted",
+            details={"candidate_uuid": candidate_uuid, "legacy_uuid": legacy_uuid},
+        ).to_dict()
+    )
+    try:
+        client.promote_frontend_replacement(legacy_uuid, candidate_uuid)
+    except ProvisioningError as exc:
+        replacement["status"] = (
+            "domain_swap_outcome_unknown"
+            if exc.write_outcome_unknown
+            else "domain_swap_partial" if exc.write_performed else "domain_swap_failed"
+        )
+        actions.append(
+            ActionRecord(
+                "frontend_replacement",
+                "domain_swap",
+                replacement["status"],
+                request_attempted=exc.request_attempted,
+                write_performed=exc.write_performed,
+                write_outcome_unknown=exc.write_outcome_unknown,
+            ).to_dict()
+        )
+        return False, [{"resource": "frontend_replacement", "reason": replacement["status"]}]
+
+    try:
+        candidate_after = hydrate_application_by_uuid(client, candidate_uuid, {})
+        legacy_after = hydrate_application_by_uuid(client, legacy_uuid, {})
+    except ProvisioningError:
+        replacement["status"] = "domain_swap_unverified"
+        actions.append(
+            ActionRecord(
+                "frontend_replacement",
+                "domain_swap",
+                "domain_swap_unverified",
+                request_attempted=True,
+                write_performed=True,
+            ).to_dict()
+        )
+        return False, [{"resource": "frontend_replacement", "reason": "post_swap_hydration_failed"}]
+
+    canonical = classify_frontend_application_against(
+        [candidate_after],
+        args,
+        client.frontend_application_bindings,
+        frontend_create_payload(args, client.frontend_application_bindings),
+    )
+    quarantined_name = str(field(legacy_after, "name") or "")
+    quarantined_domain = normalize_domain(nested_field(legacy_after, "domains", "domain", "fqdn"))
+    legacy_quarantined = (
+        str(field(legacy_after, "uuid", "id") or "") == legacy_uuid
+        and quarantined_name == str(replacement.get("quarantine_name") or "")
+        and quarantined_domain == ""
+    )
+    if canonical.get("status") != "exists" or not legacy_quarantined:
+        replacement["status"] = "domain_swap_unverified"
+        actions.append(
+            ActionRecord(
+                "frontend_replacement",
+                "domain_swap",
+                "domain_swap_unverified",
+                request_attempted=True,
+                write_performed=True,
+            ).to_dict()
+        )
+        return False, [{"resource": "frontend_replacement", "reason": "post_swap_identity_unverified"}]
+
+    replacement["status"] = "domain_swap_verified"
+    frontend["actual_name"] = canonical_name
+    actions.append(
+        ActionRecord(
+            "frontend_replacement",
+            "domain_swap",
+            "domain_swap_verified",
+            request_attempted=True,
+            write_performed=True,
+            verified=True,
+        ).to_dict()
+    )
+    return True, []
+
+
 def execute_frontend_deployment(client: CoolifyClient, args: argparse.Namespace, mode: ExecutionMode, frontend: dict[str, Any], preflight_ok: bool, actions: list[dict[str, Any]]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     runtime=frontend_runtime_readiness_result(); smoke=frontend_smoke_check_result(args.product); blockers=[]; uuid=frontend.get("uuid")
+    expected_application_name = str(frontend.get("actual_name") or frontend_application_name(args.product))
     if hasattr(client,"bind_frontend_deployment_preconditions"): client.bind_frontend_deployment_preconditions(preflight_ok)
     user_requested=bool(getattr(args,"deploy_frontend",False))
     if not user_requested:
@@ -3568,12 +4387,32 @@ def execute_frontend_deployment(client: CoolifyClient, args: argparse.Namespace,
                 else: return frontend_deployment_result("ambiguous_frontend_deployment_recovery", user_requested=True, post_attempted=True, request_attempted=True, write_performed=exc.write_performed, write_outcome_unknown=True), runtime, smoke, [{"resource":"frontend_deployment","reason":"ambiguous_frontend_deployment_recovery"}]
             if not exc.write_outcome_unknown:
                 actions.append(frontend_deployment_request_action("request_failed", exc)); return frontend_deployment_result("request_failed", user_requested=True, post_attempted=True, request_attempted=True), runtime, smoke, [{"resource":"frontend_deployment","reason":exc.message}]
-    polled=poll_frontend_deployment(client,args,str(dep["deployment_uuid"]),str(uuid)); preserved={k:dep.get(k) for k in ("user_requested","post_attempted","requested","adopted_active","recovered_after_unknown","request_attempted","write_performed","write_outcome_unknown")}; dep.update(polled); dep.update({k:v for k,v in preserved.items() if v}); actions.append(ActionRecord("frontend_deployment","poll",dep["status"],verified=dep.get("verified",False)).to_dict())
+    polled=poll_frontend_deployment(client,args,str(dep["deployment_uuid"]),str(uuid),expected_application_name=expected_application_name); preserved={k:dep.get(k) for k in ("user_requested","post_attempted","requested","adopted_active","recovered_after_unknown","request_attempted","write_performed","write_outcome_unknown")}; dep.update(polled); dep.update({k:v for k,v in preserved.items() if v}); actions.append(ActionRecord("frontend_deployment","poll",dep["status"],verified=dep.get("verified",False)).to_dict())
     if not dep.get("verified"): return dep, runtime, smoke, [{"resource":"frontend_deployment","reason":dep.get("status")}]
-    runtime=verify_frontend_runtime(client,args,str(uuid)); actions.append(ActionRecord("frontend_runtime_readiness","verify",runtime["status"],verified=runtime.get("verified",False)).to_dict())
+    runtime=verify_frontend_runtime(client,args,str(uuid),expected_application_name=expected_application_name); actions.append(ActionRecord("frontend_runtime_readiness","verify",runtime["status"],verified=runtime.get("verified",False)).to_dict())
     if not runtime.get("healthy"): return dep, runtime, smoke, [{"resource":"frontend_runtime_readiness","reason":runtime.get("status")}]
+    replacement_ok, replacement_blockers = finalize_frontend_replacement(
+        client,
+        args,
+        frontend,
+        actions,
+    )
+    if not replacement_ok:
+        return dep, runtime, smoke, replacement_blockers
     smoke=run_frontend_smoke(args); actions.append(ActionRecord("frontend_smoke_check","smoke",smoke["status"],verified=smoke.get("root_element_verified",False)).to_dict())
     if not smoke.get("root_element_verified"): blockers.append({"resource":"frontend_smoke_check","reason":smoke.get("status")})
+    replacement = frontend.get("replacement")
+    if isinstance(replacement, dict) and smoke.get("root_element_verified"):
+        replacement["status"] = "verified_by_deployment_runtime_domain_swap_smoke"
+        actions.append(
+            ActionRecord(
+                "frontend_replacement",
+                "verify_required_gates",
+                replacement["status"],
+                verified=True,
+                details={"required_gates": list(FRONTEND_SOURCE_REPLACEMENT_GATES)},
+            ).to_dict()
+        )
     return dep,runtime,smoke,blockers
 
 
@@ -3818,13 +4657,14 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
     plan["mode"] = mode.name
     frontend_backend_ok = backend_allows_frontend(backend)
     frontend_verified = frontend.get("status") in {"exists", "created"} and bool(frontend.get("uuid"))
+    frontend_replacement_active = isinstance(frontend.get("replacement"), dict)
     frontend_application_operation_enabled = mode.frontend_application_writes_enabled and frontend_backend_ok
     frontend_env_operation_enabled = mode.frontend_env_writes_enabled and frontend_backend_ok and frontend_verified
-    allowed_posts = [] if not mode.is_apply else sorted({"project_create", "environment_create", "postgresql_create"} | ({"postgresql_start"} if mode.database_start_enabled else set()) | ({"backend_application_create"} if mode.backend_application_writes_enabled else set()) | ({"backend_env_create"} if mode.backend_env_writes_enabled else set()) | ({"frontend_application_create"} if frontend_application_operation_enabled else set()) | ({"frontend_env_create"} if frontend_env_operation_enabled else set()) | ({"backend_deploy"} if mode.backend_deployment_enabled and deploy_preflight_ok else set()) | ({"frontend_deploy"} if mode.frontend_deployment_enabled and frontend_deploy_preflight_ok else set()))
+    allowed_posts = [] if not mode.is_apply else sorted({"project_create", "environment_create", "postgresql_create"} | ({"postgresql_start"} if mode.database_start_enabled else set()) | ({"backend_application_create"} if mode.backend_application_writes_enabled else set()) | ({"backend_env_create"} if mode.backend_env_writes_enabled else set()) | ({"frontend_replacement_create"} if frontend_application_operation_enabled and frontend_replacement_active else {"frontend_application_create"} if frontend_application_operation_enabled else set()) | ({"frontend_env_create"} if frontend_env_operation_enabled else set()) | ({"backend_deploy"} if mode.backend_deployment_enabled and deploy_preflight_ok else set()) | ({"frontend_deploy"} if mode.frontend_deployment_enabled and frontend_deploy_preflight_ok else set()))
     plan["safety"] = {
         "writes_enabled": mode.is_apply and mode.allow_resource_writes and mode.confirm_product == mode.product,
         "allowed_post_operations": allowed_posts,
-        "allowed_patch_operations": sorted((["backend_env_update"] if mode.is_apply and mode.backend_env_writes_enabled else []) + (["frontend_env_update"] if mode.is_apply and frontend_env_operation_enabled else [])),
+        "allowed_patch_operations": sorted((["backend_env_update"] if mode.is_apply and mode.backend_env_writes_enabled else []) + (["frontend_env_update"] if mode.is_apply and frontend_env_operation_enabled else []) + (["frontend_replacement_promote", "frontend_replacement_quarantine"] if mode.frontend_deployment_enabled and frontend_replacement_active else [])),
         "database_start_enabled": mode.database_start_enabled,
         "forbidden_methods": ["PUT", "DELETE"],
         "deploy_actions_enabled": (mode.backend_deployment_enabled and deploy_preflight_ok) or (mode.frontend_deployment_enabled and frontend_deploy_preflight_ok),
