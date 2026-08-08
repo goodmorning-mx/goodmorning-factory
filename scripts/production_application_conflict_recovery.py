@@ -169,8 +169,9 @@ def install_application_conflict_recovery(
     module: Any,
     *,
     legacy_frontend_migration: dict[str, Any] | None = None,
+    frontend_source_verification: dict[str, Any] | None = None,
 ) -> None:
-    """Patch the Coolify client without weakening compatibility checks."""
+    """Install exact manifest contracts without weakening default checks."""
 
     client_class = module.CoolifyClient
     response_class = module.Response
@@ -179,6 +180,11 @@ def install_application_conflict_recovery(
         client_class,
         "_gm_legacy_frontend_migration_contract",
         dict(legacy_frontend_migration) if legacy_frontend_migration else None,
+    )
+    setattr(
+        client_class,
+        "_gm_frontend_source_verification_contract",
+        dict(frontend_source_verification) if frontend_source_verification else None,
     )
 
     def wrap(method_name: str, *, frontend: bool = False) -> None:
