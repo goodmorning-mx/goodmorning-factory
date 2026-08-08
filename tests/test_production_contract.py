@@ -253,6 +253,25 @@ class FrontendConflictRediscoveryTests(unittest.TestCase):
         self.assertIsNone(client.bound_uuid)
         self.assertEqual([action["status"] for action in actions if action["action"] == "recover_after_conflict"], ["conflict_without_verified_resource"])
 
+    def test_nested_patch_conflict_is_not_misclassified_as_create_conflict(self):
+        client = FrontendConflictClient([[]])
+
+        def reject_patch(_payload):
+            raise production.ProvisioningError(
+                "migration patch conflict",
+                error_type="coolify_api",
+                http_status=409,
+                method="PATCH",
+                path="/applications/legacy-front-1",
+                request_attempted=True,
+            )
+
+        client.create_frontend_application = reject_patch
+        with self.assertRaises(production.ProvisioningError) as raised:
+            self.run_ensure(client)
+        self.assertEqual(raised.exception.method, "PATCH")
+        self.assertEqual(client.list_calls, 1)
+
     def test_conflict_with_incompatible_resource_is_not_adopted(self):
         item = self.frontend_item(git_branch="feature/x", domains="https://other.goodmorning.mx")
         client = FrontendConflictClient([[], [item]], details={"front-1": item})
