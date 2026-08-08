@@ -154,6 +154,7 @@ class FrontendConflictRediscoveryTests(unittest.TestCase):
             "server_uuid": "server-1",
             "destination_uuid": "destination-1",
             "github_app_uuid": "github-app-1",
+            "github_app_id": 1,
             "git_repository": "goodmorning-mx/ledger",
         }
 
@@ -215,6 +216,26 @@ class FrontendConflictRediscoveryTests(unittest.TestCase):
 
     def test_compatible_frontend_fixture_classifies_as_exists(self):
         classified = production.classify_frontend_application([self.frontend_item()], self.args(), self.context())
+        self.assertEqual(classified["status"], "exists")
+
+    def test_hydration_preserves_nonempty_listing_source_id(self):
+        fallback = self.frontend_item()
+        fallback.pop("github_app_uuid")
+        fallback["source_id"] = 1
+        detail = dict(fallback)
+        detail["source_id"] = None
+
+        class Client:
+            def get(self, path):
+                self.path = path
+                return detail
+
+        client = Client()
+        hydrated = production.hydrate_application_by_uuid(client, "front-1", fallback)
+        self.assertEqual(hydrated["source_id"], 1)
+        classified = production.classify_frontend_application(
+            [hydrated], self.args(), self.context()
+        )
         self.assertEqual(classified["status"], "exists")
 
     def test_conflict_recovers_when_resource_appears_on_second_attempt(self):
