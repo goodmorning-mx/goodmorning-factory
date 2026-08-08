@@ -19,18 +19,14 @@
     "s3_retention_days": 30,
     "timeout_seconds": 1800
   },
-  "legacy_frontend_migration": {
+  "frontend_source_verification": {
     "uuid": "dutnbv0pvlijmz9grjnq2q27",
-    "confirmation": "migrate:eventosarias-frontend-prod",
-    "expected": {
-      "name": "eventos-arias",
-      "git_repository": "goodmorning-company/eventos-arias",
-      "git_branch": "main",
-      "build_pack": "dockerfile",
-      "base_directory": "/",
-      "dockerfile_location": "/Dockerfile",
-      "ports_exposes": "80",
-      "domains": "https://eventosarias.goodmorning.mx"
-    }
+    "confirmation": "verify-source-by-deployment:eventosarias-frontend-prod",
+    "unverified_field": "github_app_uuid",
+    "required_gates": [
+      "deployment",
+      "runtime",
+      "smoke"
+    ]
   }
 }
