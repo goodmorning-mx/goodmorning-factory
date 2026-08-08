@@ -70,6 +70,15 @@ class LegacyFrontendMigrationTests(unittest.TestCase):
             "required_gates": ["deployment", "runtime", "smoke"],
         }
 
+    def source_replacement_contract(self):
+        return {
+            "legacy_uuid": "legacy-front-1",
+            "confirmation": "replace-source:ledger-frontend-prod",
+            "candidate_name": "ledger-frontend-prod-candidate",
+            "quarantine_name": "ledger-frontend-prod-legacy",
+            "required_gates": ["deployment", "runtime", "domain_swap", "smoke"],
+        }
+
     def test_manifest_accepts_exact_legacy_contract(self):
         validated = adapter.validate_manifest(self.manifest())
         self.assertEqual(
@@ -107,6 +116,34 @@ class LegacyFrontendMigrationTests(unittest.TestCase):
         manifest = self.manifest()
         manifest["frontend_source_verification"] = self.source_verification_contract()
         manifest["frontend_source_verification"]["extra"] = True
+        with self.assertRaises(adapter.ManifestError):
+            adapter.validate_manifest(manifest)
+
+    def test_manifest_accepts_only_exact_staged_replacement_contract(self):
+        manifest = self.manifest()
+        manifest["frontend_source_replacement"] = self.source_replacement_contract()
+        validated = adapter.validate_manifest(manifest)
+        self.assertEqual(
+            validated["frontend_source_replacement"]["required_gates"],
+            ["deployment", "runtime", "domain_swap", "smoke"],
+        )
+
+        for field, replacement in (
+            ("legacy_uuid", "bad"),
+            ("confirmation", "yes"),
+            ("candidate_name", "ledger-frontend-prod"),
+            ("quarantine_name", "ledger-old"),
+            ("required_gates", ["deployment", "runtime", "smoke"]),
+        ):
+            manifest = self.manifest()
+            manifest["frontend_source_replacement"] = self.source_replacement_contract()
+            manifest["frontend_source_replacement"][field] = replacement
+            with self.assertRaises(adapter.ManifestError, msg=field):
+                adapter.validate_manifest(manifest)
+
+        manifest = self.manifest()
+        manifest["frontend_source_replacement"] = self.source_replacement_contract()
+        manifest["frontend_source_verification"] = self.source_verification_contract()
         with self.assertRaises(adapter.ManifestError):
             adapter.validate_manifest(manifest)
 

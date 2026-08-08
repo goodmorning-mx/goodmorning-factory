@@ -170,6 +170,7 @@ def install_application_conflict_recovery(
     *,
     legacy_frontend_migration: dict[str, Any] | None = None,
     frontend_source_verification: dict[str, Any] | None = None,
+    frontend_source_replacement: dict[str, Any] | None = None,
 ) -> None:
     """Install exact manifest contracts without weakening default checks."""
 
@@ -185,6 +186,11 @@ def install_application_conflict_recovery(
         client_class,
         "_gm_frontend_source_verification_contract",
         dict(frontend_source_verification) if frontend_source_verification else None,
+    )
+    setattr(
+        client_class,
+        "_gm_frontend_source_replacement_contract",
+        dict(frontend_source_replacement) if frontend_source_replacement else None,
     )
 
     def wrap(method_name: str, *, frontend: bool = False) -> None:

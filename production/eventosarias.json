@@ -19,13 +19,15 @@
     "s3_retention_days": 30,
     "timeout_seconds": 1800
   },
-  "frontend_source_verification": {
-    "uuid": "dutnbv0pvlijmz9grjnq2q27",
-    "confirmation": "verify-source-by-deployment:eventosarias-frontend-prod",
-    "unverified_field": "github_app_uuid",
+  "frontend_source_replacement": {
+    "legacy_uuid": "dutnbv0pvlijmz9grjnq2q27",
+    "confirmation": "replace-source:eventosarias-frontend-prod",
+    "candidate_name": "eventosarias-frontend-prod-candidate",
+    "quarantine_name": "eventosarias-frontend-prod-legacy",
     "required_gates": [
       "deployment",
       "runtime",
+      "domain_swap",
       "smoke"
     ]
   }
