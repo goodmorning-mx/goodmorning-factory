@@ -353,6 +353,77 @@ class FrontendConflictRediscoveryTests(unittest.TestCase):
         self.assertEqual(client.bound_uuid, "front-1")
         self.assertEqual([action["action"] for action in actions], ["reuse"])
 
+    def test_exact_source_contract_defers_only_unobservable_github_app(self):
+        item = self.frontend_item()
+        item.pop("github_app_uuid")
+        client = FrontendConflictClient([[item]], details={"front-1": item})
+        client._gm_frontend_source_verification_contract = {
+            "uuid": "front-1",
+            "confirmation": "verify-source-by-deployment:ledger-frontend-prod",
+            "unverified_field": "github_app_uuid",
+            "required_gates": ["deployment", "runtime", "smoke"],
+        }
+
+        result, actions, _sleeps = self.run_ensure(client)
+
+        self.assertEqual(result["status"], "exists")
+        self.assertFalse(result["source_api_verified"])
+        self.assertEqual(
+            result["source_verification"]["status"],
+            "pending_required_gates",
+        )
+        self.assertEqual(result["source_verification"]["contract_uuid"], "front-1")
+        self.assertEqual(client.bound_uuid, "front-1")
+        self.assertEqual(client.posts, 0)
+        self.assertEqual(
+            [action["action"] for action in actions],
+            ["reuse_with_deferred_source_verification"],
+        )
+        self.assertFalse(actions[0]["verified"])
+
+    def test_source_contract_does_not_allow_uuid_field_or_source_drift(self):
+        contract = {
+            "uuid": "other-front",
+            "confirmation": "verify-source-by-deployment:ledger-frontend-prod",
+            "unverified_field": "github_app_uuid",
+            "required_gates": ["deployment", "runtime", "smoke"],
+        }
+        source_missing = self.frontend_item()
+        source_missing.pop("github_app_uuid")
+        client = FrontendConflictClient(
+            [[source_missing]],
+            details={"front-1": source_missing},
+        )
+        client._gm_frontend_source_verification_contract = contract
+        result, _actions, _sleeps = self.run_ensure(client)
+        self.assertEqual(result["status"], "compatibility_unverified")
+        self.assertIsNone(client.bound_uuid)
+
+        contract["uuid"] = "front-1"
+        another_field_missing = dict(source_missing, health_check_port=None)
+        client = FrontendConflictClient(
+            [[another_field_missing]],
+            details={"front-1": another_field_missing},
+        )
+        client._gm_frontend_source_verification_contract = contract
+        result, _actions, _sleeps = self.run_ensure(client)
+        self.assertEqual(result["status"], "compatibility_unverified")
+        self.assertEqual(
+            {entry["field"] for entry in result["unverified_fields"]},
+            {"github_app_uuid", "health_check_port"},
+        )
+        self.assertIsNone(client.bound_uuid)
+
+        explicit_source_mismatch = self.frontend_item(github_app_uuid="wrong-source")
+        client = FrontendConflictClient(
+            [[explicit_source_mismatch]],
+            details={"front-1": explicit_source_mismatch},
+        )
+        client._gm_frontend_source_verification_contract = contract
+        result, _actions, _sleeps = self.run_ensure(client)
+        self.assertEqual(result["status"], "recreate_required")
+        self.assertIsNone(client.bound_uuid)
+
     def test_every_unadoptable_status_fails_the_run_closed(self):
         self.assertTrue(
             production.FRONTEND_UNADOPTABLE_STATUSES - {"incompatible"} <= production.FRONTEND_BLOCKING_STATUSES,
