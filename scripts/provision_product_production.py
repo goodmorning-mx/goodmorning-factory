@@ -46,13 +46,22 @@ BACKEND_ENV_KEYS = {"DATABASE_URL", "APP_ENV", "CORS_ORIGINS"}
 APPROVED_BACKEND_APPLICATION_FIELDS = {"name", "project_uuid", "environment_uuid", "environment_name", "server_uuid", "destination_uuid", "github_app_uuid", "git_repository", "git_branch", "build_pack", "base_directory", "dockerfile_location", "ports_exposes", "domains", "instant_deploy", "is_auto_deploy_enabled", "autogenerate_domain", "health_check_enabled", "health_check_path", "health_check_port", "health_check_method", "health_check_scheme", "health_check_return_code"}
 APPROVED_BACKEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline", "is_shown_once"}
 APPROVED_FRONTEND_APPLICATION_FIELDS = APPROVED_BACKEND_APPLICATION_FIELDS
-# Coolify's PATCH /applications/{uuid} accepts the creation contract except
-# environment_uuid and autogenerate_domain. Domain conflicts on an update are
-# explicitly acknowledged with force_domain_override, but only after the exact
-# legacy UUID, identity, and currently-owned domain have been verified.
+# The deployed Coolify PATCH /applications/{uuid} contract rejects placement
+# and source-binding fields. Those bindings therefore remain unchanged and are
+# revalidated after the update. Domain conflicts are explicitly acknowledged
+# with force_domain_override, but only after the exact legacy UUID, identity,
+# and currently-owned domain have been verified.
 APPROVED_FRONTEND_MIGRATION_FIELDS = (
     APPROVED_FRONTEND_APPLICATION_FIELDS
-    - {"environment_uuid", "autogenerate_domain"}
+    - {
+        "project_uuid",
+        "environment_uuid",
+        "environment_name",
+        "server_uuid",
+        "destination_uuid",
+        "github_app_uuid",
+        "autogenerate_domain",
+    }
 ) | {"force_domain_override"}
 APPROVED_FRONTEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline"}
 ENV_PAYLOAD_FIELDS = APPROVED_BACKEND_ENV_FIELDS
