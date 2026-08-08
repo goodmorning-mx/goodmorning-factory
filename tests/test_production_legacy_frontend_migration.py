@@ -232,6 +232,83 @@ class LegacyFrontendMigrationTests(unittest.TestCase):
         self.assertTrue(response.data["data"]["_factory_legacy_migrated"])
         self.assertEqual(len(client.migrations), 1)
 
+    def test_uuid_less_conflict_hydrates_manifest_authorized_legacy_frontend(self):
+        legacy = self.legacy_item()
+
+        class Client:
+            def __init__(self):
+                self.migrations = []
+
+            def create_backend_application(self, payload):
+                raise AssertionError("not used")
+
+            def create_frontend_application(self, payload):
+                raise production.ProvisioningError(
+                    "Coolify API 422: the FQDN is already in use.",
+                    error_type="coolify_api",
+                    code=2,
+                    http_status=422,
+                    request_attempted=True,
+                )
+
+            def get(self, path):
+                return {"data": dict(legacy)}
+
+            def migrate_frontend_application(self, uuid, payload):
+                self.migrations.append((uuid, dict(payload)))
+                return production.Response(200, {"uuid": uuid}, {})
+
+        module = SimpleNamespace(
+            CoolifyClient=Client,
+            Response=production.Response,
+            ProvisioningError=production.ProvisioningError,
+            normalized_equal=production.normalized_equal,
+        )
+        recovery.install_application_conflict_recovery(
+            module,
+            legacy_frontend_migration=self.manifest()["legacy_frontend_migration"],
+        )
+        client = Client()
+        response = client.create_frontend_application(self.target_payload())
+        self.assertEqual(response.data["data"]["uuid"], "legacy-front-1")
+        self.assertTrue(response.data["data"]["_factory_legacy_migrated"])
+        self.assertEqual(len(client.migrations), 1)
+
+    def test_conflict_with_different_uuid_still_fails_closed(self):
+        legacy = self.legacy_item()
+
+        class Client:
+            def create_backend_application(self, payload):
+                raise AssertionError("not used")
+
+            def create_frontend_application(self, payload):
+                raise production.ProvisioningError(
+                    'Domain conflict {"resource_uuid":"different-front"}',
+                    error_type="coolify_api",
+                    code=2,
+                    http_status=409,
+                    request_attempted=True,
+                )
+
+            def get(self, path):
+                return {"data": dict(legacy)}
+
+            def migrate_frontend_application(self, uuid, payload):
+                raise AssertionError("migration must not be attempted")
+
+        module = SimpleNamespace(
+            CoolifyClient=Client,
+            Response=production.Response,
+            ProvisioningError=production.ProvisioningError,
+            normalized_equal=production.normalized_equal,
+        )
+        recovery.install_application_conflict_recovery(
+            module,
+            legacy_frontend_migration=self.manifest()["legacy_frontend_migration"],
+        )
+        with self.assertRaises(production.ProvisioningError):
+            Client().create_frontend_application(self.target_payload())
+
     def test_nonzero_provisioner_exit_codes_remain_fail_closed(self):
         class ReturnTwo:
             @staticmethod
