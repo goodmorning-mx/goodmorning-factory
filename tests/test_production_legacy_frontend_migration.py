@@ -118,6 +118,16 @@ class LegacyFrontendMigrationTests(unittest.TestCase):
             self.target_payload(),
         )
         self.assertIs(patch_payload["force_domain_override"], True)
+        for immutable in (
+            "project_uuid",
+            "environment_uuid",
+            "environment_name",
+            "server_uuid",
+            "destination_uuid",
+            "github_app_uuid",
+            "autogenerate_domain",
+        ):
+            self.assertNotIn(immutable, patch_payload)
 
         client._check_request(
             "PATCH",
