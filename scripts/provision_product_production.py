@@ -71,6 +71,7 @@ FORBIDDEN_ENDPOINT_RE = re.compile(r"/(restart|stop|rollback)(?:/|$)|/applicatio
 NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
 FRONTEND_CONFLICT_REDISCOVERY_ATTEMPTS = 3
 FRONTEND_CONFLICT_REDISCOVERY_BASE_DELAY_SECONDS = 2.0
+FRONTEND_SOURCE_VERIFICATION_GATES = ["deployment", "runtime", "smoke"]
 FRONTEND_UNADOPTABLE_STATUSES = {"duplicate", "incompatible", "compatibility_unverified", "scope_unverified", "out_of_scope"}
 # Every Frontend status that must fail the run closed. ``out_of_scope`` is
 # included because conflict recovery can now surface a visible resource that
@@ -2516,6 +2517,61 @@ def classify_frontend_application(matches: list[dict[str, Any]], args: argparse.
     return {"name": name, "status": "exists", "uuid": field(item,"uuid","id"), "matches": reports}
 
 
+def deferred_frontend_source_verification(
+    client: CoolifyClient,
+    args: argparse.Namespace,
+    context: dict[str, Any],
+    classified: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Accept only one exact API-unobservable source field for one exact UUID.
+
+    This does not claim that the GitHub App binding was observed. It records a
+    pending verification whose three required gates are completed later by the
+    deploy-full flow. Any explicit source mismatch, other missing field, UUID
+    drift, scope drift, or malformed contract remains blocked.
+    """
+
+    contract = getattr(client, "_gm_frontend_source_verification_contract", None)
+    if not isinstance(contract, dict) or set(contract) != {
+        "uuid",
+        "confirmation",
+        "unverified_field",
+        "required_gates",
+    }:
+        return None
+    if classified.get("status") != "compatibility_unverified":
+        return None
+    identifier = str(classified.get("uuid") or "")
+    if not identifier or identifier != str(contract.get("uuid") or ""):
+        return None
+    if contract.get("confirmation") != (
+        f"verify-source-by-deployment:{frontend_application_name(args.product)}"
+    ):
+        return None
+    if contract.get("unverified_field") != "github_app_uuid":
+        return None
+    if contract.get("required_gates") != FRONTEND_SOURCE_VERIFICATION_GATES:
+        return None
+    expected_source = context.get("github_app_uuid")
+    unverified = classified.get("unverified_fields")
+    if (
+        expected_source in (None, "")
+        or not isinstance(unverified, list)
+        or len(unverified) != 1
+        or not isinstance(unverified[0], dict)
+        or unverified[0].get("field") != "github_app_uuid"
+        or str(unverified[0].get("expected") or "") != str(expected_source)
+    ):
+        return None
+    return {
+        "status": "pending_required_gates",
+        "api_field_observed": False,
+        "unverified_field": "github_app_uuid",
+        "required_gates": list(FRONTEND_SOURCE_VERIFICATION_GATES),
+        "contract_uuid": identifier,
+    }
+
+
 def exact_frontend_matches(client: CoolifyClient, args: argparse.Namespace) -> list[dict[str, Any]]:
     name=frontend_application_name(args.product)
     return [i for i in item_list(client.get("/applications")) if str(field(i,"name") or "") == name]
@@ -2613,6 +2669,33 @@ def ensure_frontend_application(client: CoolifyClient, args: argparse.Namespace,
         if hasattr(client, "bind_frontend_application_uuid"):
             client.bind_frontend_application_uuid(classified.get("uuid"), context)
         actions.append(ActionRecord("frontend_application","reuse","exists",verified=True).to_dict()); return classified
+    source_verification = deferred_frontend_source_verification(
+        client,
+        args,
+        context,
+        classified,
+    )
+    if source_verification is not None:
+        if hasattr(client, "bind_frontend_application_uuid"):
+            client.bind_frontend_application_uuid(classified.get("uuid"), context)
+        actions.append(
+            ActionRecord(
+                "frontend_application",
+                "reuse_with_deferred_source_verification",
+                "exists",
+                verified=False,
+                details={
+                    "unverified_field": "github_app_uuid",
+                    "required_gates": list(FRONTEND_SOURCE_VERIFICATION_GATES),
+                },
+            ).to_dict()
+        )
+        return {
+            **classified,
+            "status": "exists",
+            "source_api_verified": False,
+            "source_verification": source_verification,
+        }
     if st in FRONTEND_UNADOPTABLE_STATUSES:
         return {**classified, "status": "recreate_required" if st=="incompatible" else st}
     if not backend_allows_frontend(backend):
@@ -3707,6 +3790,30 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
             blockers.extend(frontend_live_blockers)
     frontend_deployment, frontend_runtime_readiness, frontend_smoke_check, frontend_deploy_blockers = execute_frontend_deployment(client, args, mode, frontend, frontend_deploy_preflight_ok, actions)
     blockers.extend(frontend_deploy_blockers)
+    source_verification = frontend.get("source_verification")
+    if isinstance(source_verification, dict) and frontend_deployment.get("user_requested"):
+        source_gates_verified = (
+            frontend_deployment.get("status") == "finished"
+            and frontend_deployment.get("verified") is True
+            and frontend_runtime_readiness.get("healthy") is True
+            and frontend_runtime_readiness.get("verified") is True
+            and frontend_smoke_check.get("html_verified") is True
+            and frontend_smoke_check.get("root_element_verified") is True
+        )
+        source_verification["status"] = (
+            "verified_by_deployment_runtime_smoke"
+            if source_gates_verified
+            else "pending_required_gates"
+        )
+        actions.append(
+            ActionRecord(
+                "frontend_source_verification",
+                "verify_required_gates",
+                source_verification["status"],
+                verified=source_gates_verified,
+                details={"required_gates": list(FRONTEND_SOURCE_VERIFICATION_GATES)},
+            ).to_dict()
+        )
     plan = build_plan(args, discovery)
     plan["mode"] = mode.name
     frontend_backend_ok = backend_allows_frontend(backend)
