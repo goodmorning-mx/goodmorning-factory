@@ -62,6 +62,14 @@ class LegacyFrontendMigrationTests(unittest.TestCase):
         item.update(overrides)
         return item
 
+    def source_verification_contract(self):
+        return {
+            "uuid": "legacy-front-1",
+            "confirmation": "verify-source-by-deployment:ledger-frontend-prod",
+            "unverified_field": "github_app_uuid",
+            "required_gates": ["deployment", "runtime", "smoke"],
+        }
+
     def test_manifest_accepts_exact_legacy_contract(self):
         validated = adapter.validate_manifest(self.manifest())
         self.assertEqual(
@@ -72,6 +80,33 @@ class LegacyFrontendMigrationTests(unittest.TestCase):
     def test_manifest_rejects_implicit_or_drifting_authorization(self):
         manifest = self.manifest()
         manifest["legacy_frontend_migration"]["confirmation"] = "yes"
+        with self.assertRaises(adapter.ManifestError):
+            adapter.validate_manifest(manifest)
+
+    def test_manifest_accepts_only_exact_source_verification_contract(self):
+        manifest = self.manifest()
+        manifest["frontend_source_verification"] = self.source_verification_contract()
+        validated = adapter.validate_manifest(manifest)
+        self.assertEqual(
+            validated["frontend_source_verification"]["required_gates"],
+            ["deployment", "runtime", "smoke"],
+        )
+
+        for field, replacement in (
+            ("uuid", "other-front"),
+            ("confirmation", "yes"),
+            ("unverified_field", "destination_uuid"),
+            ("required_gates", ["deployment", "smoke"]),
+        ):
+            manifest = self.manifest()
+            manifest["frontend_source_verification"] = self.source_verification_contract()
+            manifest["frontend_source_verification"][field] = replacement
+            with self.assertRaises(adapter.ManifestError, msg=field):
+                adapter.validate_manifest(manifest)
+
+        manifest = self.manifest()
+        manifest["frontend_source_verification"] = self.source_verification_contract()
+        manifest["frontend_source_verification"]["extra"] = True
         with self.assertRaises(adapter.ManifestError):
             adapter.validate_manifest(manifest)
 
