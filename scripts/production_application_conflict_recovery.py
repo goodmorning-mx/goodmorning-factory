@@ -193,8 +193,6 @@ def install_application_conflict_recovery(
                 if getattr(exc, "http_status", None) not in {409, 422}:
                     raise
                 identifiers = conflict_uuids(exc)
-                if not identifiers:
-                    raise
 
                 migrated = False
                 migration = getattr(
@@ -204,7 +202,12 @@ def install_application_conflict_recovery(
                 )
                 if frontend and isinstance(migration, dict):
                     authorized = str(migration.get("uuid") or "")
-                    if authorized not in identifiers:
+                    # Some Coolify 422 domain-conflict responses contain no
+                    # resource UUID. The manifest already binds one exact
+                    # legacy application, so hydrate and verify that UUID
+                    # directly in that case. If Coolify does return UUIDs,
+                    # keep requiring the authorized UUID to be among them.
+                    if identifiers and authorized not in identifiers:
                         raise error_class(
                             "Coolify conflict does not reference the authorized legacy Frontend.",
                             error_type="safety",
@@ -220,6 +223,8 @@ def install_application_conflict_recovery(
                     identifier = authorized
                     migrated = True
                 else:
+                    if not identifiers:
+                        raise
                     identifier = identifiers[0]
 
                 # The provisioner will GET /applications/{uuid} and revalidate
