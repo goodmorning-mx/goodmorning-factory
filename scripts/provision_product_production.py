@@ -2279,7 +2279,15 @@ def hydrate_application_by_uuid(client: CoolifyClient, uuid: Any, fallback: dict
     detail=client.get(f"/applications/{uuid}")
     item=detail.get("data") if isinstance(detail,dict) and isinstance(detail.get("data"),dict) else detail
     if not isinstance(item,dict): raise ProvisioningError("Application detail endpoint returned an unsupported shape.", error_type="coolify_api", code=2)
-    return {**fallback, **item, "_discovery_source":"applications", "_detail_hydrated": True}
+    hydrated = {**fallback, **item}
+    # The deployed Coolify detail projection returns source_id as null even
+    # when the application listing exposes the exact GitHub App numeric ID.
+    # Preserve only a non-empty source identity from that same list record so
+    # compatibility can still require an exact match to the selected App.
+    for key in ("source_id", "source_uuid", "github_app_uuid"):
+        if hydrated.get(key) in (None, "") and fallback.get(key) not in (None, ""):
+            hydrated[key] = fallback[key]
+    return {**hydrated, "_discovery_source":"applications", "_detail_hydrated": True}
 
 
 def postgres_driver_url(client: CoolifyClient, postgres: dict[str, Any]) -> str | None:
