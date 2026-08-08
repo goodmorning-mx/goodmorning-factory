@@ -34,6 +34,19 @@ FRONTEND_SOURCE_VERIFICATION_KEYS = {
     "required_gates",
 }
 FRONTEND_SOURCE_VERIFICATION_GATES = ["deployment", "runtime", "smoke"]
+FRONTEND_SOURCE_REPLACEMENT_KEYS = {
+    "legacy_uuid",
+    "confirmation",
+    "candidate_name",
+    "quarantine_name",
+    "required_gates",
+}
+FRONTEND_SOURCE_REPLACEMENT_GATES = [
+    "deployment",
+    "runtime",
+    "domain_swap",
+    "smoke",
+]
 COOLIFY_UUID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{5,63}$")
 
 
@@ -133,6 +146,47 @@ def validate_frontend_source_verification(manifest: dict[str, Any]) -> None:
         )
 
 
+def validate_frontend_source_replacement(manifest: dict[str, Any]) -> None:
+    """Validate a staged, non-destructive replacement of one legacy frontend."""
+
+    contract = manifest.get("frontend_source_replacement")
+    if contract is None:
+        return
+    if manifest.get("frontend_source_verification") is not None:
+        raise ManifestError(
+            "frontend_source_replacement and frontend_source_verification are mutually exclusive."
+        )
+    if not isinstance(contract, dict) or set(contract) != FRONTEND_SOURCE_REPLACEMENT_KEYS:
+        raise ManifestError(
+            "frontend_source_replacement must contain exactly legacy_uuid, confirmation, "
+            "candidate_name, quarantine_name, and required_gates."
+        )
+
+    product = manifest.get("product")
+    canonical_name = f"{product}-frontend-prod"
+    legacy_uuid = contract.get("legacy_uuid")
+    if not isinstance(legacy_uuid, str) or not COOLIFY_UUID_RE.fullmatch(legacy_uuid):
+        raise ManifestError(
+            "frontend_source_replacement.legacy_uuid must be one exact Coolify UUID."
+        )
+    if contract.get("confirmation") != f"replace-source:{canonical_name}":
+        raise ManifestError(
+            "frontend_source_replacement.confirmation must match the production frontend exactly."
+        )
+    if contract.get("candidate_name") != f"{canonical_name}-candidate":
+        raise ManifestError(
+            "frontend_source_replacement.candidate_name must be the exact isolated candidate name."
+        )
+    if contract.get("quarantine_name") != f"{canonical_name}-legacy":
+        raise ManifestError(
+            "frontend_source_replacement.quarantine_name must be the exact retained legacy name."
+        )
+    if contract.get("required_gates") != FRONTEND_SOURCE_REPLACEMENT_GATES:
+        raise ManifestError(
+            "frontend_source_replacement requires deployment, runtime, domain_swap, and smoke gates."
+        )
+
+
 def load_manifest(path: str | Path) -> dict[str, Any]:
     source = Path(path)
     try:
@@ -171,6 +225,7 @@ def validate_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
 
     validate_legacy_frontend_migration(manifest)
     validate_frontend_source_verification(manifest)
+    validate_frontend_source_replacement(manifest)
     return dict(manifest)
 
 
@@ -283,6 +338,7 @@ def main(argv: list[str] | None = None) -> int:
         provisioner,
         legacy_frontend_migration=manifest.get("legacy_frontend_migration"),
         frontend_source_verification=manifest.get("frontend_source_verification"),
+        frontend_source_replacement=manifest.get("frontend_source_replacement"),
     )
     # Preserve every provisioner exit code. Non-zero means reconciliation found
     # a real blocker and must never be normalized into a deploy hand-off.
