@@ -27,6 +27,13 @@ LEGACY_FRONTEND_EXPECTED_KEYS = {
     "ports_exposes",
     "domains",
 }
+FRONTEND_SOURCE_VERIFICATION_KEYS = {
+    "uuid",
+    "confirmation",
+    "unverified_field",
+    "required_gates",
+}
+FRONTEND_SOURCE_VERIFICATION_GATES = ["deployment", "runtime", "smoke"]
 COOLIFY_UUID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{5,63}$")
 
 
@@ -84,6 +91,48 @@ def validate_legacy_frontend_migration(manifest: dict[str, Any]) -> None:
         raise ManifestError("legacy frontend domain must equal the production domain exactly.")
 
 
+def validate_frontend_source_verification(manifest: dict[str, Any]) -> None:
+    """Validate the narrow fallback for an API-unobservable source binding.
+
+    Coolify versions that cannot update or expose a migrated application's
+    GitHub App binding may use this contract for one exact UUID. It permits
+    structural reconciliation to continue, but production source verification
+    still requires a successful deployment, healthy runtime, and public smoke
+    check in the deploy-full phase.
+    """
+
+    contract = manifest.get("frontend_source_verification")
+    if contract is None:
+        return
+    if not isinstance(contract, dict) or set(contract) != FRONTEND_SOURCE_VERIFICATION_KEYS:
+        raise ManifestError(
+            "frontend_source_verification must contain exactly uuid, confirmation, "
+            "unverified_field, and required_gates."
+        )
+
+    product = manifest.get("product")
+    identifier = contract.get("uuid")
+    if not isinstance(identifier, str) or not COOLIFY_UUID_RE.fullmatch(identifier):
+        raise ManifestError("frontend_source_verification.uuid must be one exact Coolify UUID.")
+    if contract.get("confirmation") != f"verify-source-by-deployment:{product}-frontend-prod":
+        raise ManifestError(
+            "frontend_source_verification.confirmation must match the production frontend exactly."
+        )
+    if contract.get("unverified_field") != "github_app_uuid":
+        raise ManifestError(
+            "frontend_source_verification may waive only an API-unobservable github_app_uuid."
+        )
+    if contract.get("required_gates") != FRONTEND_SOURCE_VERIFICATION_GATES:
+        raise ManifestError(
+            "frontend_source_verification requires deployment, runtime, and smoke gates in order."
+        )
+    migration = manifest.get("legacy_frontend_migration")
+    if isinstance(migration, dict) and str(migration.get("uuid") or "") != identifier:
+        raise ManifestError(
+            "frontend source verification and legacy migration must bind the same Coolify UUID."
+        )
+
+
 def load_manifest(path: str | Path) -> dict[str, Any]:
     source = Path(path)
     try:
@@ -121,6 +170,7 @@ def validate_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         raise ManifestError("confirm_production must be true for every production reconciliation.")
 
     validate_legacy_frontend_migration(manifest)
+    validate_frontend_source_verification(manifest)
     return dict(manifest)
 
 
@@ -232,6 +282,7 @@ def main(argv: list[str] | None = None) -> int:
     install_application_conflict_recovery(
         provisioner,
         legacy_frontend_migration=manifest.get("legacy_frontend_migration"),
+        frontend_source_verification=manifest.get("frontend_source_verification"),
     )
     # Preserve every provisioner exit code. Non-zero means reconciliation found
     # a real blocker and must never be normalized into a deploy hand-off.
