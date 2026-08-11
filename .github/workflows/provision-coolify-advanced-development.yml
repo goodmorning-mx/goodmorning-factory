@@ -1,6 +1,9 @@
 name: Provision Coolify advanced development products
 
 on:
+  repository_dispatch:
+    types:
+      - reconcile-advanced-product
   push:
     branches: [dev]
     paths:
@@ -46,6 +49,51 @@ jobs:
           persist-credentials: false
           fetch-depth: 2
 
+      - name: Create source verification token
+        if: github.event_name == 'repository_dispatch'
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
+          private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
+          owner: goodmorning-mx
+          repositories: ${{ github.event.client_payload.product }}
+
+      - name: Validate verified source release
+        if: github.event_name == 'repository_dispatch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.source-token.outputs.token }}
+          EVENT_PRODUCT: ${{ github.event.client_payload.product }}
+          EVENT_REPOSITORY: ${{ github.event.client_payload.repository }}
+          EVENT_SOURCE_BRANCH: ${{ github.event.client_payload.source_branch }}
+          EVENT_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          EVENT_SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id }}
+          EVENT_MANIFEST_PATH: ${{ github.event.client_payload.manifest_path }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${GH_TOKEN}"
+          [[ "${EVENT_PRODUCT}" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          test "${EVENT_REPOSITORY}" = "goodmorning-mx/${EVENT_PRODUCT}"
+          test "${EVENT_SOURCE_BRANCH}" = "dev"
+          [[ "${EVENT_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_SOURCE_RUN_ID}" =~ ^[0-9]+$ ]]
+          test "${EVENT_MANIFEST_PATH}" = "products/${EVENT_PRODUCT}.json"
+          test -f "${EVENT_MANIFEST_PATH}"
+          test "$(jq -er '.topology' "${EVENT_MANIFEST_PATH}")" = "resources-v3"
+          test "$(jq -er '.product' "${EVENT_MANIFEST_PATH}")" = "${EVENT_PRODUCT}"
+          test "$(jq -er '.repository' "${EVENT_MANIFEST_PATH}")" = "${EVENT_REPOSITORY}"
+          test "$(jq -er '.branch' "${EVENT_MANIFEST_PATH}")" = "${EVENT_SOURCE_BRANCH}"
+
+          current_sha="$(gh api "/repos/${EVENT_REPOSITORY}/branches/${EVENT_SOURCE_BRANCH}" --jq '.commit.sha')"
+          test "${current_sha}" = "${EVENT_SOURCE_SHA}"
+          run_json="$(gh api "/repos/${EVENT_REPOSITORY}/actions/runs/${EVENT_SOURCE_RUN_ID}")"
+          test "$(jq -r '.name' <<<"${run_json}")" = "CI"
+          test "$(jq -r '.event' <<<"${run_json}")" = "push"
+          test "$(jq -r '.conclusion' <<<"${run_json}")" = "success"
+          test "$(jq -r '.head_branch' <<<"${run_json}")" = "${EVENT_SOURCE_BRANCH}"
+          test "$(jq -r '.head_sha' <<<"${run_json}")" = "${EVENT_SOURCE_SHA}"
+
       - name: Validate authorization
         shell: bash
         run: |
@@ -66,7 +114,11 @@ jobs:
           : > "${selection}"
           : > "${apply_selection}"
           requested="${{ inputs.manifest_path }}"
-          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${requested}" ]; then
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            requested="${{ github.event.client_payload.manifest_path }}"
+            test -n "${requested}"
+          fi
+          if { [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; } && [ -n "${requested}" ]; then
             [[ "${requested}" =~ ^products/[a-z0-9][a-z0-9-]*\.json$ ]]
             test -f "${requested}"
             test "$(jq -r '.topology // empty' "${requested}")" = "resources-v3"
