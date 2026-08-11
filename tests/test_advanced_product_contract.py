@@ -170,7 +170,7 @@ class AdvancedProductContractTests(unittest.TestCase):
             path.write_text(json.dumps(manifest()), encoding="utf-8")
             self.assertEqual(contract.load_manifest(path)["product"], "helloworldv2")
 
-    def test_eventosarias_catalog_adopts_v2_and_adds_only_mcp(self):
+    def test_eventosarias_catalog_adopts_v2_and_adds_separate_mcp_apps(self):
         value = contract.load_manifest(
             Path(__file__).resolve().parents[1] / "products/eventosarias.json"
         )
@@ -183,6 +183,7 @@ class AdvancedProductContractTests(unittest.TestCase):
                     "eventosarias-api-dev",
                     "eventosarias-frontend-dev",
                     "eventosarias-mcp-dev",
+                    "eventosarias-mcp-write-dev",
                 ],
                 "databases": ["eventosarias-postgres-dev"],
                 "redis": [],
@@ -194,6 +195,16 @@ class AdvancedProductContractTests(unittest.TestCase):
         self.assertIn(
             {"key": "MCP_AUTH_TOKEN", "source": "generated_secret"},
             mcp["environment"],
+        )
+        write_mcp = next(
+            item for item in value["applications"] if item["name"] == "mcp-write"
+        )
+        self.assertEqual(write_mcp["base_directory"], "/backend")
+        self.assertEqual(write_mcp["dockerfile"], "/Dockerfile.mcp-write")
+        self.assertEqual(write_mcp["port"], 8002)
+        self.assertIn(
+            {"key": "MCP_WRITE_OAUTH_SECRET", "source": "generated_secret"},
+            write_mcp["environment"],
         )
 
     def test_advanced_workflow_separates_plan_and_apply_selections(self):

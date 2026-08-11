@@ -78,6 +78,73 @@
           "value": "10000"
         }
       ]
+    },
+    {
+      "name": "mcp-write",
+      "role": "gateway",
+      "base_directory": "/backend",
+      "dockerfile": "/Dockerfile.mcp-write",
+      "port": 8002,
+      "domain": "https://mcp-write.dev.eventosarias.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "APP_ENV",
+          "source": "literal",
+          "value": "dev"
+        },
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "resource": "postgres",
+          "driver": "psycopg"
+        },
+        {
+          "key": "MCP_WRITE_SERVER_NAME",
+          "source": "literal",
+          "value": "Eventos Arias Operaciones"
+        },
+        {
+          "key": "MCP_WRITE_PUBLIC_URL",
+          "source": "literal",
+          "value": "https://mcp-write.dev.eventosarias.goodmorning.mx/mcp"
+        },
+        {
+          "key": "MCP_WRITE_OAUTH_SECRET",
+          "source": "generated_secret"
+        },
+        {
+          "key": "MCP_WRITE_ALLOWED_HOSTS",
+          "source": "literal",
+          "value": "mcp-write.dev.eventosarias.goodmorning.mx,mcp-write.dev.eventosarias.goodmorning.mx:*,127.0.0.1,127.0.0.1:*,[::1],[::1]:*"
+        },
+        {
+          "key": "MCP_WRITE_ALLOWED_ORIGINS",
+          "source": "literal",
+          "value": ""
+        },
+        {
+          "key": "MCP_WRITE_OAUTH_ALLOWED_ROLES",
+          "source": "literal",
+          "value": "super_admin,admin,dispatcher"
+        },
+        {
+          "key": "MCP_WRITE_INTENT_TTL_SECONDS",
+          "source": "literal",
+          "value": "600"
+        },
+        {
+          "key": "MCP_WRITE_INVITATION_TTL_SECONDS",
+          "source": "literal",
+          "value": "86400"
+        },
+        {
+          "key": "MCP_WRITE_INVITATION_BASE_URL",
+          "source": "literal",
+          "value": "https://api.dev.eventosarias.goodmorning.mx/api/v1/invitations"
+        }
+      ]
     }
   ],
   "databases": [
@@ -102,6 +169,3 @@
     "timeout_seconds": 1800
   }
 }
-
-
-
