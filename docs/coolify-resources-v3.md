@@ -8,8 +8,10 @@ contract.
 ## Safety model
 
 - Development only: the contract accepts branch and environment `dev`.
-- Additive migration: the legacy Coolify application is retained and is never
-  deleted, stopped, renamed, or rolled back by Factory.
+- Additive migration: a declared legacy Coolify application is retained and is
+  never deleted, stopped, renamed, or rolled back by Factory. Products already
+  running as `resources-v2` may omit `legacy` when no `legacy_env` source is
+  requested; their exact native resource names are adopted in place.
 - Exact scope: every resource name, project, environment, repository, branch,
   Dockerfile, port and domain is validated before a write.
 - Private data services: PostgreSQL/TimescaleDB and Redis cannot declare public
@@ -44,14 +46,29 @@ Application variables support only:
 - `database_url`: the selected Coolify database's private URL;
 - `redis_url`: the selected Coolify Redis private URL;
 - `legacy_env`: an allowlisted value copied from the retained legacy resource.
+- `generated_secret`: a new high-entropy value created inside reconciliation,
+  never stored in Git or output, and preserved on later runs. Reconciliation
+  fails closed instead of rotating it when Coolify cannot return the real value.
+
+Database URL variables may request `"driver": "psycopg"` to convert only the
+URL scheme to SQLAlchemy's `postgresql+psycopg://` form. Applications may also
+declare an exact `base_directory`, allowing `resources-v3` to adopt an existing
+`resources-v2` Dockerfile Application without replacing it.
 
 The reconciler outputs variable names only. Values matching credential, token,
 password, key, database URL or Redis URL contracts are redacted.
 
+On a control-plane implementation change, CI plans the full `resources-v3`
+catalog but applies and deploys only manifests changed in that push. A manual
+workflow dispatch may explicitly select one manifest. This keeps an unrelated
+advanced product from being redeployed as a side effect of Factory maintenance.
+
 ## Migration sequence
 
 1. Merge and validate the product's `dev` runtime contract.
-2. Add its reviewed `resources-v3` catalog manifest.
+2. Add its reviewed `resources-v3` catalog manifest. For a `resources-v2`
+   adoption, reuse the exact API, Frontend and Database names and declare only
+   additive applications or environment keys.
 3. Factory plans the complete topology using read-only Coolify requests.
 4. Factory creates missing private data services and independent applications.
 5. Factory transfers allowlisted runtime configuration internally.

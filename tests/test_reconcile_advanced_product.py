@@ -131,6 +131,27 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual(payload["custom_docker_run_options"], "")
         self.assertTrue(payload["is_auto_deploy_enabled"])
 
+    def test_payload_preserves_resources_v2_base_directory(self):
+        value = contract.validate_manifest(manifest())
+        api = next(item for item in value["applications"] if item["role"] == "api")
+        api["base_directory"] = "/backend"
+        api["dockerfile"] = "/Dockerfile"
+
+        payload = advanced._application_payload(
+            value,
+            api,
+            {
+                "project_uuid": "project",
+                "environment_uuid": "environment",
+                "server_uuid": "server",
+                "destination_uuid": "destination",
+                "github_app_uuid": "github",
+            },
+        )
+
+        self.assertEqual(payload["base_directory"], "/backend")
+        self.assertEqual(payload["dockerfile_location"], "/Dockerfile")
+
     def test_environment_values_are_not_returned_in_actions(self):
         app = {
             "environment": [
@@ -155,6 +176,68 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
             {},
         )
         self.assertEqual(values[0]["value"], "")
+
+    def test_psycopg_database_driver_is_normalized_without_exposing_credentials(self):
+        values = advanced._environment_values(
+            {
+                "environment": [
+                    {
+                        "key": "DATABASE_URL",
+                        "source": "database_url",
+                        "resource": "db",
+                        "driver": "psycopg",
+                    }
+                ]
+            },
+            {"db": "postgresql://user:secret@database/app"},
+            {},
+            {},
+        )
+
+        self.assertEqual(
+            values[0]["value"],
+            "postgresql+psycopg://user:secret@database/app",
+        )
+        self.assertNotIn(
+            "user:secret",
+            str(advanced._redacted({"environment": values})),
+        )
+
+    def test_generated_secret_is_created_once_then_reused(self):
+        app = {
+            "environment": [
+                {"key": "MCP_AUTH_TOKEN", "source": "generated_secret"}
+            ]
+        }
+        with patch("scripts.reconcile_advanced_product.secrets.token_urlsafe", return_value="new-secret") as generator:
+            created = advanced._environment_values(app, {}, {}, {}, {})
+            reused = advanced._environment_values(
+                app,
+                {},
+                {},
+                {},
+                {"MCP_AUTH_TOKEN": {"key": "MCP_AUTH_TOKEN", "real_value": "existing-secret"}},
+            )
+
+        self.assertEqual(created[0]["value"], "new-secret")
+        self.assertEqual(reused[0]["value"], "existing-secret")
+        self.assertTrue(created[0]["is_shown_once"])
+        generator.assert_called_once_with(48)
+
+    def test_generated_secret_refuses_rotation_when_real_value_is_unavailable(self):
+        app = {
+            "environment": [
+                {"key": "MCP_AUTH_TOKEN", "source": "generated_secret"}
+            ]
+        }
+        with self.assertRaises(advanced.ReconcileError):
+            advanced._environment_values(
+                app,
+                {},
+                {},
+                {},
+                {"MCP_AUTH_TOKEN": {"key": "MCP_AUTH_TOKEN", "value": "********"}},
+            )
 
     def test_reviewed_redis_config_is_base64_encoded_for_coolify_api(self):
         self.assertEqual(

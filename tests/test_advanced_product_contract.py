@@ -108,6 +108,56 @@ class AdvancedProductContractTests(unittest.TestCase):
         with self.assertRaises(contract.ContractError):
             contract.validate_manifest(value)
 
+    def test_resources_v2_adoption_can_omit_legacy_descriptor(self):
+        value = manifest()
+        value.pop("legacy")
+        value["applications"][0]["environment"] = [
+            {
+                "key": "DATABASE_URL",
+                "source": "database_url",
+                "resource": "timescaledb",
+                "driver": "psycopg",
+            },
+            {"key": "MCP_AUTH_TOKEN", "source": "generated_secret"},
+        ]
+
+        result = contract.validate_manifest(value)
+
+        self.assertIsNone(result["legacy"])
+        self.assertEqual(
+            result["applications"][0]["environment"][0]["driver"],
+            "psycopg",
+        )
+
+    def test_legacy_source_is_rejected_without_legacy_descriptor(self):
+        value = manifest()
+        value.pop("legacy")
+        with self.assertRaises(contract.ContractError):
+            contract.validate_manifest(value)
+
+    def test_generated_secret_cannot_contain_a_literal_or_non_sensitive_key(self):
+        for entry in (
+            {
+                "key": "MCP_AUTH_TOKEN",
+                "source": "generated_secret",
+                "value": "must-not-be-committed",
+            },
+            {"key": "APP_NAME", "source": "generated_secret"},
+        ):
+            value = manifest()
+            value["applications"][0]["environment"] = [entry]
+            with self.subTest(entry=entry), self.assertRaises(contract.ContractError):
+                contract.validate_manifest(value)
+
+    def test_application_base_directory_defaults_to_root_and_accepts_reviewed_path(self):
+        value = manifest()
+        value["applications"][0]["base_directory"] = "/backend"
+
+        result = contract.validate_manifest(value)
+
+        self.assertEqual(result["applications"][0]["base_directory"], "/backend")
+        self.assertEqual(result["applications"][1]["base_directory"], "/")
+
     def test_mobile_domain_must_stay_in_product_namespace(self):
         value = manifest()
         value["applications"][1]["domain"] = "https://mobile.example.com"
@@ -119,6 +169,46 @@ class AdvancedProductContractTests(unittest.TestCase):
             path = Path(directory) / "product.json"
             path.write_text(json.dumps(manifest()), encoding="utf-8")
             self.assertEqual(contract.load_manifest(path)["product"], "helloworldv2")
+
+    def test_eventosarias_catalog_adopts_v2_and_adds_only_mcp(self):
+        value = contract.load_manifest(
+            Path(__file__).resolve().parents[1] / "products/eventosarias.json"
+        )
+
+        self.assertIsNone(value["legacy"])
+        self.assertEqual(
+            contract.resource_names(value),
+            {
+                "applications": [
+                    "eventosarias-api-dev",
+                    "eventosarias-frontend-dev",
+                    "eventosarias-mcp-dev",
+                ],
+                "databases": ["eventosarias-postgres-dev"],
+                "redis": [],
+            },
+        )
+        mcp = next(item for item in value["applications"] if item["name"] == "mcp")
+        self.assertEqual(mcp["base_directory"], "/backend")
+        self.assertEqual(mcp["dockerfile"], "/Dockerfile.mcp")
+        self.assertIn(
+            {"key": "MCP_AUTH_TOKEN", "source": "generated_secret"},
+            mcp["environment"],
+        )
+
+    def test_advanced_workflow_separates_plan_and_apply_selections(self):
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/provision-coolify-advanced-development.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("ADVANCED_PLAN_MANIFESTS", workflow)
+        self.assertIn("ADVANCED_APPLY_MANIFESTS", workflow)
+        self.assertIn("steps.select.outputs.apply_selected == 'true'", workflow)
+        self.assertIn(
+            "Control-plane implementation changed; selecting the full resources-v3 catalog.",
+            workflow,
+        )
 
 
 if __name__ == "__main__":
