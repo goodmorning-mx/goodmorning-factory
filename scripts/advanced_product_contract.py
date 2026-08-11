@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any
 
 TOPOLOGY = "resources-v3"
+PRODUCTION_TOPOLOGY = "resources-v3-production"
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
@@ -38,7 +39,7 @@ def _require(condition: bool, message: str) -> None:
         raise ContractError(message)
 
 
-def _clean_https_domain(value: Any, *, product: str) -> str:
+def _clean_https_domain(value: Any, *, product: str, production: bool) -> str:
     _require(isinstance(value, str), "Public application domain must be a string.")
     parsed = urllib.parse.urlparse(value)
     _require(
@@ -51,12 +52,23 @@ def _clean_https_domain(value: Any, *, product: str) -> str:
         and not parsed.fragment,
         "Public application domains must be clean HTTPS goodmorning.mx URLs without ports or paths.",
     )
-    _require(
-        parsed.hostname == f"dev.{product}.goodmorning.mx"
-        or parsed.hostname == f"api.dev.{product}.goodmorning.mx"
-        or parsed.hostname.endswith(f".dev.{product}.goodmorning.mx"),
-        "Public application domain is outside the product development namespace.",
-    )
+    if production:
+        _require(
+            (
+                parsed.hostname == f"{product}.goodmorning.mx"
+                or parsed.hostname.endswith(f".{product}.goodmorning.mx")
+            )
+            and parsed.hostname != f"dev.{product}.goodmorning.mx"
+            and not parsed.hostname.endswith(f".dev.{product}.goodmorning.mx"),
+            "Public application domain is outside the product production namespace.",
+        )
+    else:
+        _require(
+            parsed.hostname == f"dev.{product}.goodmorning.mx"
+            or parsed.hostname == f"api.dev.{product}.goodmorning.mx"
+            or parsed.hostname.endswith(f".dev.{product}.goodmorning.mx"),
+            "Public application domain is outside the product development namespace.",
+        )
     return value.rstrip("/")
 
 
@@ -125,15 +137,30 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
     allowed = {
         "topology", "product", "repository", "branch", "coolify_github_app_name",
         "legacy", "applications", "databases", "redis", "backup",
+        "confirm_production", "promotion_policy",
     }
     _require(set(raw) <= allowed, "Advanced product manifest contains unknown top-level fields.")
-    _require(raw.get("topology") == TOPOLOGY, f"Advanced product topology must be {TOPOLOGY!r}.")
+    topology = raw.get("topology")
+    _require(
+        topology in {TOPOLOGY, PRODUCTION_TOPOLOGY},
+        "Advanced product topology is not supported.",
+    )
+    production = topology == PRODUCTION_TOPOLOGY
     product = raw.get("product")
     repository = raw.get("repository")
     _require(isinstance(product, str) and PRODUCT_RE.fullmatch(product) is not None, "Invalid product slug.")
     _require(isinstance(repository, str) and REPOSITORY_RE.fullmatch(repository) is not None, "Invalid repository.")
     _require(repository == f"goodmorning-mx/{product}", "Repository must be the product repository in goodmorning-mx.")
-    _require(raw.get("branch") == "dev", "Advanced products may only reconcile branch 'dev'.")
+    expected_branch = "main" if production else "dev"
+    _require(
+        raw.get("branch") == expected_branch,
+        f"Advanced {expected_branch} products may only reconcile branch {expected_branch!r}.",
+    )
+    if production:
+        _require(raw.get("confirm_production") is True, "Advanced production requires confirm_production=true.")
+        _require(raw.get("promotion_policy") == "auto-on-main", "Advanced production requires promotion_policy='auto-on-main'.")
+    else:
+        _require("confirm_production" not in raw and "promotion_policy" not in raw, "Production authorization fields are forbidden in development manifests.")
     github_app = raw.get("coolify_github_app_name")
     _require(isinstance(github_app, str) and github_app == "goodmorning-mx-coolify", "Unexpected Coolify GitHub App.")
 
@@ -153,6 +180,8 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
             "Legacy environment key allowlist is invalid.",
         )
         legacy = {**legacy_raw, "environment_keys": environment_keys}
+    if production:
+        _require(legacy is None, "Advanced production cannot import a legacy application environment.")
 
     databases_raw = raw.get("databases")
     _require(isinstance(databases_raw, list) and databases_raw, "At least one database is required.")
@@ -221,14 +250,14 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
             "Invalid application base directory.",
         )
         _require(isinstance(port, int) and 1 <= port <= 65535, "Invalid application port.")
-        _require(item.get("auto_deploy") is True, "Advanced development applications must enable native auto-deploy.")
+        _require(item.get("auto_deploy") is True, "Advanced applications must enable native auto-deploy.")
         health_path = item.get("health_path")
         _require(isinstance(health_path, str) and health_path.startswith("/") and "?" not in health_path, "Invalid health path.")
         domain = item.get("domain")
         if role == "worker":
             _require(domain is None and port == 8000, "Workers must remain private and use the reviewed placeholder port.")
         else:
-            domain = _clean_https_domain(domain, product=product)
+            domain = _clean_https_domain(domain, product=product, production=production)
             _require(domain not in public_domains, "Duplicate public domain.")
             public_domains.add(domain)
         if role == "mobile":
@@ -302,16 +331,21 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         _require(isinstance(backup.get(field), int) and backup[field] > 0, f"Invalid backup field {field!r}.")
 
     return {
-        "topology": TOPOLOGY,
+        "topology": topology,
         "product": product,
         "repository": repository,
-        "branch": "dev",
+        "branch": expected_branch,
         "coolify_github_app_name": github_app,
         "legacy": legacy,
         "applications": applications,
         "databases": databases,
         "redis": redis_resources,
         "backup": dict(backup),
+        **(
+            {"confirm_production": True, "promotion_policy": "auto-on-main"}
+            if production
+            else {}
+        ),
     }
 
 
@@ -325,8 +359,9 @@ def load_manifest(path: str | Path) -> dict[str, Any]:
 
 def resource_names(manifest: dict[str, Any]) -> dict[str, list[str]]:
     product = manifest["product"]
+    suffix = "prod" if manifest["topology"] == PRODUCTION_TOPOLOGY else "dev"
     return {
-        "applications": [f"{product}-{item['name']}-dev" for item in manifest["applications"]],
-        "databases": [f"{product}-{item['name']}-dev" for item in manifest["databases"]],
-        "redis": [f"{product}-{item['name']}-dev" for item in manifest["redis"]],
+        "applications": [f"{product}-{item['name']}-{suffix}" for item in manifest["applications"]],
+        "databases": [f"{product}-{item['name']}-{suffix}" for item in manifest["databases"]],
+        "redis": [f"{product}-{item['name']}-{suffix}" for item in manifest["redis"]],
     }

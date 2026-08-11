@@ -66,6 +66,29 @@ def manifest():
     }
 
 
+def production_manifest():
+    value = manifest()
+    value["topology"] = "resources-v3-production"
+    value["branch"] = "main"
+    value["confirm_production"] = True
+    value["promotion_policy"] = "auto-on-main"
+    value.pop("legacy")
+    value["applications"][0]["environment"] = [
+        {
+            "key": "DATABASE_URL",
+            "source": "database_url",
+            "resource": "timescaledb",
+        }
+    ]
+    value["applications"][0]["domain"] = (
+        "https://api.helloworldv2.goodmorning.mx"
+    )
+    value["applications"][1]["domain"] = (
+        "https://mobile.helloworldv2.goodmorning.mx"
+    )
+    return value
+
+
 class AdvancedProductContractTests(unittest.TestCase):
     def test_valid_manifest_is_normalized(self):
         result = contract.validate_manifest(manifest())
@@ -82,6 +105,49 @@ class AdvancedProductContractTests(unittest.TestCase):
     def test_resources_v2_is_rejected(self):
         value = manifest()
         value["topology"] = "resources-v2"
+        with self.assertRaises(contract.ContractError):
+            contract.validate_manifest(value)
+
+    def test_production_manifest_is_normalized_to_prod_resources(self):
+        result = contract.validate_manifest(production_manifest())
+
+        self.assertEqual(result["topology"], "resources-v3-production")
+        self.assertEqual(result["branch"], "main")
+        self.assertEqual(
+            contract.resource_names(result)["applications"],
+            [
+                "helloworldv2-api-prod",
+                "helloworldv2-mobile-prod",
+                "helloworldv2-ingestion-prod",
+            ],
+        )
+
+    def test_production_requires_exact_release_authorization(self):
+        mutations = (
+            ("branch", "dev"),
+            ("confirm_production", False),
+            ("promotion_policy", "manual"),
+        )
+        for key, replacement in mutations:
+            value = production_manifest()
+            value[key] = replacement
+            with self.subTest(key=key), self.assertRaises(contract.ContractError):
+                contract.validate_manifest(value)
+
+    def test_production_rejects_development_domains_and_legacy_imports(self):
+        value = production_manifest()
+        value["applications"][0]["domain"] = (
+            "https://api.dev.helloworldv2.goodmorning.mx"
+        )
+        with self.assertRaises(contract.ContractError):
+            contract.validate_manifest(value)
+
+        value = production_manifest()
+        value["legacy"] = {
+            "application_uuid": "legacy-uuid",
+            "retain": True,
+            "environment_keys": [],
+        }
         with self.assertRaises(contract.ContractError):
             contract.validate_manifest(value)
 
@@ -207,6 +273,40 @@ class AdvancedProductContractTests(unittest.TestCase):
             write_mcp["environment"],
         )
 
+    def test_eventosarias_production_catalog_is_an_exact_v3_promotion(self):
+        value = contract.load_manifest(
+            Path(__file__).resolve().parents[1] / "production/eventosarias.json"
+        )
+
+        self.assertEqual(value["topology"], "resources-v3-production")
+        self.assertEqual(value["branch"], "main")
+        self.assertTrue(value["confirm_production"])
+        self.assertEqual(value["promotion_policy"], "auto-on-main")
+        self.assertEqual(
+            contract.resource_names(value),
+            {
+                "applications": [
+                    "eventosarias-api-prod",
+                    "eventosarias-frontend-prod",
+                    "eventosarias-mcp-prod",
+                    "eventosarias-mcp-write-prod",
+                ],
+                "databases": ["eventosarias-postgres-prod"],
+                "redis": [],
+            },
+        )
+        write_mcp = next(
+            item for item in value["applications"] if item["name"] == "mcp-write"
+        )
+        self.assertEqual(
+            write_mcp["domain"],
+            "https://mcp-write.eventosarias.goodmorning.mx",
+        )
+        self.assertIn(
+            {"key": "MCP_WRITE_OAUTH_SECRET", "source": "generated_secret"},
+            write_mcp["environment"],
+        )
+
     def test_advanced_workflow_separates_plan_and_apply_selections(self):
         workflow = (
             Path(__file__).resolve().parents[1]
@@ -242,6 +342,35 @@ class AdvancedProductContractTests(unittest.TestCase):
         )
         for marker in required:
             self.assertIn(marker, workflow)
+
+    def test_advanced_production_workflow_is_sha_bound_and_fail_closed(self):
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/promote-advanced-product-production.yml"
+        ).read_text(encoding="utf-8")
+
+        required = (
+            "- promote-advanced-product",
+            "environment: production",
+            "ref: dev",
+            'test "${source_branch}" = "main"',
+            'test "${current_sha}" = "${source_sha}"',
+            'test "$(jq -r \'.name\' <<<"${run_json}")" = "CI"',
+            'test "$(jq -r \'.event\' <<<"${run_json}")" = "push"',
+            'test "$(jq -r \'.conclusion\' <<<"${run_json}")" = "success"',
+            'test "$(jq -r \'.head_sha\' <<<"${run_json}")" = "${source_sha}"',
+            'test "$(jq -er \'.topology\' "${manifest}")" = "resources-v3-production"',
+            "COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES: \"true\"",
+            "--confirm-environment production",
+            "Smoke every public production application",
+            "--retry 30 --retry-delay 10 --retry-all-errors",
+            "Verify product database migration through the API",
+            "factory-migration-probe-${{ steps.authorize.outputs.source_sha }}",
+            'test "${status}" = "404"',
+        )
+        for marker in required:
+            self.assertIn(marker, workflow)
+        self.assertEqual(workflow.count("--backup-now true"), 2)
 
 
 if __name__ == "__main__":

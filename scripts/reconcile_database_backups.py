@@ -54,9 +54,9 @@ def load_manifest(path: Path) -> dict[str, Any]:
     except (OSError, json.JSONDecodeError) as exc:
         raise BackupError(f"Could not read manifest {path}: {exc}") from exc
     topology = manifest.get("topology")
-    if topology not in {"resources-v2", "resources-v3", "resources-v2-production"}:
+    if topology not in {"resources-v2", "resources-v3", "resources-v2-production", "resources-v3-production"}:
         raise BackupError("Database backups are restricted to reviewed resource products")
-    production = topology == "resources-v2-production"
+    production = topology in {"resources-v2-production", "resources-v3-production"}
     expected_branch = "main" if production else "dev"
     if manifest.get("branch") != expected_branch:
         raise BackupError(f"Database backup reconciliation for {topology} requires branch {expected_branch}")
@@ -87,7 +87,7 @@ def load_manifest(path: Path) -> dict[str, Any]:
             raise BackupError(f"Backup field {field} must be a positive integer")
     if topology == "resources-v2-production":
         manifest["_backup_database_name"] = f"{product}-postgres-prod"
-    elif topology == "resources-v3":
+    elif topology in {"resources-v3", "resources-v3-production"}:
         databases = manifest.get("databases")
         selected = [
             item
@@ -96,7 +96,8 @@ def load_manifest(path: Path) -> dict[str, Any]:
         ] if isinstance(databases, list) else []
         if len(selected) != 1 or not isinstance(selected[0].get("name"), str):
             raise BackupError("resources-v3 backup reconciliation requires exactly one backed-up database")
-        manifest["_backup_database_name"] = f"{product}-{selected[0]['name']}-dev"
+        suffix = "prod" if production else "dev"
+        manifest["_backup_database_name"] = f"{product}-{selected[0]['name']}-{suffix}"
     return manifest
 
 

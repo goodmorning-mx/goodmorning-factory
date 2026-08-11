@@ -196,6 +196,7 @@ jobs:
               --server "${COOLIFY_SERVER_NAME}" \
               --destination-uuid "${COOLIFY_DESTINATION_UUID}" \
               --confirm-product "${product}" \
+              --confirm-environment dev \
               --deploy
           done < "${ADVANCED_APPLY_MANIFESTS}"
 
