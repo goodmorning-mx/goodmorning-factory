@@ -210,6 +210,28 @@ class AdvancedProductContractTests(unittest.TestCase):
             workflow,
         )
 
+    def test_advanced_workflow_accepts_only_verified_release_dispatch(self):
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/provision-coolify-advanced-development.yml"
+        ).read_text(encoding="utf-8")
+
+        required = (
+            "repository_dispatch:",
+            "- reconcile-advanced-product",
+            "actions/create-github-app-token@v2",
+            "EVENT_SOURCE_RUN_ID:",
+            'test "${EVENT_SOURCE_BRANCH}" = "dev"',
+            'test "${current_sha}" = "${EVENT_SOURCE_SHA}"',
+            'test "$(jq -r \'.name\' <<<"${run_json}")" = "CI"',
+            'test "$(jq -r \'.event\' <<<"${run_json}")" = "push"',
+            'test "$(jq -r \'.conclusion\' <<<"${run_json}")" = "success"',
+            'test "$(jq -r \'.head_sha\' <<<"${run_json}")" = "${EVENT_SOURCE_SHA}"',
+            'requested="${{ github.event.client_payload.manifest_path }}"',
+        )
+        for marker in required:
+            self.assertIn(marker, workflow)
+
 
 if __name__ == "__main__":
     unittest.main()
