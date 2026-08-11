@@ -62,17 +62,21 @@ jobs:
         run: |
           set -euo pipefail
           selection="${RUNNER_TEMP}/resources-v3-manifests.txt"
+          apply_selection="${RUNNER_TEMP}/resources-v3-apply-manifests.txt"
           : > "${selection}"
+          : > "${apply_selection}"
           requested="${{ inputs.manifest_path }}"
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] && [ -n "${requested}" ]; then
             [[ "${requested}" =~ ^products/[a-z0-9][a-z0-9-]*\.json$ ]]
             test -f "${requested}"
             test "$(jq -r '.topology // empty' "${requested}")" = "resources-v3"
             printf '%s\n' "${requested}" >> "${selection}"
+            printf '%s\n' "${requested}" >> "${apply_selection}"
           elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             while IFS= read -r manifest; do
               if [ -f "${manifest}" ] && [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v3" ]; then
                 printf '%s\n' "${manifest}" >> "${selection}"
+                printf '%s\n' "${manifest}" >> "${apply_selection}"
               fi
             done < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- "products/*.json")
             if [ ! -s "${selection}" ] && ! git diff --quiet "${{ github.event.before }}" "${GITHUB_SHA}" -- \
@@ -91,17 +95,26 @@ jobs:
             for manifest in products/*.json; do
               if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v3" ]; then
                 printf '%s\n' "${manifest}" >> "${selection}"
+                printf '%s\n' "${manifest}" >> "${apply_selection}"
               fi
             done
           fi
           sort -u -o "${selection}" "${selection}"
+          sort -u -o "${apply_selection}" "${apply_selection}"
           if [ ! -s "${selection}" ]; then
             echo "No resources-v3 manifests selected."
             echo "selected=false" >> "${GITHUB_OUTPUT}"
+            echo "apply_selected=false" >> "${GITHUB_OUTPUT}"
             exit 0
           fi
-          echo "ADVANCED_MANIFESTS=${selection}" >> "${GITHUB_ENV}"
+          echo "ADVANCED_PLAN_MANIFESTS=${selection}" >> "${GITHUB_ENV}"
           echo "selected=true" >> "${GITHUB_OUTPUT}"
+          if [ -s "${apply_selection}" ]; then
+            echo "ADVANCED_APPLY_MANIFESTS=${apply_selection}" >> "${GITHUB_ENV}"
+            echo "apply_selected=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "apply_selected=false" >> "${GITHUB_OUTPUT}"
+          fi
 
       - name: Plan selected products
         if: steps.select.outputs.selected == 'true'
@@ -114,10 +127,10 @@ jobs:
               --phase plan \
               --server "${COOLIFY_SERVER_NAME}" \
               --destination-uuid "${COOLIFY_DESTINATION_UUID}"
-          done < "${ADVANCED_MANIFESTS}"
+          done < "${ADVANCED_PLAN_MANIFESTS}"
 
       - name: Apply and deploy selected products
-        if: steps.select.outputs.selected == 'true'
+        if: steps.select.outputs.apply_selected == 'true'
         shell: bash
         env:
           COOLIFY_ALLOW_ADVANCED_WRITES: "true"
@@ -132,10 +145,10 @@ jobs:
               --destination-uuid "${COOLIFY_DESTINATION_UUID}" \
               --confirm-product "${product}" \
               --deploy
-          done < "${ADVANCED_MANIFESTS}"
+          done < "${ADVANCED_APPLY_MANIFESTS}"
 
       - name: Reconcile external database backups
-        if: steps.select.outputs.selected == 'true'
+        if: steps.select.outputs.apply_selected == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -145,10 +158,10 @@ jobs:
             python scripts/reconcile_database_backups.py \
               --manifest "${manifest}" \
               --backup-now true
-          done < "${ADVANCED_MANIFESTS}"
+          done < "${ADVANCED_APPLY_MANIFESTS}"
 
       - name: Close resolved resources-v3 failure
-        if: steps.select.outputs.selected == 'true' && success()
+        if: steps.select.outputs.apply_selected == 'true' && success()
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}

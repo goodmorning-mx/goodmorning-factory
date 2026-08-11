@@ -19,7 +19,13 @@ ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 SAFE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 ALLOWED_ROLES = {"api", "frontend", "mobile", "worker", "gateway"}
 ALLOWED_DATABASE_ENGINES = {"postgresql", "timescaledb"}
-ALLOWED_ENV_SOURCES = {"literal", "database_url", "redis_url", "legacy_env"}
+ALLOWED_ENV_SOURCES = {
+    "literal",
+    "database_url",
+    "redis_url",
+    "legacy_env",
+    "generated_secret",
+}
 SENSITIVE_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL)", re.I)
 
 
@@ -56,24 +62,59 @@ def _clean_https_domain(value: Any, *, product: str) -> str:
 
 def _validate_environment(item: Any, *, database_names: set[str], redis_names: set[str]) -> dict[str, Any]:
     _require(isinstance(item, dict), "Application environment entries must be objects.")
-    _require(set(item) <= {"key", "source", "value", "resource", "legacy_key"}, "Unknown application environment field.")
+    _require(
+        set(item)
+        <= {"key", "source", "value", "resource", "legacy_key", "driver"},
+        "Unknown application environment field.",
+    )
     key = item.get("key")
     source = item.get("source")
     _require(isinstance(key, str) and ENV_KEY_RE.fullmatch(key) is not None, "Invalid environment variable key.")
     _require(source in ALLOWED_ENV_SOURCES, f"Unsupported environment source for {key!r}.")
     if source == "literal":
+        _require(
+            set(item) <= {"key", "source", "value"},
+            f"Literal environment variable {key!r} contains unrelated fields.",
+        )
         value = item.get("value")
         _require(isinstance(value, str) and len(value) <= 2048, f"Literal value for {key!r} is invalid.")
         _require(not SENSITIVE_KEY_RE.search(key), f"Sensitive variable {key!r} cannot be stored as a literal.")
         return {"key": key, "source": source, "value": value}
     if source == "database_url":
+        _require(
+            set(item) <= {"key", "source", "resource", "driver"},
+            f"Database URL variable {key!r} contains unrelated fields.",
+        )
         resource = item.get("resource")
         _require(resource in database_names, f"Environment variable {key!r} references an unknown database.")
-        return {"key": key, "source": source, "resource": resource}
+        driver = item.get("driver")
+        _require(driver in {None, "psycopg"}, f"Unsupported database driver for {key!r}.")
+        result = {"key": key, "source": source, "resource": resource}
+        if driver is not None:
+            result["driver"] = driver
+        return result
     if source == "redis_url":
+        _require(
+            set(item) <= {"key", "source", "resource"},
+            f"Redis URL variable {key!r} contains unrelated fields.",
+        )
         resource = item.get("resource")
         _require(resource in redis_names, f"Environment variable {key!r} references an unknown Redis resource.")
         return {"key": key, "source": source, "resource": resource}
+    if source == "generated_secret":
+        _require(
+            set(item) <= {"key", "source"},
+            f"Generated secret {key!r} contains unrelated fields.",
+        )
+        _require(
+            SENSITIVE_KEY_RE.search(key) is not None,
+            f"Generated values are restricted to sensitive variables; {key!r} is not sensitive.",
+        )
+        return {"key": key, "source": source}
+    _require(
+        set(item) <= {"key", "source", "legacy_key"},
+        f"Legacy environment variable {key!r} contains unrelated fields.",
+    )
     legacy_key = item.get("legacy_key", key)
     _require(isinstance(legacy_key, str) and ENV_KEY_RE.fullmatch(legacy_key) is not None, "Invalid legacy environment key.")
     return {"key": key, "source": source, "legacy_key": legacy_key}
@@ -96,18 +137,22 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
     github_app = raw.get("coolify_github_app_name")
     _require(isinstance(github_app, str) and github_app == "goodmorning-mx-coolify", "Unexpected Coolify GitHub App.")
 
-    legacy = raw.get("legacy")
-    _require(isinstance(legacy, dict), "Advanced migration requires a legacy rollback descriptor.")
-    _require(set(legacy) <= {"application_uuid", "retain", "environment_keys"}, "Unknown legacy descriptor field.")
-    _require(isinstance(legacy.get("application_uuid"), str) and legacy["application_uuid"], "Legacy application UUID is required.")
-    _require(legacy.get("retain") is True, "Legacy resource retention must be enabled during migration.")
-    environment_keys = legacy.get("environment_keys", [])
-    _require(
-        isinstance(environment_keys, list)
-        and len(environment_keys) == len(set(environment_keys))
-        and all(isinstance(key, str) and ENV_KEY_RE.fullmatch(key) for key in environment_keys),
-        "Legacy environment key allowlist is invalid.",
-    )
+    legacy_raw = raw.get("legacy")
+    legacy: dict[str, Any] | None = None
+    environment_keys: list[str] = []
+    if legacy_raw is not None:
+        _require(isinstance(legacy_raw, dict), "Legacy rollback descriptor must be an object.")
+        _require(set(legacy_raw) <= {"application_uuid", "retain", "environment_keys"}, "Unknown legacy descriptor field.")
+        _require(isinstance(legacy_raw.get("application_uuid"), str) and legacy_raw["application_uuid"], "Legacy application UUID is required.")
+        _require(legacy_raw.get("retain") is True, "Legacy resource retention must be enabled during migration.")
+        environment_keys = legacy_raw.get("environment_keys", [])
+        _require(
+            isinstance(environment_keys, list)
+            and len(environment_keys) == len(set(environment_keys))
+            and all(isinstance(key, str) and ENV_KEY_RE.fullmatch(key) for key in environment_keys),
+            "Legacy environment key allowlist is invalid.",
+        )
+        legacy = {**legacy_raw, "environment_keys": environment_keys}
 
     databases_raw = raw.get("databases")
     _require(isinstance(databases_raw, list) and databases_raw, "At least one database is required.")
@@ -157,17 +202,24 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         _require(isinstance(item, dict), "Application entries must be objects.")
         allowed_app = {
             "name", "role", "dockerfile", "port", "domain", "health_path",
-            "environment", "persistent_volume", "auto_deploy",
+            "environment", "persistent_volume", "auto_deploy", "base_directory",
         }
         _require(set(item) <= allowed_app, "Unknown application field.")
         name = item.get("name")
         role = item.get("role")
         dockerfile = item.get("dockerfile")
+        base_directory = item.get("base_directory", "/")
         port = item.get("port")
         _require(isinstance(name, str) and PRODUCT_RE.fullmatch(name), "Invalid application name.")
         _require(name not in names, "Duplicate application name.")
         _require(role in ALLOWED_ROLES, "Unsupported application role.")
         _require(isinstance(dockerfile, str) and SAFE_PATH_RE.fullmatch(dockerfile) and ".." not in dockerfile, "Invalid Dockerfile path.")
+        _require(
+            isinstance(base_directory, str)
+            and (base_directory == "/" or SAFE_PATH_RE.fullmatch(base_directory))
+            and ".." not in base_directory,
+            "Invalid application base directory.",
+        )
         _require(isinstance(port, int) and 1 <= port <= 65535, "Invalid application port.")
         _require(item.get("auto_deploy") is True, "Advanced development applications must enable native auto-deploy.")
         health_path = item.get("health_path")
@@ -197,7 +249,14 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         keys = [entry["key"] for entry in environment]
         _require(len(keys) == len(set(keys)), f"Application {name!r} has duplicate environment keys.")
         names.add(name)
-        applications.append({**item, "domain": domain, "environment": environment})
+        applications.append(
+            {
+                **item,
+                "base_directory": base_directory,
+                "domain": domain,
+                "environment": environment,
+            }
+        )
 
     _require(api_count == 1, "Advanced product must declare exactly one API.")
     _require(mobile_count <= 1, "Advanced product may declare at most one mobile frontend.")
@@ -207,7 +266,14 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         for entry in app["environment"]
         if entry["source"] == "legacy_env"
     }
-    _require(declared_legacy_keys <= set(environment_keys), "Application requests a legacy secret outside the allowlist.")
+    _require(
+        declared_legacy_keys <= set(environment_keys),
+        "Application requests a legacy secret outside the allowlist.",
+    )
+    _require(
+        not declared_legacy_keys or legacy is not None,
+        "legacy_env sources require a legacy rollback descriptor.",
+    )
 
     backup = raw.get("backup")
     _require(isinstance(backup, dict) and backup.get("enabled") is True, "Advanced database backups must be enabled.")
@@ -241,7 +307,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "repository": repository,
         "branch": "dev",
         "coolify_github_app_name": github_app,
-        "legacy": {**legacy, "environment_keys": environment_keys},
+        "legacy": legacy,
         "applications": applications,
         "databases": databases,
         "redis": redis_resources,

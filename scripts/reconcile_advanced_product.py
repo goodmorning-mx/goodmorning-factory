@@ -14,7 +14,6 @@ import json
 import os
 import secrets
 import sys
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -362,7 +361,7 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         "git_repository": manifest["repository"],
         "git_branch": "dev",
         "build_pack": "dockerfile",
-        "base_directory": "/",
+        "base_directory": app["base_directory"],
         "dockerfile_location": app["dockerfile"],
         "ports_exposes": str(app["port"]),
         "domains": app["domain"] or "",
@@ -385,7 +384,9 @@ def _environment_values(
     database_urls: dict[str, str],
     redis_urls: dict[str, str],
     legacy_values: dict[str, str],
+    current: dict[str, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
+    current = current or {}
     values: list[dict[str, Any]] = []
     for item in app["environment"]:
         source = item["source"]
@@ -393,8 +394,23 @@ def _environment_values(
             value = item["value"]
         elif source == "database_url":
             value = database_urls.get(item["resource"])
+            if isinstance(value, str) and item.get("driver") == "psycopg":
+                if value.startswith("postgresql://"):
+                    value = "postgresql+psycopg://" + value.removeprefix("postgresql://")
+                elif value.startswith("postgres://"):
+                    value = "postgresql+psycopg://" + value.removeprefix("postgres://")
         elif source == "redis_url":
             value = redis_urls.get(item["resource"])
+        elif source == "generated_secret":
+            existing = current.get(item["key"])
+            if existing is None:
+                value = secrets.token_urlsafe(48)
+            else:
+                value = _field(existing, "real_value")
+                if not isinstance(value, str) or not value:
+                    raise ReconcileError(
+                        f"Existing generated secret {item['key']!r} cannot be read; refusing implicit rotation."
+                    )
         else:
             value = legacy_values.get(item["legacy_key"])
         if not isinstance(value, str) or (source != "literal" and not value):
@@ -408,7 +424,8 @@ def _environment_values(
                 "is_preview": False,
                 "is_literal": True,
                 "is_multiline": False,
-                "is_shown_once": source in {"legacy_env", "database_url", "redis_url"},
+                "is_shown_once": source
+                in {"legacy_env", "database_url", "redis_url", "generated_secret"},
             }
         )
     return values
@@ -469,8 +486,14 @@ def _ensure_applications(
                 }
             )
             continue
-        desired = _environment_values(app, database_urls, redis_urls, legacy_values)
         current = {str(_field(item, "key")): item for item in _items(client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}/envs"))}
+        desired = _environment_values(
+            app,
+            database_urls,
+            redis_urls,
+            legacy_values,
+            current,
+        )
         for variable in desired:
             existing_variable = current.get(variable["key"])
             if existing_variable is None:
@@ -521,7 +544,11 @@ def reconcile(
     )
     _ensure_project_environment(client, manifest, context, actions)
     database_urls, redis_urls = _ensure_databases(client, manifest, context, actions)
-    legacy_values = _legacy_environment(client, manifest) if client.apply else {}
+    legacy_values = (
+        _legacy_environment(client, manifest)
+        if client.apply and manifest.get("legacy") is not None
+        else {}
+    )
     _ensure_applications(
         client,
         manifest,
@@ -536,7 +563,7 @@ def reconcile(
         "status": "applied" if client.apply else "planned",
         "topology": manifest["topology"],
         "product": product,
-        "legacy_retained": True,
+        "legacy_retained": manifest.get("legacy") is not None,
         "resources": resource_names(manifest),
         "actions": _redacted(actions),
     }
