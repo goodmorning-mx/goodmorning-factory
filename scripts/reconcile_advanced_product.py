@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plan or safely reconcile a resources-v3 product in Coolify development.
+"""Plan or safely reconcile a resources-v3 product in Coolify.
 
 The advanced reconciler is additive: it never deletes, renames, stops or mutates
 the retained legacy resource.  Apply is guarded by an environment switch and an
@@ -21,14 +21,32 @@ from dataclasses import dataclass
 from typing import Any
 
 try:
-    from advanced_product_contract import ContractError, load_manifest, resource_names
+    from advanced_product_contract import (
+        ContractError,
+        PRODUCTION_TOPOLOGY,
+        load_manifest,
+        resource_names,
+    )
 except ModuleNotFoundError:  # Imported as scripts.reconcile_advanced_product in tests.
-    from scripts.advanced_product_contract import ContractError, load_manifest, resource_names
+    from scripts.advanced_product_contract import (
+        ContractError,
+        PRODUCTION_TOPOLOGY,
+        load_manifest,
+        resource_names,
+    )
 
 TIMEOUT = 30
 TERMINAL_DEPLOYMENT = {"finished", "failed", "cancelled", "canceled"}
 SUCCESS_DEPLOYMENT = {"finished"}
 SENSITIVE_NAME = ("PASSWORD", "SECRET", "TOKEN", "KEY", "DATABASE_URL", "REDIS_URL")
+
+
+def _environment(manifest: dict[str, Any]) -> str:
+    return "production" if manifest["topology"] == PRODUCTION_TOPOLOGY else "dev"
+
+
+def _suffix(manifest: dict[str, Any]) -> str:
+    return "prod" if _environment(manifest) == "production" else "dev"
 
 
 class ReconcileError(RuntimeError):
@@ -160,7 +178,9 @@ def _uuid(value: Any, kind: str) -> str:
     return str(identifier)
 
 
-def _discover_context(client: Coolify, product: str, server_name: str, github_app_name: str, destination_uuid: str) -> dict[str, str | None]:
+def _discover_context(client: Coolify, manifest: dict[str, Any], server_name: str, github_app_name: str, destination_uuid: str) -> dict[str, str | None]:
+    product = manifest["product"]
+    environment_name = _environment(manifest)
     servers = _items(client.get("/servers"))
     server = _unique(servers, server_name, "server")
     if not server:
@@ -171,7 +191,7 @@ def _discover_context(client: Coolify, product: str, server_name: str, github_ap
     if project:
         project_uuid = _uuid(project, "project")
         detail = client.get(f"/projects/{urllib.parse.quote(project_uuid, safe='')}")
-        environment = _unique(_items(_field(detail, "environments") or detail), "dev", "environment")
+        environment = _unique(_items(_field(detail, "environments") or detail), environment_name, "environment")
     apps = _items(client.get("/github-apps"))
     github_app = _unique(apps, github_app_name, "GitHub App")
     if not github_app:
@@ -187,25 +207,26 @@ def _discover_context(client: Coolify, product: str, server_name: str, github_ap
 
 def _ensure_project_environment(client: Coolify, manifest: dict[str, Any], context: dict[str, str | None], actions: list[dict[str, Any]]) -> None:
     product = manifest["product"]
+    environment_name = _environment(manifest)
     if context["project_uuid"] is None:
         if not client.apply:
             actions.append({"resource": product, "kind": "project", "action": "would_create"})
             return
-        created = client.post("/projects", {"name": product, "description": f"GoodMorning {product} resources-v3 development project."})
+        created = client.post("/projects", {"name": product, "description": f"GoodMorning {product} resources-v3 project."})
         context["project_uuid"] = _uuid(created, "project")
         actions.append({"resource": product, "kind": "project", "action": "created"})
     else:
         actions.append({"resource": product, "kind": "project", "action": "reused"})
     if context["environment_uuid"] is None:
         if not client.apply:
-            actions.append({"resource": "dev", "kind": "environment", "action": "would_create"})
+            actions.append({"resource": environment_name, "kind": "environment", "action": "would_create"})
             return
         path = f"/projects/{urllib.parse.quote(str(context['project_uuid']), safe='')}/environments"
-        created = client.post(path, {"name": "dev", "description": f"{product} integrated development."})
+        created = client.post(path, {"name": environment_name, "description": f"{product} {environment_name}."})
         context["environment_uuid"] = _uuid(created, "environment")
-        actions.append({"resource": "dev", "kind": "environment", "action": "created"})
+        actions.append({"resource": environment_name, "kind": "environment", "action": "created"})
     else:
-        actions.append({"resource": "dev", "kind": "environment", "action": "reused"})
+        actions.append({"resource": environment_name, "kind": "environment", "action": "reused"})
 
 
 def _scope_conflicts(item: dict[str, Any], context: dict[str, str | None]) -> bool:
@@ -253,17 +274,19 @@ def _ensure_databases(
     database_urls: dict[str, str] = {}
     redis_urls: dict[str, str] = {}
     product = manifest["product"]
+    environment_name = _environment(manifest)
+    suffix = _suffix(manifest)
     common = {
         "server_uuid": context["server_uuid"],
         "project_uuid": context["project_uuid"],
-        "environment_name": "dev",
+        "environment_name": environment_name,
         "environment_uuid": context["environment_uuid"],
         "destination_uuid": context["destination_uuid"],
         "is_public": False,
         "instant_deploy": False,
     }
     for item in manifest["databases"]:
-        resource_name = f"{product}-{item['name']}-dev"
+        resource_name = f"{product}-{item['name']}-{suffix}"
         found = _unique(existing, resource_name, "database")
         if found and _scope_conflicts(found, context):
             raise ReconcileError(f"Database {resource_name!r} exists outside the selected scope.")
@@ -274,11 +297,11 @@ def _ensure_databases(
             payload = {
                 **common,
                 "name": resource_name,
-                "description": f"Factory-managed private {item['engine']} development database.",
+                "description": f"Factory-managed private {item['engine']} {environment_name} database.",
                 "image": item["image"],
-                "postgres_user": f"{product.replace('-', '_')}_dev",
+                "postgres_user": f"{product.replace('-', '_')}_{suffix}",
                 "postgres_password": _password(),
-                "postgres_db": f"{product.replace('-', '_')}_dev",
+                "postgres_db": f"{product.replace('-', '_')}_{suffix}",
             }
             created = client.post("/databases/postgresql", payload)
             identifier = _uuid(created, "database")
@@ -295,7 +318,7 @@ def _ensure_databases(
         elif client.apply:
             raise ReconcileError(f"Database {resource_name!r} does not expose a private internal URL.")
     for item in manifest["redis"]:
-        resource_name = f"{product}-{item['name']}-dev"
+        resource_name = f"{product}-{item['name']}-{suffix}"
         found = _unique(existing, resource_name, "Redis")
         if found and _scope_conflicts(found, context):
             raise ReconcileError(f"Redis {resource_name!r} exists outside the selected scope.")
@@ -306,7 +329,7 @@ def _ensure_databases(
             payload = {
                 **common,
                 "name": resource_name,
-                "description": "Factory-managed private persistent Redis development resource.",
+                "description": f"Factory-managed private persistent Redis {environment_name} resource.",
                 "image": item["image"],
                 "redis_password": _password(),
                 "redis_conf": _redis_conf(),
@@ -345,21 +368,23 @@ def _legacy_environment(client: Coolify, manifest: dict[str, Any]) -> dict[str, 
 
 def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context: dict[str, str | None]) -> dict[str, Any]:
     product = manifest["product"]
+    environment_name = _environment(manifest)
+    suffix = _suffix(manifest)
     role = app["role"]
     volume = app.get("persistent_volume")
     run_options = ""
     if volume:
         run_options = f"--mount source={volume['name']},target={volume['mount_path']}"
     return {
-        "name": f"{product}-{app['name']}-dev",
+        "name": f"{product}-{app['name']}-{suffix}",
         "project_uuid": context["project_uuid"],
         "environment_uuid": context["environment_uuid"],
-        "environment_name": "dev",
+        "environment_name": environment_name,
         "server_uuid": context["server_uuid"],
         "destination_uuid": context["destination_uuid"],
         "github_app_uuid": context["github_app_uuid"],
         "git_repository": manifest["repository"],
-        "git_branch": "dev",
+        "git_branch": manifest["branch"],
         "build_pack": "dockerfile",
         "base_directory": app["base_directory"],
         "dockerfile_location": app["dockerfile"],
@@ -442,13 +467,14 @@ def _ensure_applications(
     deploy: bool,
 ) -> None:
     product = manifest["product"]
+    suffix = _suffix(manifest)
     if context["project_uuid"] is None or context["environment_uuid"] is None:
         for app in manifest["applications"]:
-            actions.append({"resource": f"{product}-{app['name']}-dev", "kind": "application", "action": "planned_after_environment"})
+            actions.append({"resource": f"{product}-{app['name']}-{suffix}", "kind": "application", "action": "planned_after_environment"})
         return
     existing = _items(client.get("/applications"))
     for app in manifest["applications"]:
-        name = f"{product}-{app['name']}-dev"
+        name = f"{product}-{app['name']}-{suffix}"
         found = _unique(existing, name, "application")
         if found and _scope_conflicts(found, context):
             raise ReconcileError(f"Application {name!r} exists outside the selected scope.")
@@ -526,18 +552,27 @@ def reconcile(
     server_name: str,
     destination_uuid: str,
     confirm_product: str | None,
-    deploy: bool,
+    confirm_environment: str | None = None,
+    deploy: bool = False,
 ) -> dict[str, Any]:
     product = manifest["product"]
+    environment_name = _environment(manifest)
     if client.apply:
-        if not _bool_env("COOLIFY_ALLOW_ADVANCED_WRITES"):
-            raise ReconcileError("Apply requires COOLIFY_ALLOW_ADVANCED_WRITES=true.")
+        switch = (
+            "COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES"
+            if environment_name == "production"
+            else "COOLIFY_ALLOW_ADVANCED_WRITES"
+        )
+        if not _bool_env(switch):
+            raise ReconcileError(f"Apply requires {switch}=true.")
         if confirm_product != product:
             raise ReconcileError("Apply requires an exact --confirm-product.")
+        if confirm_environment != environment_name:
+            raise ReconcileError("Apply requires an exact --confirm-environment.")
     actions: list[dict[str, Any]] = []
     context = _discover_context(
         client,
-        product,
+        manifest,
         server_name,
         manifest["coolify_github_app_name"],
         destination_uuid,
@@ -576,6 +611,7 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument("--server", default=os.environ.get("COOLIFY_SERVER_NAME", "localhost"))
     result.add_argument("--destination-uuid", default=os.environ.get("COOLIFY_DESTINATION_UUID"))
     result.add_argument("--confirm-product")
+    result.add_argument("--confirm-environment", choices=("dev", "production"))
     result.add_argument("--deploy", action="store_true")
     return result
 
@@ -597,6 +633,7 @@ def main(argv: list[str] | None = None) -> int:
             server_name=args.server,
             destination_uuid=args.destination_uuid,
             confirm_product=args.confirm_product,
+            confirm_environment=args.confirm_environment,
             deploy=args.deploy,
         )
         print(json.dumps(result, sort_keys=True))
