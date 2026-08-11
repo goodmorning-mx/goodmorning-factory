@@ -6,9 +6,9 @@ from unittest.mock import patch
 from scripts import advanced_product_contract as contract
 from scripts import reconcile_advanced_product as advanced
 try:
-    from test_advanced_product_contract import manifest
+    from test_advanced_product_contract import manifest, production_manifest
 except ModuleNotFoundError:
-    from tests.test_advanced_product_contract import manifest
+    from tests.test_advanced_product_contract import manifest, production_manifest
 
 
 class FakeClient:
@@ -112,6 +112,66 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
                 deploy=False,
             )
 
+    def test_production_plan_uses_production_scope_and_prod_names(self):
+        client = FakeClient()
+        result = advanced.reconcile(
+            contract.validate_manifest(production_manifest()),
+            client=client,
+            server_name="localhost",
+            destination_uuid="destination",
+            confirm_product=None,
+            deploy=False,
+        )
+
+        self.assertEqual(result["status"], "planned")
+        self.assertFalse(result["legacy_retained"])
+        self.assertIn(
+            "helloworldv2-mobile-prod",
+            result["resources"]["applications"],
+        )
+        self.assertFalse(client.writes)
+
+    def test_production_apply_requires_its_own_switch_and_environment(self):
+        client = FakeClient()
+        client.apply = True
+        value = contract.validate_manifest(production_manifest())
+
+        with patch.dict(
+            os.environ,
+            {"COOLIFY_ALLOW_ADVANCED_WRITES": "true"},
+            clear=True,
+        ), self.assertRaisesRegex(
+            advanced.ReconcileError,
+            "COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES",
+        ):
+            advanced.reconcile(
+                value,
+                client=client,
+                server_name="localhost",
+                destination_uuid="destination",
+                confirm_product="helloworldv2",
+                confirm_environment="production",
+                deploy=False,
+            )
+
+        with patch.dict(
+            os.environ,
+            {"COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES": "true"},
+            clear=True,
+        ), self.assertRaisesRegex(
+            advanced.ReconcileError,
+            "exact --confirm-environment",
+        ):
+            advanced.reconcile(
+                value,
+                client=client,
+                server_name="localhost",
+                destination_uuid="destination",
+                confirm_product="helloworldv2",
+                confirm_environment="dev",
+                deploy=False,
+            )
+
     def test_payload_keeps_mobile_as_independent_dockerfile_application(self):
         value = contract.validate_manifest(manifest())
         mobile = next(item for item in value["applications"] if item["role"] == "mobile")
@@ -130,6 +190,25 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual(payload["ports_exposes"], "8060")
         self.assertEqual(payload["custom_docker_run_options"], "")
         self.assertTrue(payload["is_auto_deploy_enabled"])
+
+    def test_production_payload_is_pinned_to_main_and_production(self):
+        value = contract.validate_manifest(production_manifest())
+        mobile = next(item for item in value["applications"] if item["role"] == "mobile")
+        payload = advanced._application_payload(
+            value,
+            mobile,
+            {
+                "project_uuid": "project",
+                "environment_uuid": "environment",
+                "server_uuid": "server",
+                "destination_uuid": "destination",
+                "github_app_uuid": "github",
+            },
+        )
+
+        self.assertEqual(payload["name"], "helloworldv2-mobile-prod")
+        self.assertEqual(payload["git_branch"], "main")
+        self.assertEqual(payload["environment_name"], "production")
 
     def test_payload_preserves_resources_v2_base_directory(self):
         value = contract.validate_manifest(manifest())
