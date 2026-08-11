@@ -48,17 +48,39 @@ class BackupContractTests(unittest.TestCase):
 
     def test_database_selection_is_exact_private_postgres(self):
         selected = rb.select_database(
-            [{"uuid": "db-1", "name": "ledger-postgres-dev", "type": "postgresql", "is_public": False}],
+            [
+                {
+                    "uuid": "db-1",
+                    "name": "ledger-postgres-dev",
+                    "type": "postgresql",
+                    "is_public": False,
+                }
+            ],
             "ledger",
         )
         self.assertEqual(selected["uuid"], "db-1")
         for databases in (
             [],
             [
-                {"uuid": "1", "name": "ledger-postgres-dev", "type": "postgresql"},
-                {"uuid": "2", "name": "ledger-postgres-dev", "type": "postgresql"},
+                {
+                    "uuid": "1",
+                    "name": "ledger-postgres-dev",
+                    "type": "postgresql",
+                },
+                {
+                    "uuid": "2",
+                    "name": "ledger-postgres-dev",
+                    "type": "postgresql",
+                },
             ],
-            [{"uuid": "1", "name": "ledger-postgres-dev", "type": "postgresql", "is_public": True}],
+            [
+                {
+                    "uuid": "1",
+                    "name": "ledger-postgres-dev",
+                    "type": "postgresql",
+                    "is_public": True,
+                }
+            ],
         ):
             with self.assertRaises(rb.BackupError):
                 rb.select_database(databases, "ledger")
@@ -89,7 +111,10 @@ class BackupContractTests(unittest.TestCase):
             ],
         )
         loaded = rb.load_manifest(self.write_manifest(value))
-        self.assertEqual(loaded["_backup_database_name"], "ledger-timescaledb-dev")
+        self.assertEqual(
+            loaded["_backup_database_name"],
+            "ledger-timescaledb-dev",
+        )
         selected = rb.select_database(
             [
                 {
@@ -104,6 +129,42 @@ class BackupContractTests(unittest.TestCase):
             loaded["_backup_database_name"],
         )
         self.assertEqual(selected["uuid"], "db-advanced")
+
+    def test_resources_v3_production_targets_exact_prod_database(self):
+        value = self.manifest(
+            topology="resources-v3-production",
+            branch="main",
+            databases=[
+                {
+                    "name": "timescaledb",
+                    "engine": "timescaledb",
+                    "backup": True,
+                }
+            ],
+        )
+
+        loaded = rb.load_manifest(self.write_manifest(value))
+
+        self.assertEqual(loaded["_backup_environment"], "production")
+        self.assertEqual(
+            loaded["_backup_database_name"],
+            "ledger-timescaledb-prod",
+        )
+
+    def test_resources_v3_production_rejects_non_main_branch(self):
+        value = self.manifest(
+            topology="resources-v3-production",
+            databases=[
+                {
+                    "name": "timescaledb",
+                    "engine": "timescaledb",
+                    "backup": True,
+                }
+            ],
+        )
+
+        with self.assertRaises(rb.BackupError):
+            rb.load_manifest(self.write_manifest(value))
 
     def test_payload_is_s3_enabled_and_retained(self):
         backup = self.manifest()["backup"]
@@ -124,15 +185,46 @@ class BackupContractTests(unittest.TestCase):
     def test_success_with_s3_warning_is_rejected(self):
         class Client:
             def call(self, _method, _path):
-                return {"executions": [{"uuid": "new", "status": "success", "filename": "x.dump", "message": "Warning: S3 upload failed: denied"}]}
+                return {
+                    "executions": [
+                        {
+                            "uuid": "new",
+                            "status": "success",
+                            "filename": "x.dump",
+                            "message": "Warning: S3 upload failed: denied",
+                        }
+                    ]
+                }
 
-        with mock.patch("scripts.reconcile_database_backups.time.monotonic", side_effect=[0, 1]):
+        with mock.patch(
+            "scripts.reconcile_database_backups.time.monotonic",
+            side_effect=[0, 1],
+        ):
             with self.assertRaisesRegex(rb.BackupError, "S3 upload failed"):
-                rb.wait_for_backup(Client(), "db", "backup", set(), 30, sleeper=lambda _seconds: None)
+                rb.wait_for_backup(
+                    Client(),
+                    "db",
+                    "backup",
+                    set(),
+                    30,
+                    sleeper=lambda _seconds: None,
+                )
 
     def test_object_verification_matches_exact_backup_basename(self):
-        listing = {"Contents": [{"Key": "databases/team/product/backup.dump", "Size": 42}]}
-        completed = subprocess.CompletedProcess(args=[], returncode=0, stdout=json.dumps(listing), stderr="")
+        listing = {
+            "Contents": [
+                {
+                    "Key": "databases/team/product/backup.dump",
+                    "Size": 42,
+                }
+            ]
+        }
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(listing),
+            stderr="",
+        )
         environment = {
             "OCI_S3_ENDPOINT": "https://namespace.example.test",
             "OCI_S3_BUCKET": "bucket",
@@ -141,8 +233,14 @@ class BackupContractTests(unittest.TestCase):
             "OCI_S3_SECRET_KEY": "secret",
         }
         with mock.patch.dict(os.environ, environment, clear=True):
-            result = rb.verify_object("/tmp/backup.dump", runner=mock.Mock(return_value=completed))
-        self.assertEqual(result, {"key": "databases/team/product/backup.dump", "size": 42})
+            result = rb.verify_object(
+                "/tmp/backup.dump",
+                runner=mock.Mock(return_value=completed),
+            )
+        self.assertEqual(
+            result,
+            {"key": "databases/team/product/backup.dump", "size": 42},
+        )
 
 
 if __name__ == "__main__":
