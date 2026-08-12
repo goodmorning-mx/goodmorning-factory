@@ -491,7 +491,7 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
             "build_pack": "dockerfile", "base_directory": "/backend",
             "dockerfile_location": "/Dockerfile", "ports_exposes": "8000",
             "fqdn": "https://api.dev.ledger.goodmorning.mx",
-            "instant_deploy": False, "is_auto_deploy_enabled": False,
+            "instant_deploy": True, "is_auto_deploy_enabled": True,
             "autogenerate_domain": False, "health_check_enabled": True,
             "health_check_path": "/health", "health_check_port": "8000",
             "health_check_method": "GET", "health_check_scheme": "http",
