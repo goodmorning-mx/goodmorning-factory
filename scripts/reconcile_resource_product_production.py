@@ -10,7 +10,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from scripts.module_contract import ModuleContractError, validate_product_modules
+try:
+    from scripts.module_contract import ModuleContractError, validate_product_modules
+except ModuleNotFoundError:  # Direct execution: python scripts/reconcile_resource_product_production.py
+    from module_contract import ModuleContractError, validate_product_modules
 
 
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
