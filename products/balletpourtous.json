@@ -18,6 +18,7 @@
       "required_secrets": {},
       "dependencies": [],
       "migrations": {"mode": "none"},
+      "pwa": {"manifest_required": true, "service_worker_required": true, "update_mode": "prompt", "api_auth_cache": "network-only"},
       "compatibility": {"node": ">=20", "factory_api": "^1.0", "products": ["balletpourtous"]}
     },
     {

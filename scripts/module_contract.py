@@ -18,6 +18,7 @@ ALLOWED_KINDS = {"backend", "frontend", "full-stack"}
 ALLOWED_MIGRATION_MODES = {"none", "alembic", "sql"}
 ALLOWED_SECRET_SOURCES = {"GOODMORNING_MANAGED", "CUSTOMER_MANAGED"}
 ALLOWED_SECRET_TARGETS = {"backend", "frontend"}
+ALLOWED_PWA_UPDATE_MODES = {"prompt"}
 
 
 class ModuleContractError(ValueError):
@@ -66,7 +67,7 @@ def validate_module(raw: Any) -> dict[str, Any]:
     allowed = {
         "name", "version", "kind", "backend_package", "frontend_package",
         "python_requires", "node_requires", "env", "dependencies", "migrations",
-        "compatibility", "entrypoints", "required_secrets",
+        "compatibility", "entrypoints", "required_secrets", "pwa",
     }
     _require(set(raw) <= allowed, "Module declaration contains unknown fields.")
 
@@ -146,6 +147,19 @@ def validate_module(raw: Any) -> dict[str, Any]:
     entrypoints = raw.get("entrypoints", {})
     _require(isinstance(entrypoints, dict) and set(entrypoints) <= {"backend", "frontend"}, "Invalid module entrypoints declaration.")
 
+    pwa_raw = raw.get("pwa")
+    pwa: dict[str, Any] = {}
+    if pwa_raw is not None:
+        _require(kind in {"frontend", "full-stack"}, "PWA requirements apply only to frontend modules.")
+        _require(isinstance(pwa_raw, dict) and set(pwa_raw) <= {"manifest_required", "service_worker_required", "update_mode", "api_auth_cache"}, "Invalid PWA requirements declaration.")
+        for field in ("manifest_required", "service_worker_required"):
+            _require(isinstance(pwa_raw.get(field), bool) and pwa_raw[field], f"pwa.{field} must be true.")
+        update_mode = _string(pwa_raw.get("update_mode"), "pwa.update_mode is required.")
+        _require(update_mode in ALLOWED_PWA_UPDATE_MODES, "PWA updates must use prompt mode.")
+        api_auth_cache = _string(pwa_raw.get("api_auth_cache"), "pwa.api_auth_cache is required.")
+        _require(api_auth_cache == "network-only", "PWA API/auth cache policy must be network-only.")
+        pwa = {"manifest_required": True, "service_worker_required": True, "update_mode": update_mode, "api_auth_cache": api_auth_cache}
+
     return {
         "name": name,
         "version": version,
@@ -160,6 +174,7 @@ def validate_module(raw: Any) -> dict[str, Any]:
         "migrations": migration,
         "compatibility": normalized_compatibility,
         "entrypoints": dict(entrypoints),
+        "pwa": pwa,
     }
 
 
