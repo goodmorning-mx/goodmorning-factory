@@ -10,7 +10,7 @@
   "modules": [
     {
       "name": "gm-pwa",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "kind": "frontend",
       "frontend_package": "@goodmorning/gm-pwa",
       "node_requires": ["react>=18"],
