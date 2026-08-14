@@ -103,6 +103,7 @@ jobs:
           branch="factory/module-${MODULE}-${TARGET}"
           root="${RUNNER_TEMP}/product"
           gh repo clone "${repo}" "${root}" -- --branch dev --depth 1
+          gh auth setup-git
           git -C "${root}" switch -c "${branch}"
           python scripts/module_updates.py --module "${MODULE}" --product "${PRODUCT}" --target "${TARGET}" --product-root "${root}" --apply
           if [ -f "${root}/frontend/package.json" ]; then
