@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "modules": [
+    {
+      "name": "gm-auth",
+      "repository": "goodmorning-mx/gm-auth",
+      "backend_package": "gm-auth",
+      "frontend_package": "@goodmorning/gm-auth",
+      "python_requires": ">=3.12",
+      "node_requires": ">=20",
+      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
+    },
+    {
+      "name": "gm-agent",
+      "repository": "goodmorning-mx/gm-agent",
+      "backend_package": "gm-agent",
+      "frontend_package": "@goodmorning/gm-agent",
+      "python_requires": ">=3.12",
+      "node_requires": ">=20",
+      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
+    },
+    {
+      "name": "gm-mcp",
+      "repository": "goodmorning-mx/gm-mcp",
+      "backend_package": "gm-mcp",
+      "python_requires": ">=3.12",
+      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
+    },
+    {
+      "name": "gm-billing",
+      "repository": "goodmorning-mx/gm-billing",
+      "backend_package": "gm-billing",
+      "frontend_package": "@goodmorning/gm-billing",
+      "python_requires": ">=3.12",
+      "node_requires": ">=20",
+      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
+    },
+    {
+      "name": "gm-pwa",
+      "repository": "goodmorning-mx/gm-pwa",
+      "frontend_package": "@goodmorning/gm-pwa",
+      "node_requires": ">=20",
+      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
+    }
+  ]
+}
