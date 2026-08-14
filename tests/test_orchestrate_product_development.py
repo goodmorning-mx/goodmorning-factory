@@ -266,6 +266,10 @@ class Stage9OrchestratorTests(unittest.TestCase):
         self.assertTrue(any(b.get("reason") == "not_checked_without_unrequested_deployment" for b in blockers))
         self.assertNotIn("not_checked", op.SAFE_STATUSES)
 
+    def test_dry_run_deploy_plan_allows_runtime_checks_deferred_to_apply(self):
+        plan = {"status": "dry_run", "mode": "dry_run", "selected_destination": {"status": "found"}, "backend_deployment": {"status": "not_requested", "user_requested": True}, "backend_runtime_readiness": {"status": "not_checked"}, "backend_smoke_check": {"status": "not_checked"}, "frontend_deployment": {"status": "not_requested", "user_requested": True}, "frontend_runtime_readiness": {"status": "not_checked"}, "frontend_smoke_check": {"status": "not_checked"}, "blockers": []}
+        self.assertTrue(op.classify_plan_safety(plan)[0])
+
     def test_execution_metadata_and_exit_codes(self):
         with mock.patch.dict(os.environ, env_for("deploy-backend","plan"), clear=True), mock.patch.object(op,"provision",return_value={"status":"dry_run","selected_destination":{"status":"found"},"backend_deployment":{"status":"would_deploy"}}):
             code,res=op.orchestrate(oargs(operation="deploy-backend", phase="plan"), client_factory=lambda: object())
