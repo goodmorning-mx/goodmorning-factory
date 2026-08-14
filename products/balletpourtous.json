@@ -7,6 +7,10 @@
     "coolify_github_app_name": "goodmorning-mx-coolify",
     "backend_base_directory": "/backend",
   "frontend_base_directory": "/frontend",
+  "module_update_policy": {
+    "default": {"patch": "auto", "minor": "manual", "major": "blocked"},
+    "modules": {"gm-pwa": {"patch": "auto"}}
+  },
   "modules": [
     {
       "name": "gm-pwa",
