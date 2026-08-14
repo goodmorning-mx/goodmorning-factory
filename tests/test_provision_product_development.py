@@ -360,6 +360,37 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
                 },
             )
 
+    def test_resolves_only_supported_managed_backend_binding(self):
+        secret_value = "test-only-openai-value"
+        request = args(required_secrets_json=json.dumps([{
+            "module": "gm-agent",
+            "key": "OPENAI_API_KEY",
+            "source": "GOODMORNING_MANAGED",
+            "binding": "goodmorning/openai-default",
+            "target": "backend",
+        }]))
+        with mock.patch.dict(os.environ, {"GOODMORNING_MANAGED_OPENAI_API_KEY": secret_value}, clear=True):
+            self.assertEqual(pp.resolve_required_secrets(request), {"OPENAI_API_KEY": secret_value})
+
+    def test_missing_managed_secret_fails_before_provisioning(self):
+        request = args(required_secrets_json=json.dumps([{
+            "module": "gm-agent",
+            "key": "OPENAI_API_KEY",
+            "source": "GOODMORNING_MANAGED",
+            "binding": "goodmorning/openai-default",
+            "target": "backend",
+        }]))
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(pp.ProvisioningError, "Required GoodMorning managed secret is missing"):
+                pp.resolve_required_secrets(request)
+
+    def test_secret_value_is_added_as_runtime_backend_secret(self):
+        desired = pp.desired_backend_env("ledger", "postgresql+psycopg://db", {"OPENAI_API_KEY": "test-only-openai-value"})
+        openai = next(item for item in desired if item["key"] == "OPENAI_API_KEY")
+        self.assertTrue(openai["secret"])
+        self.assertTrue(openai["is_runtime"])
+        self.assertEqual(pp.env_payload(openai)["is_shown_once"], True)
+
     def test_main_prints_structured_json(self):
         expected = {"status": "dry_run", "resources": []}
         with mock.patch.object(pp, "provision", return_value=expected):

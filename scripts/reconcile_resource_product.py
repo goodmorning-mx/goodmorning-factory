@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts.module_contract import ModuleContractError, validate_product_modules
+    from scripts.module_contract import ModuleContractError, compile_installation, validate_product_modules
 except ModuleNotFoundError:  # Direct execution: python scripts/reconcile_resource_product.py
-    from module_contract import ModuleContractError, validate_product_modules
+    from module_contract import ModuleContractError, compile_installation, validate_product_modules
 
 
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -99,6 +99,7 @@ def build_provisioner_argv(
         "--github-app", github_app,
         "--destination-uuid", destination_uuid,
         "--dry-run" if phase == "plan" else "--apply",
+        "--required-secrets-json", json.dumps(compile_installation(manifest["modules"])["secret_bindings"], separators=(",", ":")),
     ]
 
     if phase == "apply":

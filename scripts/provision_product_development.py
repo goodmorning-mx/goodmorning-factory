@@ -43,6 +43,8 @@ POST_BACKEND_APPLICATION_CREATE = "/applications/private-github-app"
 POST_FRONTEND_APPLICATION_CREATE = "/applications/private-github-app"
 FRONTEND_ENV_KEYS = {"VITE_API_URL"}
 BACKEND_ENV_KEYS = {"DATABASE_URL", "APP_ENV", "CORS_ORIGINS"}
+BACKEND_CORE_ENV_KEYS = BACKEND_ENV_KEYS
+MANAGED_SECRET_BINDINGS = {"goodmorning/openai-default": "GOODMORNING_MANAGED_OPENAI_API_KEY"}
 APPROVED_BACKEND_APPLICATION_FIELDS = {"name", "project_uuid", "environment_uuid", "environment_name", "server_uuid", "destination_uuid", "github_app_uuid", "git_repository", "git_branch", "build_pack", "base_directory", "dockerfile_location", "ports_exposes", "domains", "instant_deploy", "is_auto_deploy_enabled", "autogenerate_domain", "health_check_enabled", "health_check_path", "health_check_port", "health_check_method", "health_check_scheme", "health_check_return_code"}
 APPROVED_BACKEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline", "is_shown_once"}
 APPROVED_FRONTEND_APPLICATION_FIELDS = APPROVED_BACKEND_APPLICATION_FIELDS
@@ -319,8 +321,8 @@ class CoolifyClient:
 
     def bind_backend_env_contract(self, desired_env: list[dict[str, Any]]) -> None:
         contract = {item["key"]: env_payload(item) for item in desired_env}
-        if set(contract) != BACKEND_ENV_KEYS:
-            raise ProvisioningError("Backend env desired contract must include exactly the approved keys.", error_type="safety")
+        if not BACKEND_CORE_ENV_KEYS <= set(contract):
+            raise ProvisioningError("Backend env desired contract is missing an approved core key.", error_type="safety")
         if self.expected_backend_env_contract is not None and self.expected_backend_env_contract != contract:
             raise ProvisioningError("Refusing to change the bound Backend env desired contract during this execution.", error_type="safety")
         self.expected_backend_env_contract = contract
@@ -506,16 +508,17 @@ class CoolifyClient:
         if set(json_body) - APPROVED_BACKEND_ENV_FIELDS:
             raise ProvisioningError("Backend env payload contains fields outside the approved contract.", error_type="safety")
         key = json_body.get("key")
-        if key not in BACKEND_ENV_KEYS:
+        if key not in (self.expected_backend_env_contract or {}):
             raise ProvisioningError("Backend env payload key is not allowlisted.", error_type="safety")
         required = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline"}
-        if key == "DATABASE_URL":
-            if set(json_body) != required | {"is_shown_once"}:
+        expected_payload = self.expected_backend_env_contract.get(str(key))
+        is_secret = isinstance(expected_payload, dict) and "is_shown_once" in expected_payload
+        if is_secret:
+            if set(json_body) != required | {"is_shown_once"} or json_body.get("is_shown_once") is not True:
                 raise ProvisioningError("Backend env payload fields do not exactly match the approved secret contract.", error_type="safety")
-            if json_body.get("is_shown_once") is not True:
-                raise ProvisioningError("Backend env payload secret marker does not match the approved contract.", error_type="safety")
             if not str(json_body.get("value") or "").startswith("postgresql+psycopg://"):
-                raise ProvisioningError("Backend env value does not match the bound desired contract.", error_type="safety")
+                if key == "DATABASE_URL":
+                    raise ProvisioningError("Backend env value does not match the bound desired contract.", error_type="safety")
         else:
             if set(json_body) != required:
                 raise ProvisioningError("Backend env payload fields do not exactly match the approved runtime contract.", error_type="safety")
@@ -523,7 +526,6 @@ class CoolifyClient:
         for flag, expected in expected_flags.items():
             if json_body.get(flag) is not expected:
                 raise ProvisioningError(f"Backend env payload flag {flag} does not match the approved contract.", error_type="safety")
-        expected_payload = self.expected_backend_env_contract.get(str(key))
         if expected_payload is None or json_body != expected_payload:
             raise ProvisioningError("Backend env value does not match the bound desired contract.", error_type="safety")
 
@@ -2627,13 +2629,43 @@ def reconcile_frontend_environment(client: CoolifyClient, args: argparse.Namespa
     return {"status":status,"variables":results,"blockers":blockers,"observed":observed}
 
 
-def desired_backend_env(product: str, database_url: str | None) -> list[dict[str, Any]]:
+def resolve_required_secrets(args: argparse.Namespace) -> dict[str, str]:
+    raw = getattr(args, "required_secrets_json", "[]") or "[]"
+    try:
+        bindings = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ProvisioningError("Required secret bindings are not valid JSON.", error_type="secret") from exc
+    if not isinstance(bindings, list):
+        raise ProvisioningError("Required secret bindings must be a list.", error_type="secret")
+    resolved: dict[str, str] = {}
+    for item in bindings:
+        if not isinstance(item, dict) or set(item) != {"module", "key", "source", "binding", "target"}:
+            raise ProvisioningError("Required secret binding contract is invalid.", error_type="secret")
+        if item["target"] != "backend":
+            raise ProvisioningError(f"Required secret target is unsupported for module {item['module']!r}.", error_type="secret")
+        if item["source"] != "GOODMORNING_MANAGED":
+            raise ProvisioningError(f"Secret source {item['source']!r} is not enabled in this Factory environment.", error_type="secret")
+        source_env = MANAGED_SECRET_BINDINGS.get(item["binding"])
+        if source_env is None:
+            raise ProvisioningError(f"GoodMorning managed secret binding {item['binding']!r} is not configured.", error_type="secret")
+        value = os.environ.get(source_env)
+        if not value:
+            raise ProvisioningError(f"Required GoodMorning managed secret is missing for {item['key']!r}.", error_type="secret")
+        if item["key"] in resolved:
+            raise ProvisioningError(f"Required secret {item['key']!r} is declared more than once.", error_type="secret")
+        resolved[item["key"]] = value
+    return resolved
+
+
+def desired_backend_env(product: str, database_url: str | None, required_secrets: dict[str, str] | None = None) -> list[dict[str, Any]]:
     base={"is_runtime":True,"is_buildtime":False,"is_preview":False,"is_literal":True,"is_multiline":False}
-    return [
+    desired = [
         {"key":"DATABASE_URL","value":database_url,"secret":True, **base},
         {"key":"APP_ENV","value":"dev","secret":False, **base},
         {"key":"CORS_ORIGINS","value":frontend_domain(product),"secret":False, **base},
     ]
+    desired.extend({"key": key, "value": value, "secret": True, **base} for key, value in (required_secrets or {}).items())
+    return desired
 
 
 def env_payload(desired: dict[str, Any]) -> dict[str, Any]:
@@ -2723,7 +2755,7 @@ def reconcile_backend_environment(client: CoolifyClient, args: argparse.Namespac
     results=[]; blockers=[]
     if backend.get("status") not in {"exists","created"} or not uuid:
         return {"status":"blocked","variables":[],"blockers":[{"reason":"backend_application_not_verified"}]}
-    desired_env = desired_backend_env(args.product, db_url)
+    desired_env = desired_backend_env(args.product, db_url, getattr(args, "required_secret_values", {}))
     if hasattr(client, "bind_backend_env_contract"):
         client.bind_backend_env_contract(desired_env)
     envs=item_list(client.get(f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs"))
@@ -2781,7 +2813,7 @@ def reconcile_backend_environment(client: CoolifyClient, args: argparse.Namespac
             status="blocked"
     else:
         status="exists"
-    return {"status":status,"variables":results,"blockers":blockers}
+    return {"status":status,"variables":results,"desired_keys":[item["key"] for item in desired_env],"blockers":blockers}
 
 DEPLOYMENT_OFFICIAL_STATUSES = {"queued", "in_progress", "finished", "failed", "cancelled-by-user"}
 DEPLOYMENT_PENDING_STATUSES = {"queued", "in_progress"}
@@ -2935,14 +2967,15 @@ def backend_deployment_preflight(args: argparse.Namespace, postgres: dict[str, A
     if not isinstance(env_rows, list) or not env_rows:
         blockers.append({"resource":"backend_deployment","reason":"backend_environment_variables_missing"})
         env_rows = [] if not isinstance(env_rows, list) else env_rows
+    expected_keys = set(backend_env.get("desired_keys") or BACKEND_CORE_ENV_KEYS)
     counts: dict[str, int] = {}
     for row in env_rows:
         key = row.get("key") if isinstance(row, dict) else None
-        if key in BACKEND_ENV_KEYS:
+        if key in expected_keys:
             counts[str(key)] = counts.get(str(key), 0) + 1
         else:
             blockers.append({"resource":"backend_deployment","reason":"backend_environment_unexpected_key", "key": key})
-    for key in sorted(BACKEND_ENV_KEYS):
+    for key in sorted(expected_keys):
         count = counts.get(key, 0)
         if count == 0:
             blockers.append({"resource":"backend_deployment","reason":"backend_environment_key_missing", "key": key})
@@ -3659,6 +3692,7 @@ def provision(args: argparse.Namespace, *, client_factory: Callable[[], CoolifyC
     validate_args(args)
     validate_readiness_timing_args(args)
     validate_stage7_timing_args(args)
+    args.required_secret_values = resolve_required_secrets(args)
     mode = mode_from_args(args)
     if mode.is_apply:
         mode.assert_write_gates()
@@ -3709,6 +3743,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--frontend-smoke-interval", type=float, default=5.0)
     parser.add_argument("--frontend-smoke-request-timeout", type=float, default=10.0)
     parser.add_argument("--destination-uuid")
+    parser.add_argument("--required-secrets-json", default="[]", help=argparse.SUPPRESS)
     parser.add_argument("--postgres-readiness-interval", type=float, default=5.0)
     parser.add_argument("--postgres-readiness-timeout", type=float, default=300.0)
     return parser

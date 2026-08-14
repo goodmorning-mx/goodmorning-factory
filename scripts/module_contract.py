@@ -16,6 +16,8 @@ PACKAGE_RE = re.compile(r"^@?[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?$")
 ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 ALLOWED_KINDS = {"backend", "frontend", "full-stack"}
 ALLOWED_MIGRATION_MODES = {"none", "alembic", "sql"}
+ALLOWED_SECRET_SOURCES = {"GOODMORNING_MANAGED", "CUSTOMER_MANAGED"}
+ALLOWED_SECRET_TARGETS = {"backend", "frontend"}
 
 
 class ModuleContractError(ValueError):
@@ -38,6 +40,21 @@ def _package(value: Any, field: str) -> str:
     return value
 
 
+def _required_secrets(raw: Any, module_name: str) -> dict[str, dict[str, str]]:
+    _require(isinstance(raw, dict), f"required_secrets for {module_name!r} must be an object.")
+    normalized: dict[str, dict[str, str]] = {}
+    for key, item in raw.items():
+        _require(isinstance(key, str) and ENV_KEY_RE.fullmatch(key) is not None, f"Invalid required secret key {key!r}.")
+        _require(isinstance(item, dict) and set(item) <= {"source", "binding", "target"}, f"Invalid required secret binding for {key!r}.")
+        source = _string(item.get("source"), f"Secret source for {key!r} is required.")
+        _require(source in ALLOWED_SECRET_SOURCES, f"Unsupported secret source {source!r} for {key!r}.")
+        binding = _string(item.get("binding"), f"Secret binding for {key!r} is required.")
+        target = _string(item.get("target"), f"Secret target for {key!r} is required.")
+        _require(target in ALLOWED_SECRET_TARGETS, f"Unsupported secret target {target!r} for {key!r}.")
+        normalized[key] = {"source": source, "binding": binding, "target": target}
+    return normalized
+
+
 def _version(value: Any, field: str = "version") -> str:
     value = _string(value, f"{field} is required.")
     _require(VERSION_RE.fullmatch(value) is not None, f"Invalid {field}; use semantic versioning.")
@@ -49,7 +66,7 @@ def validate_module(raw: Any) -> dict[str, Any]:
     allowed = {
         "name", "version", "kind", "backend_package", "frontend_package",
         "python_requires", "node_requires", "env", "dependencies", "migrations",
-        "compatibility", "entrypoints",
+        "compatibility", "entrypoints", "required_secrets",
     }
     _require(set(raw) <= allowed, "Module declaration contains unknown fields.")
 
@@ -96,6 +113,9 @@ def validate_module(raw: Any) -> dict[str, Any]:
         env.append(env_item)
         seen_env.add(key)
 
+    required_secrets = _required_secrets(raw.get("required_secrets", {}), name)
+    _require(not (set(required_secrets) & seen_env), "A required secret must not also be declared as a module environment variable.")
+
     dependencies = raw.get("dependencies", [])
     _require(isinstance(dependencies, list) and all(isinstance(v, str) and v for v in dependencies), "Module dependencies must be a list of module names.")
     _require(name not in dependencies and len(dependencies) == len(set(dependencies)), "Module dependencies must be unique and cannot be self-referential.")
@@ -135,6 +155,7 @@ def validate_module(raw: Any) -> dict[str, Any]:
         "python_requires": list(python_requires),
         "node_requires": list(node_requires),
         "env": env,
+        "required_secrets": required_secrets,
         "dependencies": list(dependencies),
         "migrations": migration,
         "compatibility": normalized_compatibility,
@@ -160,10 +181,16 @@ def compile_installation(raw: Any) -> dict[str, Any]:
     python_packages = [m["backend_package"] for m in modules if m["backend_package"]]
     node_packages = [m["frontend_package"] for m in modules if m["frontend_package"]]
     env = [entry for module in modules for entry in module["env"]]
+    secret_bindings = [
+        {"module": module["name"], "key": key, **binding}
+        for module in modules
+        for key, binding in module["required_secrets"].items()
+    ]
     return {
         "modules": modules,
         "python_packages": python_packages,
         "node_packages": node_packages,
         "environment": env,
+        "secret_bindings": secret_bindings,
         "migration_order": [m["name"] for m in modules if m["migrations"]["mode"] != "none"],
     }
