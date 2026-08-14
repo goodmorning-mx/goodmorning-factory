@@ -438,6 +438,13 @@ class CoolifyClient:
             raise ProvisioningError("Frontend env writes require a bound desired env contract.", error_type="safety")
         if set(json_body) != APPROVED_FRONTEND_ENV_FIELDS:
             raise ProvisioningError("Frontend env payload fields do not exactly match the approved VITE_API_URL contract.", error_type="safety")
+        if json_body.get("key") == "VITE_MOCK":
+            if str(json_body.get("value") or "").lower() != "false":
+                raise ProvisioningError("VITE_MOCK writes must explicitly disable mock mode.", error_type="safety")
+            expected_flags = {"is_runtime": False, "is_buildtime": True, "is_preview": False, "is_literal": True, "is_multiline": False}
+            if any(json_body.get(key) is not value for key, value in expected_flags.items()):
+                raise ProvisioningError("VITE_MOCK writes must use the approved build-time literal flags.", error_type="safety")
+            return
         if json_body.get("key") != "VITE_API_URL":
             raise ProvisioningError("Frontend env payload key must be exactly VITE_API_URL.", error_type="safety")
         expected_payload = self.expected_frontend_env_contract.get("VITE_API_URL")
