@@ -9,6 +9,18 @@
   "frontend_base_directory": "/frontend",
   "modules": [
     {
+      "name": "gm-pwa",
+      "version": "0.1.0",
+      "kind": "frontend",
+      "frontend_package": "@goodmorning/gm-pwa",
+      "node_requires": ["react>=18"],
+      "env": [],
+      "required_secrets": {},
+      "dependencies": [],
+      "migrations": {"mode": "none"},
+      "compatibility": {"node": ">=20", "factory_api": "^1.0", "products": ["balletpourtous"]}
+    },
+    {
       "name": "gm-mcp",
       "version": "0.1.0",
       "kind": "backend",
