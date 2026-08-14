@@ -106,7 +106,7 @@ jobs:
           git -C "${root}" switch -c "${branch}"
           python scripts/module_updates.py --module "${MODULE}" --product "${PRODUCT}" --target "${TARGET}" --product-root "${root}" --apply
           if [ -f "${root}/frontend/package.json" ]; then
-            npm --prefix "${root}/frontend" install --package-lock-only --ignore-scripts
+            npm --prefix "${root}/frontend" ci --ignore-scripts
             npm --prefix "${root}/frontend" run build
           fi
           if [ -d "${root}/backend" ]; then
