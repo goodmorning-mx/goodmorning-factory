@@ -99,7 +99,7 @@ jobs:
           TARGET: ${{ steps.plan.outputs.available }}
         run: |
           set -euo pipefail
-          repo="$(python -c 'from scripts.module_updates import load_registry; print(load_registry("modules/registry.json")["'"${MODULE}"'"]["repository"])')"
+          repo="$(python -c 'import json; print(json.load(open("products/'"${PRODUCT}"'.json"))["repository"])')"
           branch="factory/module-${MODULE}-${TARGET}"
           root="${RUNNER_TEMP}/product"
           gh repo clone "${repo}" "${root}" -- --branch dev --depth 1
