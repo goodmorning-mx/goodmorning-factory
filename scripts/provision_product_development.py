@@ -2818,8 +2818,8 @@ def reconcile_backend_environment(client: CoolifyClient, args: argparse.Namespac
 DEPLOYMENT_OFFICIAL_STATUSES = {"queued", "in_progress", "finished", "failed", "cancelled-by-user"}
 DEPLOYMENT_PENDING_STATUSES = {"queued", "in_progress"}
 RUNTIME_HEALTHY_STATUSES = {"running:healthy", "healthy"}
-RUNTIME_TRANSIENT_STATUSES = {"queued", "starting", "running:starting"}
-RUNTIME_UNHEALTHY_STATUSES = {"running:unhealthy", "unhealthy", "exited", "stopped", "failed", "exited:unhealthy"}
+RUNTIME_TRANSIENT_STATUSES = {"queued", "starting", "running:starting", "running:unhealthy"}
+RUNTIME_UNHEALTHY_STATUSES = {"unhealthy", "exited", "stopped", "failed", "exited:unhealthy"}
 
 
 def backend_deployment_result(status: str = "not_requested", **updates: Any) -> dict[str, Any]:

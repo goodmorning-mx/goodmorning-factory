@@ -2271,7 +2271,7 @@ class Stage7BackendDeploymentTests(unittest.TestCase):
     def test_stage7_runtime_smoke_and_argument_guards(self):
         for val in (0, -1, float("inf"), float("nan")):
             with self.assertRaises(pp.ProvisioningError): pp.validate_stage7_timing_args(args(backend_deployment_timeout=val))
-        self.assertEqual(pp.verify_backend_runtime(self.base_client(**{"/applications/api-1":{"uuid":"api-1","name":"ledger-api-dev","status":"running:unhealthy"}}), args(), "api-1")["status"], "running:unhealthy")
+        self.assertEqual(pp.verify_backend_runtime(self.base_client(**{"/applications/api-1":{"uuid":"api-1","name":"ledger-api-dev","status":"running:unhealthy"}}), args(), "api-1")["status"], "runtime_timeout")
         self.assertEqual(pp.verify_backend_runtime(self.base_client(**{"/applications/api-1":{"uuid":"api-1","name":"ledger-api-dev","status":"weird"}}), args(), "api-1")["status"], "runtime_status_unverified")
         for body in ({}, {"status":"ok","environment":"prod","service":"x"}, {"status":"bad","environment":"dev","service":"x"}, {"status":"ok","environment":"dev","service":""}):
             class Resp:
@@ -2401,7 +2401,10 @@ class Stage7AuditCorrectionTests(unittest.TestCase):
         client=FakeClient({"/applications/api-1": [("GET", {"uuid":"api-1","name":"ledger-api-dev","status":"starting"}), ("GET", {"uuid":"api-1","name":"ledger-api-dev","status":"running:healthy"})]})
         r=pp.verify_backend_runtime(client,a,"api-1",sleeper=lambda s: None,clock=iter([0,0,0]).__next__)
         self.assertTrue(r["healthy"])
-        for status in ("running:unhealthy","unhealthy","exited","stopped","failed","exited:unhealthy","mystery"):
+        client=FakeClient({"/applications/api-1": [("GET", {"uuid":"api-1","name":"ledger-api-dev","status":"running:unhealthy"}), ("GET", {"uuid":"api-1","name":"ledger-api-dev","status":"running:healthy"})]})
+        r=pp.verify_backend_runtime(client,a,"api-1",sleeper=lambda s: None,clock=iter([0,0,0]).__next__)
+        self.assertTrue(r["healthy"])
+        for status in ("unhealthy","exited","stopped","failed","exited:unhealthy","mystery"):
             client=FakeClient({"/applications/api-1":{"uuid":"api-1","name":"ledger-api-dev","status":status}})
             r=pp.verify_backend_runtime(client,a,"api-1",sleeper=lambda s: None,clock=iter([0,0]).__next__)
             self.assertFalse(r["healthy"])
