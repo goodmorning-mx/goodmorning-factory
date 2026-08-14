@@ -2496,8 +2496,10 @@ def desired_frontend_env(product: str, backend_api_url: str) -> list[dict[str, A
 
 def frontend_env_payload(desired: dict[str, Any]) -> dict[str, Any]:
     payload={k:desired[k] for k in ("key","value","is_runtime","is_buildtime","is_preview","is_literal","is_multiline")}
-    if set(payload) != APPROVED_FRONTEND_ENV_FIELDS or payload["key"] != "VITE_API_URL":
-        raise ProvisioningError("Frontend env payload must contain exactly the VITE_API_URL build-time contract.", error_type="safety")
+    if set(payload) != APPROVED_FRONTEND_ENV_FIELDS or payload["key"] not in {"VITE_API_URL", "VITE_MOCK"}:
+        raise ProvisioningError("Frontend env payload must contain exactly an approved VITE build-time contract.", error_type="safety")
+    if payload["key"] == "VITE_MOCK" and str(payload["value"]).lower() != "false":
+        raise ProvisioningError("VITE_MOCK must remain disabled in development deployments.", error_type="safety")
     return payload
 
 
@@ -2530,6 +2532,14 @@ def frontend_env_observed_metadata(envs: list[dict[str, Any]], desired: dict[str
         meta["vite_api_url_value_available"] = False
         meta["vite_api_url_value"] = None
         meta["vite_api_url_value_matches"] = False
+    mock_rows = [item for item in envs if isinstance(item, dict) and item.get("key") == "VITE_MOCK" and bool_value(item.get("is_preview")) is False]
+    if len(mock_rows) == 1:
+        available, value = env_value(mock_rows[0])
+        meta["vite_mock_value_available"] = available
+        meta["vite_mock_value_matches"] = available and str(value).lower() == "false"
+    else:
+        meta["vite_mock_value_available"] = False
+        meta["vite_mock_value_matches"] = False
     return meta
 
 
@@ -2581,6 +2591,29 @@ def reconcile_frontend_environment(client: CoolifyClient, args: argparse.Namespa
             else:
                 envs2, verified_row = rediscover_envs_after_write(client, str(uuid), desired, operation); observed = frontend_env_observed_metadata(envs2 or [], desired); results.append(verified_row); actions.append(frontend_env_write_action(key, operation, verified_row["status"], request_attempted=True, write_performed=True, verified=bool(verified_row.get("verified"))))
                 if verified_row.get("status") not in {"created","patched"}: blockers.append({"resource":"frontend_environment","key":key,"reason":verified_row.get("status")})
+    # Existing Coolify applications may carry the legacy VITE_MOCK variable.
+    # Preserve it, but never allow a deployment to keep mock mode enabled.
+    mock_rows = [item for item in envs if isinstance(item, dict) and item.get("key") == "VITE_MOCK" and bool_value(item.get("is_preview")) is False]
+    if len(mock_rows) == 1:
+        available, value = env_value(mock_rows[0])
+        if not available or str(value).lower() != "false":
+            mock = {"key":"VITE_MOCK","value":"false","is_runtime":False,"is_buildtime":True,"is_preview":False,"is_literal":True,"is_multiline":False}
+            if not mode.is_apply:
+                pass
+            elif not mode.frontend_env_writes_enabled:
+                blockers.append({"resource":"frontend_environment","key":"VITE_MOCK","reason":"frontend_env_gates_incomplete"})
+            else:
+                try:
+                    client.update_frontend_env(str(uuid), frontend_env_payload(mock))
+                    envs2, mock_row = rediscover_envs_after_write(client, str(uuid), mock, "update")
+                    if envs2 is not None:
+                        envs = envs2
+                        observed = frontend_env_observed_metadata(envs, desired)
+                    actions.append(frontend_env_write_action("VITE_MOCK", "update", mock_row.get("status", "updated_unverified"), request_attempted=True, write_performed=True, verified=bool(mock_row.get("verified"))))
+                    if mock_row.get("status") not in {"patched", "exists"}:
+                        blockers.append({"resource":"frontend_environment","key":"VITE_MOCK","reason":mock_row.get("status")})
+                except ProvisioningError as exc:
+                    blockers.append({"resource":"frontend_environment","key":"VITE_MOCK","reason":exc.message})
     if not mode.is_apply: status="planned"
     elif blockers: status="partial" if any(r.get("status") in {"duplicate","created_unverified","updated_unverified","write_outcome_unknown"} for r in results) else "blocked"
     else: status="exists"
@@ -3181,8 +3214,12 @@ def frontend_deployment_preflight(args: argparse.Namespace, postgres: dict[str, 
         blockers.append({"resource":"frontend_deployment","reason":"frontend_environment_not_verified"})
     rows = frontend_env.get("variables", []) if isinstance(frontend_env.get("variables", []), list) else []
     observed = frontend_env.get("observed") if isinstance(frontend_env.get("observed"), dict) else {}
-    if observed.get("observed_variable_name_counts") != {"VITE_API_URL": 1}:
+    observed_counts = observed.get("observed_variable_name_counts")
+    allowed_counts = observed_counts == {"VITE_API_URL": 1} or observed_counts == {"VITE_API_URL": 1, "VITE_MOCK": 1}
+    if not allowed_counts:
         blockers.append({"resource":"frontend_deployment","reason":"frontend_environment_not_exact", "observed_variable_names": observed.get("observed_variable_names", [])})
+    if observed_counts == {"VITE_API_URL": 1, "VITE_MOCK": 1} and observed.get("vite_mock_value_matches") is not True:
+        blockers.append({"resource":"frontend_deployment","reason":"vite_mock_not_disabled"})
     vite = [r for r in rows if isinstance(r, dict) and r.get("key") == "VITE_API_URL"]
     if len(vite) != 1:
         blockers.append({"resource":"frontend_deployment","reason":"vite_api_url_missing_or_duplicate"})
