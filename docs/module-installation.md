@@ -31,8 +31,10 @@ registry.register(find_students)
 ```
 
 The product constructs `AgentService(provider, registry, billing)` and mounts
-`gm_agent.api.create_app(...)` in its FastAPI application. `OPENAI_API_KEY` is
-provided through Coolify secrets; it is never committed to a manifest.
+`gm_agent.api.create_app(...)` in its FastAPI application. The module declares
+`OPENAI_API_KEY` through a `GOODMORNING_MANAGED` binding; Factory resolves the
+central value and reconciles it as a runtime-only Coolify backend secret. The
+value is never committed to a manifest, package, frontend, or deployment log.
 
 ## Frontend
 
@@ -63,13 +65,20 @@ migration mode/path, and compatibility before provisioning:
   "modules": [
     {
       "name": "gm-agent",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "kind": "full-stack",
       "backend_package": "gm-agent",
       "frontend_package": "@goodmorning/gm-agent",
       "python_requires": ["gm-mcp>=0.1.0", "gm-billing>=0.1.0"],
       "dependencies": ["gm-mcp", "gm-billing"],
-      "env": [{"key": "OPENAI_API_KEY", "required": true, "secret": true}],
+      "env": [],
+      "required_secrets": {
+        "OPENAI_API_KEY": {
+          "source": "GOODMORNING_MANAGED",
+          "binding": "goodmorning/openai-default",
+          "target": "backend"
+        }
+      },
       "migrations": {"mode": "alembic", "path": "migrations", "minimum_schema": 1},
       "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["*"]}
     }
@@ -77,6 +86,6 @@ migration mode/path, and compatibility before provisioning:
 }
 ```
 
-Factory returns deterministic package lists and migration order through
-`compile_installation`. Product migrations still run through the product's
+Factory returns deterministic package lists, secret bindings, and migration
+order through `compile_installation`. Product migrations still run through the product's
 normal migration service against its own PostgreSQL database.
