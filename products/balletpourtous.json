@@ -27,6 +27,19 @@
       "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["balletpourtous"]}
     },
     {
+      "name": "gm-auth",
+      "version": "0.1.0",
+      "kind": "full-stack",
+      "backend_package": "gm-auth",
+      "frontend_package": "@goodmorning/gm-auth",
+      "node_requires": ["react>=18"],
+      "env": [],
+      "required_secrets": {},
+      "dependencies": [],
+      "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1},
+      "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["balletpourtous"]}
+    },
+    {
       "name": "gm-agent",
       "version": "0.1.3",
       "kind": "full-stack",
