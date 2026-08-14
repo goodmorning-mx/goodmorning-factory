@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from scripts.module_contract import ModuleContractError, validate_product_modules
+
 
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
@@ -56,7 +58,14 @@ def validate_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
     if manifest.get("frontend_base_directory", "/frontend") != "/frontend":
         raise ManifestError("frontend_base_directory must be '/frontend'.")
 
-    return dict(manifest)
+    try:
+        modules = validate_product_modules(manifest.get("modules", []))
+    except ModuleContractError as exc:
+        raise ManifestError(f"Invalid reusable modules: {exc}") from exc
+
+    normalized = dict(manifest)
+    normalized["modules"] = modules
+    return normalized
 
 
 def build_provisioner_argv(
