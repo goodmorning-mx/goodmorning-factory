@@ -57,6 +57,36 @@ class ModuleContractTests(unittest.TestCase):
         with self.assertRaises(ModuleContractError):
             validate_product_modules(value)
 
+    def test_normalizes_managed_secret_bindings_without_values(self):
+        value = modules()
+        value[0].pop("env")
+        value[0]["required_secrets"] = {
+            "OPENAI_API_KEY": {
+                "source": "GOODMORNING_MANAGED",
+                "binding": "goodmorning/openai-default",
+                "target": "backend",
+            }
+        }
+        compiled = compile_installation(value)
+        assert compiled["secret_bindings"] == [{
+            "module": "gm-agent",
+            "key": "OPENAI_API_KEY",
+            "source": "GOODMORNING_MANAGED",
+            "binding": "goodmorning/openai-default",
+            "target": "backend",
+        }]
+
+    def test_rejects_secret_binding_values_and_duplicate_env_declarations(self):
+        value = modules()
+        value[0]["required_secrets"] = {"OPENAI_API_KEY": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/openai-default", "target": "backend"}}
+        with self.assertRaises(ModuleContractError):
+            validate_product_modules(value)
+        value = modules()
+        value[0].pop("env")
+        value[0]["required_secrets"] = {"OPENAI_API_KEY": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/openai-default", "target": "sidecar"}}
+        with self.assertRaises(ModuleContractError):
+            validate_product_modules(value)
+
     def test_resources_manifest_accepts_and_normalizes_modules(self):
         manifest = {
             "topology": "resources-v2",
