@@ -14,7 +14,7 @@
   "modules": [
     {
       "name": "gm-pwa",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "kind": "frontend",
       "frontend_package": "@goodmorning/gm-pwa",
       "node_requires": ["react>=18"],
