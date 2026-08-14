@@ -28,7 +28,7 @@
     },
     {
       "name": "gm-auth",
-      "version": "0.1.2",
+      "version": "0.1.3",
       "kind": "full-stack",
       "backend_package": "gm-auth",
       "frontend_package": "@goodmorning/gm-auth",
