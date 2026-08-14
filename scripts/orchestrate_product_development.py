@@ -299,7 +299,7 @@ def classify_plan_safety(result: dict[str, Any]) -> tuple[bool, list[dict[str, A
         if status == "not_checked":
             deployment_key = "backend_deployment" if path and path[0].startswith("backend_") else "frontend_deployment" if path and path[0].startswith("frontend_") else None
             deployment = result.get(deployment_key) if deployment_key else None
-            dry_run_deployment = result.get("mode") == "dry_run" and isinstance(deployment, dict) and deployment.get("status") in {"not_requested", "planned"}
+            dry_run_deployment = result.get("mode") == "dry_run" and isinstance(deployment, dict) and deployment.get("status") in {"not_requested", "planned", "would_deploy"}
             if not dry_run_deployment and (not isinstance(deployment, dict) or deployment.get("user_requested") or deployment.get("status") not in {"not_requested", "planned"}):
                 blockers.append(_safe_blocker(path, node, "not_checked_without_unrequested_deployment"))
         elif status == "not_requested":
