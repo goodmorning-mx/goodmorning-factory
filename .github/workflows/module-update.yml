@@ -88,6 +88,8 @@ jobs:
           app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
           private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
           owner: goodmorning-mx
+          permission-contents: write
+          permission-pull-requests: write
 
       - name: Apply update and create consumer PR
         if: ${{ inputs.apply }}
@@ -117,8 +119,11 @@ jobs:
           git -C "${root}" config user.email "goodmorning-factory[bot]@users.noreply.github.com"
           git -C "${root}" add -A
           git -C "${root}" commit -m "chore: update ${MODULE} to v${TARGET}"
-          git -C "${root}" push --set-upstream origin "${branch}"
-          pr_url="$(gh pr create --repo "${repo}" --base dev --head "${branch}" --title "chore: update ${MODULE} to v${TARGET}" --body "Automated GoodMorning Factory module update.\n\n- module: ${MODULE}\n- target: v${TARGET}\n- policy: patch auto-update\n- validation: frontend build and backend compile\n\nFactory will record and deploy this update only after the PR is merged.")"
+          git -C "${root}" push origin "HEAD:${branch}"
+          pr_url="$(gh pr list --repo "${repo}" --head "${branch}" --state open --json url --jq '.[0].url')"
+          if [ -z "${pr_url}" ]; then
+            pr_url="$(gh pr create --repo "${repo}" --base dev --head "${branch}" --title "chore: update ${MODULE} to v${TARGET}" --body "Automated GoodMorning Factory module update.\n\n- module: ${MODULE}\n- target: v${TARGET}\n- policy: patch auto-update\n- validation: frontend build and backend compile\n\nFactory will record and deploy this update only after the PR is merged.")"
+          fi
           echo "url=${pr_url}" >> "${GITHUB_OUTPUT}"
           echo "Consumer PR: ${pr_url}" >> "${GITHUB_STEP_SUMMARY}"
           if [ "${{ inputs.auto_merge }}" = true ]; then
