@@ -108,7 +108,12 @@ jobs:
           root="${RUNNER_TEMP}/product"
           gh repo clone "${repo}" "${root}" -- --branch dev --depth 1
           gh auth setup-git
-          git -C "${root}" switch -c "${branch}"
+          if git -C "${root}" ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1; then
+            git -C "${root}" fetch origin "${branch}"
+            git -C "${root}" switch -c "${branch}" --track "origin/${branch}"
+          else
+            git -C "${root}" switch -c "${branch}"
+          fi
           python scripts/module_updates.py --module "${MODULE}" --product "${PRODUCT}" --target "${TARGET}" --product-root "${root}" --apply
           if [ -f "${root}/frontend/package.json" ]; then
             npm --prefix "${root}/frontend" ci --ignore-scripts
@@ -120,7 +125,9 @@ jobs:
           git -C "${root}" config user.name "goodmorning-factory[bot]"
           git -C "${root}" config user.email "goodmorning-factory[bot]@users.noreply.github.com"
           git -C "${root}" add -A
-          git -C "${root}" commit -m "chore: update ${MODULE} to v${TARGET}"
+          if ! git -C "${root}" diff --cached --quiet; then
+            git -C "${root}" commit -m "chore: update ${MODULE} to v${TARGET}"
+          fi
           git -C "${root}" push origin "HEAD:${branch}"
           pr_url="$(gh pr list --repo "${repo}" --head "${branch}" --state open --json url --jq '.[0].url')"
           if [ -z "${pr_url}" ]; then
