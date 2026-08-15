@@ -28,7 +28,9 @@ def migrate_v2_manifest(raw: dict[str, Any], *, resource_uuids: dict[str, Any] |
     if not isinstance(backup, dict):
         raise ContractError("resources-v2 migration requires its reviewed backup contract.")
     app_names = {"api": f"{product}-api-dev", "frontend": f"{product}-frontend-dev"}
-    uuid_map = resource_uuids or {}
+    uuid_map = resource_uuids or raw.get("resource_uuids") or {}
+    if not isinstance(uuid_map, dict):
+        raise ContractError("resources-v2 resource_uuids must be an object when supplied.")
     migration: dict[str, Any] = {
         "from_topology": "resources-v2",
         "mode": "adopt-in-place",
@@ -38,6 +40,7 @@ def migrate_v2_manifest(raw: dict[str, Any], *, resource_uuids: dict[str, Any] |
             "databases": [f"{product}-postgres-dev"],
             "redis": [],
         },
+        "preserve": ["resources", "uuids", "databases", "volumes", "domains", "secrets", "configuration"],
     }
     if uuid_map:
         migration["resource_uuids"] = dict(uuid_map)

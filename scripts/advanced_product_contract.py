@@ -25,6 +25,7 @@ ALLOWED_ENV_SOURCES = {
     "database_url",
     "redis_url",
     "service_url",
+    "managed_secret",
     "legacy_env",
     "generated_secret",
 }
@@ -77,7 +78,7 @@ def _validate_environment(item: Any, *, database_names: set[str], redis_names: s
     _require(isinstance(item, dict), "Application environment entries must be objects.")
     _require(
         set(item)
-        <= {"key", "source", "value", "resource", "legacy_key", "driver"},
+        <= {"key", "source", "value", "resource", "legacy_key", "driver", "binding"},
         "Unknown application environment field.",
     )
     key = item.get("key")
@@ -122,6 +123,22 @@ def _validate_environment(item: Any, *, database_names: set[str], redis_names: s
         resource = item.get("resource")
         _require(resource in application_names, f"Service URL variable {key!r} references an unknown application resource.")
         return {"key": key, "source": source, "resource": resource}
+    if source == "managed_secret":
+        _require(
+            set(item) <= {"key", "source", "binding"},
+            f"Managed secret {key!r} contains unrelated fields.",
+        )
+        binding = item.get("binding")
+        _require(
+            isinstance(binding, str)
+            and (
+                re.fullmatch(r"[A-Z][A-Z0-9_]{0,127}", binding)
+                or re.fullmatch(r"[a-z0-9][a-z0-9/-]{1,127}", binding)
+            ),
+            f"Managed secret binding for {key!r} is invalid.",
+        )
+        _require(SENSITIVE_KEY_RE.search(key) is not None, f"Managed secret target {key!r} is not sensitive.")
+        return {"key": key, "source": source, "binding": binding}
     if source == "generated_secret":
         _require(
             set(item) <= {"key", "source"},
@@ -199,7 +216,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
     if migration_raw is not None:
         _require(topology == TOPOLOGY, "Migration descriptors are only valid for resources-v3 development adoption.")
         _require(isinstance(migration_raw, dict), "Migration descriptor must be an object.")
-        _require(set(migration_raw) <= {"from_topology", "mode", "retain", "resource_names", "resource_uuids"}, "Unknown migration descriptor field.")
+        _require(set(migration_raw) <= {"from_topology", "mode", "retain", "resource_names", "resource_uuids", "preserve"}, "Unknown migration descriptor field.")
         _require(migration_raw.get("from_topology") == "resources-v2", "Only resources-v2 adoption is supported.")
         _require(migration_raw.get("mode") == "adopt-in-place" and migration_raw.get("retain") is True, "Migration must retain existing resources and use adopt-in-place mode.")
         names = migration_raw.get("resource_names")
@@ -209,6 +226,13 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
             _require(isinstance(names[kind], list) and all(isinstance(name, str) and PRODUCT_RE.fullmatch(name) for name in names[kind]), "Migration resource names are invalid.")
         uuids = migration_raw.get("resource_uuids", {})
         _require(isinstance(uuids, dict), "Migration resource_uuids must be an object when present.")
+        preserve = migration_raw.get("preserve", [])
+        _require(
+            isinstance(preserve, list)
+            and len(preserve) == len(set(preserve))
+            and set(preserve) <= {"resources", "uuids", "databases", "volumes", "domains", "secrets", "configuration"},
+            "Migration preserve fields are invalid.",
+        )
         migration = dict(migration_raw)
 
     databases_raw = raw.get("databases")
@@ -261,6 +285,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         allowed_app = {
             "name", "role", "dockerfile", "port", "domain", "health_path",
             "environment", "persistent_volume", "auto_deploy", "base_directory",
+            "dependencies",
         }
         _require(set(item) <= allowed_app, "Unknown application field.")
         name = item.get("name")
@@ -306,6 +331,8 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         ]
         keys = [entry["key"] for entry in environment]
         _require(len(keys) == len(set(keys)), f"Application {name!r} has duplicate environment keys.")
+        dependencies = item.get("dependencies", [])
+        _require(isinstance(dependencies, list), f"Application {name!r} dependencies must be a list.")
         names.add(name)
         applications.append(
             {
@@ -313,11 +340,59 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
                 "base_directory": base_directory,
                 "domain": domain,
                 "environment": environment,
+                "dependencies": dependencies,
             }
         )
 
     _require(api_count == 1, "Advanced product must declare exactly one API.")
     _require(mobile_count <= 1, "Advanced product may declare at most one mobile frontend.")
+
+    # Dependencies are explicit resource references. Strings are accepted as a
+    # concise form and normalized to typed references in the canonical state.
+    resource_kinds = {
+        **{name: "application" for name in names},
+        **{name: "database" for name in database_names},
+        **{name: "redis" for name in redis_names},
+    }
+    _require(
+        len(resource_kinds) == len(names) + len(database_names) + len(redis_names),
+        "Application, database, and Redis names must be globally unique within a product.",
+    )
+    application_map = {app["name"]: app for app in applications}
+    for app in applications:
+        normalized_dependencies: list[dict[str, str]] = []
+        seen_dependencies: set[tuple[str, str]] = set()
+        for dependency in app["dependencies"]:
+            if isinstance(dependency, str):
+                dependency = {"name": dependency}
+            _require(isinstance(dependency, dict), f"Application {app['name']!r} dependency must be a resource reference.")
+            _require(set(dependency) <= {"type", "name"} and isinstance(dependency.get("name"), str), f"Application {app['name']!r} dependency is invalid.")
+            dependency_name = dependency["name"]
+            dependency_type = dependency.get("type") or resource_kinds.get(dependency_name)
+            _require(dependency_type in {"application", "database", "redis"} and resource_kinds.get(dependency_name) == dependency_type, f"Application {app['name']!r} dependency references an undeclared resource.")
+            _require(dependency_name != app["name"], f"Application {app['name']!r} cannot depend on itself.")
+            pair = (dependency_type, dependency_name)
+            _require(pair not in seen_dependencies, f"Application {app['name']!r} has duplicate dependencies.")
+            seen_dependencies.add(pair)
+            normalized_dependencies.append({"type": dependency_type, "name": dependency_name})
+        app["dependencies"] = normalized_dependencies
+
+    # A dependency cycle would make reconciliation order undefined.
+    visiting: set[str] = set()
+    visited: set[str] = set()
+    def visit(name: str) -> None:
+        if name in visiting:
+            raise ContractError("Application dependencies cannot contain cycles.")
+        if name in visited:
+            return
+        visiting.add(name)
+        for dependency in application_map[name]["dependencies"]:
+            if dependency["type"] == "application":
+                visit(dependency["name"])
+        visiting.remove(name)
+        visited.add(name)
+    for app in applications:
+        visit(app["name"])
 
     connections_raw = raw.get("connections", [])
     _require(isinstance(connections_raw, list), "Connections must be a list.")

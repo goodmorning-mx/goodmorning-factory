@@ -9,10 +9,11 @@ import scripts.register_production_manifest as production
 class RegisterProductionManifestTests(unittest.TestCase):
     def test_manifest_is_automatic_main_release_contract(self):
         manifest = production.build_manifest("acme", "storageuuid123")
-        self.assertEqual(manifest["topology"], "resources-v2-production")
+        self.assertEqual(manifest["topology"], "resources-v3-production")
         self.assertEqual(manifest["repository"], "goodmorning-mx/acme")
         self.assertEqual(manifest["branch"], "main")
-        self.assertEqual(manifest["production_domain"], "acme.goodmorning.mx")
+        self.assertEqual(manifest["applications"][1]["domain"], "https://acme.goodmorning.mx")
+        self.assertEqual(manifest["applications"][0]["domain"], "https://api.acme.goodmorning.mx")
         self.assertEqual(manifest["promotion_policy"], "auto-on-main")
         self.assertTrue(manifest["confirm_production"])
         self.assertTrue(manifest["backup"]["enabled"])

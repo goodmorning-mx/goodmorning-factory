@@ -318,6 +318,17 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
                 {"MCP_AUTH_TOKEN": {"key": "MCP_AUTH_TOKEN", "value": "********"}},
             )
 
+    def test_managed_secret_resolves_only_from_factory_binding_environment(self):
+        app = {
+            "environment": [
+                {"key": "OPENAI_API_KEY", "source": "managed_secret", "binding": "goodmorning/openai-default"}
+            ]
+        }
+        with patch.dict(os.environ, {"GOODMORNING_MANAGED_OPENAI_API_KEY": "secret-value"}, clear=True):
+            values = advanced._environment_values(app, {}, {}, {})
+        self.assertEqual(values[0]["value"], "secret-value")
+        self.assertTrue(values[0]["is_shown_once"])
+
     def test_reviewed_redis_config_is_base64_encoded_for_coolify_api(self):
         self.assertEqual(
             base64.b64decode(advanced._redis_conf()).decode("utf-8"),

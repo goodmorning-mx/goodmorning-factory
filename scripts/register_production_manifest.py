@@ -15,14 +15,30 @@ from scripts import register_product_manifest as catalog
 
 def build_manifest(product: str, storage_uuid: str) -> dict[str, Any]:
     return {
-        "topology": "resources-v2-production",
+        "topology": "resources-v3-production",
         "product": product,
         "repository": f"{catalog.ORG}/{product}",
         "branch": "main",
-        "production_domain": f"{product}.goodmorning.mx",
         "coolify_github_app_name": "goodmorning-mx-coolify",
-        "backend_base_directory": "/backend",
-        "frontend_base_directory": "/frontend",
+        "applications": [
+            {
+                "name": "api", "role": "api", "base_directory": "/backend",
+                "dockerfile": "/Dockerfile", "port": 8000,
+                "domain": f"https://api.{product}.goodmorning.mx",
+                "health_path": "/health", "auto_deploy": True, "environment": [],
+            },
+            {
+                "name": "frontend", "role": "frontend", "base_directory": "/frontend",
+                "dockerfile": "/Dockerfile", "port": 80,
+                "domain": f"https://{product}.goodmorning.mx",
+                "health_path": "/", "auto_deploy": True, "environment": [],
+            },
+        ],
+        "databases": [{
+            "name": "postgres", "engine": "postgresql", "version": "16",
+            "image": "postgres:16-alpine", "public": False, "backup": True,
+        }],
+        "redis": [],
         "confirm_production": True,
         "promotion_policy": "auto-on-main",
         "backup": {
