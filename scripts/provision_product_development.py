@@ -52,6 +52,15 @@ APPROVED_FRONTEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "i
 ENV_PAYLOAD_FIELDS = APPROVED_BACKEND_ENV_FIELDS
 ALLOWED_POST_KINDS = {"project_create", "environment_create", "postgresql_create", "postgresql_start", "backend_application_create", "backend_env_create", "frontend_application_create", "frontend_env_create", "backend_deploy", "frontend_deploy"}
 ALLOWED_PATCH_KINDS = {"backend_env_update", "frontend_env_update"}
+ALLOWED_APPLICATION_PATCH_KINDS = {"backend_application_update", "frontend_application_update"}
+APPROVED_APPLICATION_UPDATE_FIELDS = {
+    "project_uuid", "environment_uuid", "environment_name", "server_uuid",
+    "destination_uuid", "github_app_uuid", "git_repository", "git_branch",
+    "build_pack", "base_directory", "dockerfile_location", "ports_exposes",
+    "domains", "instant_deploy", "is_auto_deploy_enabled", "autogenerate_domain",
+    "health_check_enabled", "health_check_path", "health_check_port",
+    "health_check_method", "health_check_scheme", "health_check_return_code",
+}
 FORBIDDEN_ENDPOINT_RE = re.compile(r"/(restart|stop|rollback)(?:/|$)|/applications/[^/]+/(?:start|restart|stop|rollback)(?:/|$)|/deployments/[^/]+/cancel(?:/|$)", re.I)
 NON_SUCCESS_EXIT_STATUSES = {"partial", "blocked", "recreate_required", "created_unverified", "error", "unhealthy", "readiness_unverified", "timeout"}
 
@@ -182,8 +191,12 @@ class ExecutionMode:
             "database_start_enabled": self.database_start_enabled,
             "always_forbidden_methods": ["PUT", "DELETE"],
             "conditionally_allowed_methods": ["PATCH"],
-            "allowed_patch_operations": ["backend_env_update"] if self.backend_env_writes_enabled else [],
-            "patch_scope": "backend_application_envs_bound_uuid" if self.backend_env_writes_enabled else None,
+            "allowed_patch_operations": sorted(
+                (["backend_env_update"] if self.backend_env_writes_enabled else [])
+                + (["backend_application_update"] if self.backend_application_writes_enabled else [])
+                + (["frontend_application_update"] if self.frontend_application_writes_enabled else [])
+            ),
+            "patch_scope": "verified_application_uuid_only",
             "non_allowlisted_deployments_forbidden": True,
             "deploy_frontend_requested": self.deploy_frontend,
             "frontend_deployment_env": self.allow_frontend_deployment,
@@ -311,6 +324,7 @@ class CoolifyClient:
         self.expected_frontend_env_contract: dict[str, dict[str, Any]] | None = None
         self.backend_deployment_preconditions_ok = False
         self.frontend_deployment_preconditions_ok = False
+        self.application_update_payload: dict[str, Any] | None = None
 
 
     def bind_backend_application_bindings(self, bindings: dict[str, Any]) -> None:
@@ -529,6 +543,22 @@ class CoolifyClient:
         if expected_payload is None or json_body != expected_payload:
             raise ProvisioningError("Backend env value does not match the bound desired contract.", error_type="safety")
 
+    def _validate_application_update_payload(self, json_body: dict[str, Any] | None, *, frontend: bool) -> None:
+        if not isinstance(json_body, dict) or set(json_body) != APPROVED_APPLICATION_UPDATE_FIELDS:
+            raise ProvisioningError("Application update payload fields do not exactly match the approved native auto-deploy contract.", error_type="safety")
+        # The caller binds the exact desired payload before issuing the request.
+        if json_body != self.application_update_payload:
+            raise ProvisioningError("Application update payload does not match the bound desired state.", error_type="safety")
+        if json_body.get("git_branch") != "dev" or json_body.get("is_auto_deploy_enabled") is not True:
+            raise ProvisioningError("Application updates must target dev with native auto-deploy enabled.", error_type="safety")
+        if json_body.get("environment_name") != "dev" or json_body.get("build_pack") != "dockerfile":
+            raise ProvisioningError("Application update must preserve the approved dev Dockerfile contract.", error_type="safety")
+        if frontend:
+            if json_body.get("base_directory") != "/frontend" or json_body.get("ports_exposes") != "80":
+                raise ProvisioningError("Frontend update payload does not match the approved resource contract.", error_type="safety")
+        elif json_body.get("base_directory") != "/backend" or json_body.get("ports_exposes") != "8000":
+            raise ProvisioningError("Backend update payload does not match the approved resource contract.", error_type="safety")
+
     @classmethod
     def from_env(cls, mode: ExecutionMode | None = None) -> "CoolifyClient":
         return cls(os.environ.get("COOLIFY_BASE_URL", ""), os.environ.get("COOLIFY_API_TOKEN", ""), mode=mode)
@@ -552,6 +582,14 @@ class CoolifyClient:
                 if not self._frontend_env_path_matches_binding(path):
                     raise ProvisioningError("PATCH endpoint is limited to env vars for the verified Frontend Application UUID binding.", error_type="safety", method=method, path=path)
                 self._validate_frontend_env_payload(json_body)
+            elif post_kind in ALLOWED_APPLICATION_PATCH_KINDS:
+                if not getattr(self.mode, "backend_application_writes_enabled" if post_kind == "backend_application_update" else "frontend_application_writes_enabled", False):
+                    raise ProvisioningError("Application updates require the matching application write gate and exact confirmation.", error_type="safety", method=method, path=path)
+                uuid = self.expected_backend_application_uuid if post_kind == "backend_application_update" else self.expected_frontend_application_uuid
+                encoded = urllib.parse.quote(str(uuid or ""), safe="")
+                if not uuid or path != f"/applications/{encoded}":
+                    raise ProvisioningError("Application update is limited to the verified application UUID binding.", error_type="safety", method=method, path=path)
+                self._validate_application_update_payload(json_body, frontend=post_kind == "frontend_application_update")
             else:
                 raise ProvisioningError("Refusing non-read-only Coolify method PATCH. PATCH is allowed only for verified Application env variables after env gates.", error_type="safety", method=method, path=path)
         if method == "POST":
@@ -718,6 +756,10 @@ class CoolifyClient:
     def update_backend_env(self, uuid: str, payload: dict[str, Any]) -> Response:
         return self.request("PATCH", f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="backend_env_update")
 
+    def update_backend_application(self, uuid: str, payload: dict[str, Any]) -> Response:
+        self.application_update_payload = payload
+        return self.request("PATCH", f"/applications/{urllib.parse.quote(str(uuid), safe='')}", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="backend_application_update")
+
     def create_frontend_application(self, payload: dict[str, Any]) -> Response:
         return self.request("POST", POST_FRONTEND_APPLICATION_CREATE, json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_application_create")
 
@@ -726,6 +768,10 @@ class CoolifyClient:
 
     def update_frontend_env(self, uuid: str, payload: dict[str, Any]) -> Response:
         return self.request("PATCH", f"/applications/{urllib.parse.quote(str(uuid), safe='')}/envs", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_env_update")
+
+    def update_frontend_application(self, uuid: str, payload: dict[str, Any]) -> Response:
+        self.application_update_payload = payload
+        return self.request("PATCH", f"/applications/{urllib.parse.quote(str(uuid), safe='')}", json_body=payload, allowed_statuses={200, 201, 202}, post_kind="frontend_application_update")
 
     def deploy_backend(self, uuid: str) -> Response:
         return self.request("POST", "/deploy", json_body={"uuid": str(uuid), "force": False}, allowed_statuses={200}, post_kind="backend_deploy")
@@ -2125,6 +2171,11 @@ def backend_payload_preview(payload: dict[str, Any]) -> dict[str, Any]:
     return redact({k: v for k, v in payload.items() if k != "value"})
 
 
+def application_update_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """Return the complete, allowlisted native Coolify application contract."""
+    return {key: payload[key] for key in APPROVED_APPLICATION_UPDATE_FIELDS}
+
+
 def backend_application_differences(item: dict[str, Any], args: argparse.Namespace, context: dict[str, Any]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     expected = backend_create_payload(args, {**context, "destination_uuid": context.get("destination_uuid")})
     paths = {
@@ -2265,8 +2316,31 @@ def ensure_backend_application(client: CoolifyClient, args: argparse.Namespace, 
         if hasattr(client, "bind_backend_application_uuid"):
             client.bind_backend_application_uuid(classified.get("uuid"), context)
         actions.append(ActionRecord("backend_application","reuse","exists",verified=True).to_dict()); return classified
-    if st in {"duplicate","incompatible","compatibility_unverified","scope_unverified","out_of_scope"}:
-        return {**classified, "status": "recreate_required" if st=="incompatible" else st}
+    if st in {"incompatible", "compatibility_unverified"} and classified.get("uuid"):
+        if not mode.is_apply:
+            actions.append(ActionRecord("backend_application", "plan_update", "would_update", verified=False).to_dict())
+            return {**classified, "reason": "native_application_update_planned"}
+        if not mode.backend_application_writes_enabled:
+            return {**classified, "status": "blocked", "reason": "backend_application_gates_incomplete", "required_action": "native_application_update"}
+        if not hasattr(client, "update_backend_application"):
+            return {**classified, "status": "recreate_required", "reason": "native_application_update_not_supported_by_client"}
+        uuid = str(classified["uuid"])
+        payload = application_update_payload(backend_create_payload(args, context))
+        if hasattr(client, "bind_backend_application_uuid"):
+            client.bind_backend_application_uuid(uuid, context)
+        actions.append(ActionRecord("backend_application", "update", "attempted").to_dict())
+        try:
+            client.update_backend_application(uuid, payload)
+            detail = hydrate_application_by_uuid(client, uuid, {"uuid": uuid})
+            verified = classify_backend_application([detail], args, context)
+        except ProvisioningError as exc:
+            return {**classified, "status": "write_outcome_unknown" if exc.write_outcome_unknown else "blocked", "reason": exc.message}
+        if verified.get("status") != "exists":
+            return {**verified, "status": "updated_unverified", "reason": "native_application_update_verification_failed"}
+        actions.append(ActionRecord("backend_application", "update", "updated", request_attempted=True, write_performed=True, verified=True).to_dict())
+        return {**verified, "status": "exists", "updated": True}
+    if st in {"duplicate", "scope_unverified", "out_of_scope"}:
+        return {**classified, "status": st}
     if not precondition_ok:
         return {"name": backend_application_name(args.product), "status":"blocked"}
     if not mode.is_apply:
@@ -2453,8 +2527,31 @@ def ensure_frontend_application(client: CoolifyClient, args: argparse.Namespace,
         if hasattr(client, "bind_frontend_application_uuid"):
             client.bind_frontend_application_uuid(classified.get("uuid"), context)
         actions.append(ActionRecord("frontend_application","reuse","exists",verified=True).to_dict()); return classified
-    if st in {"duplicate","incompatible","compatibility_unverified","scope_unverified","out_of_scope"}:
-        return {**classified, "status": "recreate_required" if st=="incompatible" else st}
+    if st in {"incompatible", "compatibility_unverified"} and classified.get("uuid"):
+        if not mode.is_apply:
+            actions.append(ActionRecord("frontend_application", "plan_update", "would_update", verified=False).to_dict())
+            return {**classified, "reason": "native_application_update_planned"}
+        if not mode.frontend_application_writes_enabled:
+            return {**classified, "status": "blocked", "reason": "frontend_application_gates_incomplete", "required_action": "native_application_update"}
+        if not hasattr(client, "update_frontend_application"):
+            return {**classified, "status": "recreate_required", "reason": "native_application_update_not_supported_by_client"}
+        uuid = str(classified["uuid"])
+        payload = application_update_payload(frontend_create_payload(args, context))
+        if hasattr(client, "bind_frontend_application_uuid"):
+            client.bind_frontend_application_uuid(uuid, context)
+        actions.append(ActionRecord("frontend_application", "update", "attempted").to_dict())
+        try:
+            client.update_frontend_application(uuid, payload)
+            detail = hydrate_application_by_uuid(client, uuid, {"uuid": uuid})
+            verified = classify_frontend_application([detail], args, context)
+        except ProvisioningError as exc:
+            return {**classified, "status": "write_outcome_unknown" if exc.write_outcome_unknown else "blocked", "reason": exc.message}
+        if verified.get("status") != "exists":
+            return {**verified, "status": "updated_unverified", "reason": "native_application_update_verification_failed"}
+        actions.append(ActionRecord("frontend_application", "update", "updated", request_attempted=True, write_performed=True, verified=True).to_dict())
+        return {**verified, "status": "exists", "updated": True}
+    if st in {"duplicate", "scope_unverified", "out_of_scope"}:
+        return {**classified, "status": st}
     if not backend_allows_frontend(backend):
         status = "planned_after_backend" if not mode.is_apply else "blocked"
         reason = "backend_dependency_planned" if not mode.is_apply and backend.get("status") in {"absent", "would_create"} and not backend.get("blockers") else "backend_application_not_verified"
@@ -3613,7 +3710,12 @@ def build_stage3_result(args: argparse.Namespace, client: CoolifyClient, mode: E
     plan["safety"] = {
         "writes_enabled": mode.is_apply and mode.allow_resource_writes and mode.confirm_product == mode.product,
         "allowed_post_operations": allowed_posts,
-        "allowed_patch_operations": sorted((["backend_env_update"] if mode.is_apply and mode.backend_env_writes_enabled else []) + (["frontend_env_update"] if mode.is_apply and frontend_env_operation_enabled else [])),
+        "allowed_patch_operations": sorted(
+            (["backend_application_update"] if mode.is_apply and mode.backend_application_writes_enabled else [])
+            + (["frontend_application_update"] if mode.is_apply and mode.frontend_application_writes_enabled and frontend_backend_ok else [])
+            + (["backend_env_update"] if mode.is_apply and mode.backend_env_writes_enabled else [])
+            + (["frontend_env_update"] if mode.is_apply and frontend_env_operation_enabled else [])
+        ),
         "database_start_enabled": mode.database_start_enabled,
         "forbidden_methods": ["PUT", "DELETE"],
         "deploy_actions_enabled": (mode.backend_deployment_enabled and deploy_preflight_ok) or (mode.frontend_deployment_enabled and frontend_deploy_preflight_ok),
