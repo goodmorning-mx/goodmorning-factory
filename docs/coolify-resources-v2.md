@@ -17,10 +17,18 @@ PostgreSQL has no public port. The Backend receives its private `DATABASE_URL`
 as a secret runtime variable. Frontend and Backend may be deployed or rolled
 back independently without replacing the PostgreSQL resource.
 
-Both Applications use the native Coolify GitHub App as their private source, but
-automatic deployment is disabled. A product commit reaches Coolify only through
-the reviewed Factory deployment workflow after CI succeeds; webhook delivery can
-never race or bypass the quality gates.
+Both Applications use the native Coolify GitHub App as their private source and
+have native Coolify auto-deploy enabled for the `dev` branch. The standard DEV
+flow is therefore:
+
+`merge to product dev → GitHub App/webhook → Coolify build/deploy → healthcheck`
+
+Factory owns provisioning and reconciliation of the exact repository, branch,
+GitHub App source, domains, health checks, and auto-deploy flag. It does not
+replace this daily trigger with a Factory deployment workflow. A Factory
+reconciliation may perform an explicitly requested initial deployment while
+onboarding or repairing a resource; normal product pushes are handled only by
+Coolify.
 
 ## Catalog contract
 
@@ -37,11 +45,12 @@ never race or bypass the quality gates.
 
 A push to Factory `dev` selects changed `resources-v2` manifests; workflow dispatch
 selects the full catalog. A safe plan is followed by bounded convergence through
-idempotent creation, PostgreSQL readiness, environment reconciliation, Backend
-deployment and Frontend deployment. Only `partial` progress is retried, with
-increasing delay and a hard attempt limit. Errors fail immediately, and backups
-run only after every selected product is healthy. All real actions are guarded by
-exact resource confirmations and repository-level deployment authorization.
+idempotent creation, PostgreSQL readiness, environment reconciliation, and
+verification of the native application contract. Only `partial` progress is
+retried, with increasing delay and a hard attempt limit. Errors fail immediately,
+and backups run only after every selected product is healthy. All real actions are
+guarded by exact resource confirmations and repository-level provisioning
+authorization.
 
 `compose-v1` remains supported for disposable prototypes and is archived as a
 rollback implementation. A manifest is reconciled by exactly one topology; the
