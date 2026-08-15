@@ -195,6 +195,18 @@ class AdvancedProductContractTests(unittest.TestCase):
         migrated = migrate_v2_manifest(legacy)
         self.assertEqual(migrated["repository"], "goodmorning-mx/factory-smoke-test")
 
+    def test_v2_production_migration_uses_the_v3_production_contract(self):
+        legacy = {
+            "topology": "resources-v2-production", "product": "simple", "repository": "goodmorning-mx/simple",
+            "branch": "main", "production_domain": "simple.goodmorning.mx",
+            "coolify_github_app_name": "goodmorning-mx-coolify", "backend_base_directory": "/backend",
+            "frontend_base_directory": "/frontend", "backup": manifest()["backup"],
+            "confirm_production": True, "promotion_policy": "auto-on-main",
+        }
+        migrated = migrate_v2_manifest(legacy)
+        self.assertEqual(migrated["topology"], "resources-v3-production")
+        self.assertEqual(contract.resource_names(migrated)["applications"], ["simple-api-prod", "simple-frontend-prod"])
+
     def test_production_rejects_development_domains_and_legacy_imports(self):
         value = production_manifest()
         value["applications"][0]["domain"] = (

@@ -2,8 +2,9 @@
 
 `resources-v3` is the single declarative contract for every product, from a
 simple API/frontend pair to products with gateways, workers, Redis, TimescaleDB,
-multiple domains, and cross-application connections. `resources-v2` is a
-temporary compatibility input normalized by `scripts/resources_v3_migration.py`.
+multiple domains, and cross-application connections. `resources-v2` and
+`resources-v2-production` are temporary compatibility inputs normalized by
+`scripts/resources_v3_migration.py`.
 
 ## Safety model
 

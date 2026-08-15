@@ -17,27 +17,31 @@ from scripts.advanced_product_contract import ContractError, validate_manifest
 
 
 def migrate_v2_manifest(raw: dict[str, Any], *, resource_uuids: dict[str, Any] | None = None) -> dict[str, Any]:
-    if raw.get("topology") != "resources-v2":
-        raise ContractError("Only a resources-v2 manifest can be migrated by this adapter.")
+    source_topology = raw.get("topology")
+    if source_topology not in {"resources-v2", "resources-v2-production"}:
+        raise ContractError("Only a resources-v2 or resources-v2-production manifest can be migrated by this adapter.")
+    production = source_topology == "resources-v2-production"
     product = raw.get("product")
     repository = raw.get("repository")
     if not isinstance(product, str) or not isinstance(repository, str):
         raise ContractError("resources-v2 migration requires product and repository.")
-    domain = raw.get("development_domain") or f"dev.{product}.goodmorning.mx"
+    domain = raw.get("production_domain") if production else raw.get("development_domain")
+    domain = domain or (f"{product}.goodmorning.mx" if production else f"dev.{product}.goodmorning.mx")
     backup = raw.get("backup")
     if not isinstance(backup, dict):
         raise ContractError("resources-v2 migration requires its reviewed backup contract.")
-    app_names = {"api": f"{product}-api-dev", "frontend": f"{product}-frontend-dev"}
+    suffix = "prod" if production else "dev"
+    app_names = {"api": f"{product}-api-{suffix}", "frontend": f"{product}-frontend-{suffix}"}
     uuid_map = resource_uuids or raw.get("resource_uuids") or {}
     if not isinstance(uuid_map, dict):
         raise ContractError("resources-v2 resource_uuids must be an object when supplied.")
     migration: dict[str, Any] = {
-        "from_topology": "resources-v2",
+        "from_topology": source_topology,
         "mode": "adopt-in-place",
         "retain": True,
         "resource_names": {
             "applications": list(app_names.values()),
-            "databases": [f"{product}-postgres-dev"],
+            "databases": [f"{product}-postgres-{'prod' if production else 'dev'}"],
             "redis": [],
         },
         "preserve": ["resources", "uuids", "databases", "volumes", "domains", "secrets", "configuration"],
@@ -45,10 +49,10 @@ def migrate_v2_manifest(raw: dict[str, Any], *, resource_uuids: dict[str, Any] |
     if uuid_map:
         migration["resource_uuids"] = dict(uuid_map)
     return validate_manifest({
-        "topology": "resources-v3",
+        "topology": "resources-v3-production" if production else "resources-v3",
         "product": product,
         "repository": repository,
-        "branch": "dev",
+        "branch": "main" if production else "dev",
         "coolify_github_app_name": raw.get("coolify_github_app_name", "goodmorning-mx-coolify"),
         "migration": migration,
         "applications": [
@@ -71,6 +75,7 @@ def migrate_v2_manifest(raw: dict[str, Any], *, resource_uuids: dict[str, Any] |
         }],
         "redis": [],
         "backup": backup,
+        **({"confirm_production": True, "promotion_policy": "auto-on-main"} if production else {}),
     })
 
 

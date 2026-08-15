@@ -28,7 +28,7 @@ def normalize_manifest(path: str | Path) -> dict[str, Any]:
     raw = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(raw, dict):
         raise ContractError("Resource manifest must be a JSON object.")
-    if raw.get("topology") == "resources-v2":
+    if raw.get("topology") in {"resources-v2", "resources-v2-production"}:
         return migrate_v2_manifest(raw)
     # load_manifest gives the canonical v3 validation and error semantics.
     return load_manifest(path)
@@ -66,7 +66,7 @@ def main(argv: list[str] | None = None) -> int:
             # The legacy workflow already selected one exact manifest. Keep
             # that scoped confirmation while routing it through v3.
             confirm_product=args.confirm_product or (manifest["product"] if args.phase == "apply" else None),
-            confirm_environment=args.confirm_environment or ("dev" if args.phase == "apply" else None),
+            confirm_environment=args.confirm_environment or (("production" if manifest["topology"] == "resources-v3-production" else "dev") if args.phase == "apply" else None),
             deploy=args.operation in {"deploy-backend", "deploy-full"},
         )
         print(json.dumps(result, sort_keys=True))
