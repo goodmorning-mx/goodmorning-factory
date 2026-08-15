@@ -1,12 +1,26 @@
 {
-  "topology": "resources-v2",
+  "topology": "resources-v3",
   "product": "balletpourtous",
   "repository": "goodmorning-mx/balletpourtous",
   "branch": "dev",
   "development_domain": "dev.balletpourtous.goodmorning.mx",
   "coolify_github_app_name": "goodmorning-mx-coolify",
-  "backend_base_directory": "/backend",
-  "frontend_base_directory": "/frontend",
+  "migration": {
+    "from_topology": "resources-v2",
+    "mode": "adopt-in-place",
+    "retain": true,
+    "resource_names": {
+      "applications": ["balletpourtous-api-dev", "balletpourtous-frontend-dev"],
+      "databases": ["balletpourtous-postgres-dev"],
+      "redis": []
+    },
+    "resource_uuids": {
+      "balletpourtous-api-dev": "e57cn1supeswp4vh4wk7xsz9",
+      "balletpourtous-frontend-dev": "jlvlx3wg15y50v3kko1zxiu0",
+      "balletpourtous-postgres-dev": "mfgpcdkegi9uch0vblxtg2uj"
+    },
+    "preserve": ["resources", "uuids", "databases", "volumes", "domains", "secrets", "configuration"]
+  },
   "module_update_policy": {
     "default": {
       "patch": "auto",
@@ -25,6 +39,10 @@
       "version": "0.1.4",
       "kind": "frontend",
       "frontend_package": "@goodmorning/gm-pwa",
+      "deployment_modes": ["embedded"],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [],
+      "bindings": [],
       "node_requires": [
         "react>=18"
       ],
@@ -53,6 +71,12 @@
       "version": "0.1.0",
       "kind": "backend",
       "backend_package": "gm-mcp",
+      "deployment_modes": ["embedded", "gateway"],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [
+        {"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "deployment_modes": ["gateway"], "port": 8200, "public": true}
+      ],
+      "bindings": [],
       "dependencies": [],
       "compatibility": {
         "python": ">=3.12",
@@ -68,6 +92,10 @@
       "kind": "full-stack",
       "backend_package": "gm-billing",
       "frontend_package": "@goodmorning/gm-billing",
+      "deployment_modes": ["embedded", "service"],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [],
+      "bindings": [],
       "dependencies": [],
       "migrations": {
         "mode": "sql",
@@ -89,6 +117,14 @@
       "kind": "full-stack",
       "backend_package": "gm-auth",
       "frontend_package": "@goodmorning/gm-auth",
+      "deployment_modes": ["embedded", "service"],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [
+        {"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true}
+      ],
+      "bindings": [
+        {"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "backend"}
+      ],
       "node_requires": [
         "react>=18"
       ],
@@ -115,6 +151,12 @@
       "kind": "full-stack",
       "backend_package": "gm-agent",
       "frontend_package": "@goodmorning/gm-agent",
+      "deployment_modes": ["embedded", "service", "gateway"],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [
+        {"name": "agent-gateway", "kind": "gateway", "resource_name": "agent-gateway", "deployment_modes": ["gateway"], "port": 8100, "public": true}
+      ],
+      "bindings": [],
       "python_requires": [
         "gm-mcp>=0.1.0",
         "gm-billing>=0.1.1"
@@ -153,6 +195,22 @@
       }
     }
   ],
+  "applications": [
+    {
+      "name": "api", "role": "api", "base_directory": "/backend", "dockerfile": "/Dockerfile", "port": 8000,
+      "domain": "https://api.dev.balletpourtous.goodmorning.mx", "health_path": "/health", "auto_deploy": true,
+      "environment": [], "dependencies": ["postgres"]
+    },
+    {
+      "name": "frontend", "role": "frontend", "base_directory": "/frontend", "dockerfile": "/Dockerfile", "port": 80,
+      "domain": "https://dev.balletpourtous.goodmorning.mx", "health_path": "/", "auto_deploy": true,
+      "environment": [], "dependencies": []
+    }
+  ],
+  "databases": [
+    {"name": "postgres", "engine": "postgresql", "version": "16", "image": "postgres:16-alpine", "public": false, "backup": true}
+  ],
+  "redis": [],
   "backup": {
     "enabled": true,
     "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",

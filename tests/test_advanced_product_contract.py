@@ -91,6 +91,22 @@ def production_manifest():
 
 
 class AdvancedProductContractTests(unittest.TestCase):
+    def test_balletpourtous_is_the_simple_resources_v3_reference_product(self):
+        source = json.loads((Path(__file__).parents[1] / "products" / "balletpourtous.json").read_text())
+        result = contract.validate_manifest(source)
+        self.assertEqual(result["topology"], "resources-v3")
+        self.assertEqual([item["name"] for item in result["applications"]], ["api", "frontend"])
+        self.assertEqual([item["name"] for item in result["databases"]], ["postgres"])
+        self.assertEqual(result["redis"], [])
+        self.assertEqual(
+            [item["name"] for item in result["modules"]],
+            ["gm-agent", "gm-auth", "gm-billing", "gm-mcp", "gm-pwa"],
+        )
+        self.assertEqual(result["connections"], [{
+            "target": "api", "key": "DATABASE_URL",
+            "source": {"type": "database", "resource": "postgres"},
+        }])
+
     def test_valid_manifest_is_normalized(self):
         result = contract.validate_manifest(manifest())
         self.assertEqual(result["topology"], "resources-v3")
