@@ -89,3 +89,10 @@ migration mode/path, and compatibility before provisioning:
 Factory returns deterministic package lists, secret bindings, and migration
 order through `compile_installation`. Product migrations still run through the product's
 normal migration service against its own PostgreSQL database.
+
+Modules may additionally declare `deployment_modes`, `resource_requirements`,
+and `bindings`. Keep `embedded` as the default for libraries and simple cores;
+select `service`, `worker`, or `gateway` only when the product explicitly needs
+that Resources V3 application. Factory composes the selected requirements and
+reconciles shared resources before a controlled DEV deployment. Frontend
+targets can never receive a secret binding.

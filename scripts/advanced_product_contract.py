@@ -12,6 +12,11 @@ import urllib.parse
 from pathlib import Path
 from typing import Any
 
+try:
+    from module_contract import ModuleContractError, compose_resources_v3
+except ModuleNotFoundError:
+    from scripts.module_contract import ModuleContractError, compose_resources_v3
+
 TOPOLOGY = "resources-v3"
 PRODUCTION_TOPOLOGY = "resources-v3-production"
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -160,9 +165,15 @@ def _validate_environment(item: Any, *, database_names: set[str], redis_names: s
 
 def validate_manifest(raw: Any) -> dict[str, Any]:
     _require(isinstance(raw, dict), "Advanced product manifest must be a JSON object.")
+    if raw.get("modules") is not None:
+        try:
+            raw = compose_resources_v3(raw)
+        except ModuleContractError as exc:
+            raise ContractError(f"Invalid module infrastructure contract: {exc}") from exc
     allowed = {
         "topology", "product", "repository", "branch", "development_domain", "coolify_github_app_name",
         "legacy", "migration", "connections", "applications", "databases", "redis", "backup",
+        "modules", "module_dependency_order", "resource_ownership",
         "confirm_production", "promotion_policy",
     }
     _require(set(raw) <= allowed, "Advanced product manifest contains unknown top-level fields.")
@@ -446,6 +457,29 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "legacy_env sources require a legacy rollback descriptor.",
     )
 
+    ownership_raw = raw.get("resource_ownership", [])
+    _require(isinstance(ownership_raw, list), "resource_ownership must be a list.")
+    ownership: list[dict[str, Any]] = []
+    ownership_keys: set[tuple[str, str]] = set()
+    known_owned_resources = {app["name"] for app in applications} | {db["name"] for db in databases} | {item["name"] for item in redis_resources}
+    known_modules = {item["name"] for item in raw.get("modules", []) if isinstance(item, dict)}
+    for item in ownership_raw:
+        _require(
+            isinstance(item, dict)
+            and set(item) <= {"resource", "kind", "owner_module", "requirement", "shared", "consumers"},
+            "Invalid resource ownership entry.",
+        )
+        _require(item.get("resource") in known_owned_resources, "Resource ownership references an undeclared resource.")
+        _require(item.get("kind") in {"application", "database", "redis", "service", "worker", "gateway", "postgresql", "timescaledb"}, "Unsupported owned resource kind.")
+        _require(item.get("owner_module") in known_modules, "Resource ownership references an undeclared module.")
+        _require(isinstance(item.get("requirement"), str) and isinstance(item.get("shared"), bool), "Resource ownership requires requirement and shared fields.")
+        consumers = item.get("consumers", [])
+        _require(isinstance(consumers, list) and all(value in known_modules for value in consumers), "Resource ownership consumers are invalid.")
+        key = (item["resource"], item["owner_module"])
+        _require(key not in ownership_keys, "Duplicate resource ownership entry.")
+        ownership_keys.add(key)
+        ownership.append(dict(item))
+
     backup = raw.get("backup")
     _require(isinstance(backup, dict) and backup.get("enabled") is True, "Advanced database backups must be enabled.")
     _require(
@@ -482,6 +516,9 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "legacy": legacy,
         "migration": migration,
         "connections": connections,
+        "modules": raw.get("modules", []),
+        "module_dependency_order": raw.get("module_dependency_order", []),
+        "resource_ownership": ownership,
         "applications": applications,
         "databases": databases,
         "redis": redis_resources,
