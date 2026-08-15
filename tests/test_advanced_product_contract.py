@@ -147,6 +147,37 @@ class AdvancedProductContractTests(unittest.TestCase):
         self.assertIn({"key": "CACHE_URL", "source": "redis_url", "resource": "redis"}, api["environment"])
         self.assertIn({"key": "API_URL", "source": "service_url", "resource": "api"}, mobile["environment"])
 
+    def test_dependencies_are_typed_and_normalized(self):
+        value = manifest()
+        value["applications"][1]["dependencies"] = ["api", {"type": "database", "name": "timescaledb"}]
+        normalized = contract.validate_manifest(value)
+        mobile = next(app for app in normalized["applications"] if app["name"] == "mobile")
+        self.assertEqual(
+            mobile["dependencies"],
+            [{"type": "application", "name": "api"}, {"type": "database", "name": "timescaledb"}],
+        )
+
+    def test_managed_secret_is_a_reference_without_a_literal(self):
+        value = manifest()
+        value["applications"][0]["environment"] = [{
+            "key": "OPENAI_API_KEY", "source": "managed_secret", "binding": "GOODMORNING_MANAGED_OPENAI_API_KEY",
+        }]
+        normalized = contract.validate_manifest(value)
+        self.assertEqual(normalized["applications"][0]["environment"][0]["source"], "managed_secret")
+
+        value["applications"][0]["environment"][0]["binding"] = "goodmorning/openai-default"
+        self.assertEqual(
+            contract.validate_manifest(value)["applications"][0]["environment"][0]["binding"],
+            "goodmorning/openai-default",
+        )
+
+    def test_application_dependency_cycles_are_rejected(self):
+        value = manifest()
+        value["applications"][0]["dependencies"] = ["mobile"]
+        value["applications"][1]["dependencies"] = ["api"]
+        with self.assertRaises(contract.ContractError):
+            contract.validate_manifest(value)
+
     def test_v2_migration_is_additive_and_v3_valid(self):
         legacy = {
             "topology": "resources-v2", "product": "simple", "repository": "goodmorning-mx/simple",

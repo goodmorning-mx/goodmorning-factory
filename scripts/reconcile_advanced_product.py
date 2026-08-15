@@ -39,6 +39,9 @@ TIMEOUT = 30
 TERMINAL_DEPLOYMENT = {"finished", "failed", "cancelled", "canceled"}
 SUCCESS_DEPLOYMENT = {"finished"}
 SENSITIVE_NAME = ("PASSWORD", "SECRET", "TOKEN", "KEY", "DATABASE_URL", "REDIS_URL")
+MANAGED_SECRET_BINDINGS = {
+    "goodmorning/openai-default": "GOODMORNING_MANAGED_OPENAI_API_KEY",
+}
 
 
 def _environment(manifest: dict[str, Any]) -> str:
@@ -178,6 +181,21 @@ def _uuid(value: Any, kind: str) -> str:
     return str(identifier)
 
 
+def _expected_migration_uuid(manifest: dict[str, Any], kind: str, resource_name: str) -> str | None:
+    migration = manifest.get("migration") or {}
+    uuids = migration.get("resource_uuids") or {}
+    value = uuids.get(resource_name)
+    return str(value) if value else None
+
+
+def _verify_adopted_uuid(manifest: dict[str, Any], kind: str, resource_name: str, found: dict[str, Any]) -> None:
+    expected = _expected_migration_uuid(manifest, kind, resource_name)
+    if expected is not None and _uuid(found, kind) != expected:
+        raise ReconcileError(
+            f"Migrated {kind} {resource_name!r} resolved to an unexpected UUID; refusing replacement."
+        )
+
+
 def _discover_context(client: Coolify, manifest: dict[str, Any], server_name: str, github_app_name: str, destination_uuid: str) -> dict[str, str | None]:
     product = manifest["product"]
     environment_name = _environment(manifest)
@@ -290,6 +308,8 @@ def _ensure_databases(
         found = _unique(existing, resource_name, "database")
         if found and _scope_conflicts(found, context):
             raise ReconcileError(f"Database {resource_name!r} exists outside the selected scope.")
+        if found:
+            _verify_adopted_uuid(manifest, "database", resource_name, found)
         if not found:
             if not client.apply:
                 actions.append({"resource": resource_name, "kind": "database", "action": "would_create"})
@@ -322,6 +342,8 @@ def _ensure_databases(
         found = _unique(existing, resource_name, "Redis")
         if found and _scope_conflicts(found, context):
             raise ReconcileError(f"Redis {resource_name!r} exists outside the selected scope.")
+        if found:
+            _verify_adopted_uuid(manifest, "Redis", resource_name, found)
         if not found:
             if not client.apply:
                 actions.append({"resource": resource_name, "kind": "redis", "action": "would_create"})
@@ -432,6 +454,10 @@ def _environment_values(
             value = redis_urls.get(item["resource"])
         elif source == "service_url":
             value = application_urls.get(item["resource"])
+        elif source == "managed_secret":
+            binding = item["binding"]
+            environment_key = MANAGED_SECRET_BINDINGS.get(binding, binding)
+            value = os.environ.get(environment_key)
         elif source == "generated_secret":
             existing = current.get(item["key"])
             if existing is None:
@@ -456,7 +482,7 @@ def _environment_values(
                 "is_literal": True,
                 "is_multiline": False,
                 "is_shown_once": source
-                in {"legacy_env", "database_url", "redis_url", "generated_secret"},
+                in {"legacy_env", "database_url", "redis_url", "generated_secret", "managed_secret"},
             }
         )
     return values
@@ -484,11 +510,33 @@ def _ensure_applications(
         for item in manifest["applications"]
         if item.get("domain")
     }
+    applications_by_name = {app["name"]: app for app in manifest["applications"]}
+    ordered: list[dict[str, Any]] = []
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(name: str) -> None:
+        if name in visiting:
+            raise ReconcileError("Application dependency cycle reached reconciliation.")
+        if name in visited:
+            return
+        visiting.add(name)
+        for dependency in applications_by_name[name].get("dependencies", []):
+            if dependency["type"] == "application":
+                visit(dependency["name"])
+        visiting.remove(name)
+        visited.add(name)
+        ordered.append(applications_by_name[name])
+
     for app in manifest["applications"]:
+        visit(app["name"])
+    for app in ordered:
         name = f"{product}-{app['name']}-{suffix}"
         found = _unique(existing, name, "application")
         if found and _scope_conflicts(found, context):
             raise ReconcileError(f"Application {name!r} exists outside the selected scope.")
+        if found:
+            _verify_adopted_uuid(manifest, "application", name, found)
         if not found:
             if not client.apply:
                 actions.append(

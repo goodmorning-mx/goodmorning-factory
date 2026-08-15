@@ -46,6 +46,9 @@ One product may declare:
 Each application is a native Coolify GitHub Application with its own Dockerfile,
 health contract, deployment history and rollback boundary. Data services are
 native Coolify database resources and receive external backup reconciliation.
+Applications may declare typed `dependencies` on another application, database,
+or Redis resource. Factory validates the graph and reconciles application
+resources in dependency order; cycles and undeclared references fail closed.
 
 ## Environment sources
 
@@ -60,6 +63,10 @@ Application variables support only:
   fails closed instead of rotating it when Coolify cannot return the real value.
 - `service_url`: the declared public URL of another application in the same
   product, resolved by application name rather than a hardcoded hostname.
+- `managed_secret`: a reference to a Factory-managed binding such as
+  `goodmorning/openai-default`; Factory maps that binding to its configured
+  runtime secret and supplies the value only during reconciliation. It is never
+  stored in the manifest or logs.
 
 Database URL variables may request `"driver": "psycopg"` to convert only the
 URL scheme to SQLAlchemy's `postgresql+psycopg://` form. Applications may also
