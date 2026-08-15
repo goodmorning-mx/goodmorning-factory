@@ -164,14 +164,27 @@ jobs:
           print(f"Recorded {path} at v{os.environ['TARGET']}")
           PY
           branch="factory/record-${MODULE}-${TARGET}"
-          git switch -c "${branch}"
+          if git ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1; then
+            git fetch origin "${branch}:refs/remotes/origin/${branch}"
+            git switch -c "${branch}" FETCH_HEAD
+          else
+            git switch -c "${branch}"
+          fi
           git add "products/${PRODUCT}.json"
           git config user.name "goodmorning-factory[bot]"
           git config user.email "goodmorning-factory[bot]@users.noreply.github.com"
-          git commit -m "chore: record ${MODULE} v${TARGET} for ${PRODUCT}"
-          git push --set-upstream origin "${branch}"
-          factory_pr="$(gh pr create --repo goodmorning-mx/goodmorning-factory --base dev --head "${branch}" --title "chore: record ${MODULE} v${TARGET} for ${PRODUCT}" --body "Records the installed module version after the consumer update PR passed validation and merged.")"
-          gh pr checks "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --watch --fail-fast
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: record ${MODULE} v${TARGET} for ${PRODUCT}"
+          fi
+          git push origin "HEAD:${branch}"
+          factory_pr="$(gh pr list --repo goodmorning-mx/goodmorning-factory --head "${branch}" --state open --json url --jq '.[0].url')"
+          if [ -z "${factory_pr}" ]; then
+            factory_pr="$(gh pr create --repo goodmorning-mx/goodmorning-factory --base dev --head "${branch}" --title "chore: record ${MODULE} v${TARGET} for ${PRODUCT}" --body "Records the installed module version after the consumer update PR passed validation and merged.")"
+          fi
+          check_count="$(gh pr checks "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --json state --jq 'length')"
+          if [ "${check_count}" -gt 0 ]; then
+            gh pr checks "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --watch --fail-fast
+          fi
           gh pr merge "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --squash
           for _ in $(seq 1 60); do
             state="$(gh pr view "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --json state --jq .state)"
