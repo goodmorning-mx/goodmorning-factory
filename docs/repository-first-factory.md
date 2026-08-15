@@ -26,7 +26,7 @@ The pipeline:
 2. creates `dev` from the template's `main` branch and makes `dev` the default;
 3. verifies privacy, both branches, and factory ownership topics;
 4. registers `products/<product>.json` with repository `goodmorning-mx/<product>`;
-5. dispatches a targeted resources-v2 reconciliation for that manifest only;
+5. dispatches a targeted resources-v3 reconciliation for that manifest only;
 6. creates the Coolify project and `dev` environment;
 7. creates private PostgreSQL, backend, and frontend resources;
 8. waits through safe transient `partial` states;

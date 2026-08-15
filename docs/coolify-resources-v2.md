@@ -1,7 +1,8 @@
-# Coolify resources-v2 contract
+# Coolify resources-v2 compatibility contract
 
-`resources-v2` is the canonical GoodMorning topology for products that own
-persistent data or reusable modules. One Coolify Project represents one product
+`resources-v2` is a temporary legacy input. The canonical contract is
+`resources-v3`; use `scripts/resources_v3_migration.py` to normalize v2 without
+replacing existing resources. One Coolify Project represents one product
 and its `dev` Environment contains three independently visible resources:
 
 - `<product>-frontend-dev`: private GitHub Application, Dockerfile `/frontend/Dockerfile`, port 80;
@@ -84,7 +85,8 @@ approval.
 
 1. Archive the source and catalog state.
 2. Move the Compose application to legacy development domains.
-3. Change the manifest from `compose-v1` to `resources-v2`.
+3. Change the manifest from `compose-v1` to `resources-v3` (or temporarily use
+   the v2→v3 migration adapter).
 4. Provision and verify the three new resources on the official domains.
 5. Export and restore PostgreSQL data when the source database is non-empty.
 6. Keep the legacy Compose application available until rollback retention ends.

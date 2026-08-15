@@ -390,7 +390,9 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         "dockerfile_location": app["dockerfile"],
         "ports_exposes": str(app["port"]),
         "domains": app["domain"] or "",
-        "instant_deploy": False,
+        # Native Coolify auto-deploy is part of the v3 desired state.  The
+        # initial create may still be followed by an explicit deploy request.
+        "instant_deploy": True,
         "is_auto_deploy_enabled": True,
         "autogenerate_domain": False,
         "connect_to_docker_network": True,
@@ -410,8 +412,10 @@ def _environment_values(
     redis_urls: dict[str, str],
     legacy_values: dict[str, str],
     current: dict[str, dict[str, Any]] | None = None,
+    application_urls: dict[str, str] | None = None,
 ) -> list[dict[str, Any]]:
     current = current or {}
+    application_urls = application_urls or {}
     values: list[dict[str, Any]] = []
     for item in app["environment"]:
         source = item["source"]
@@ -426,6 +430,8 @@ def _environment_values(
                     value = "postgresql+psycopg://" + value.removeprefix("postgres://")
         elif source == "redis_url":
             value = redis_urls.get(item["resource"])
+        elif source == "service_url":
+            value = application_urls.get(item["resource"])
         elif source == "generated_secret":
             existing = current.get(item["key"])
             if existing is None:
@@ -473,6 +479,11 @@ def _ensure_applications(
             actions.append({"resource": f"{product}-{app['name']}-{suffix}", "kind": "application", "action": "planned_after_environment"})
         return
     existing = _items(client.get("/applications"))
+    application_urls = {
+        item["name"]: item["domain"]
+        for item in manifest["applications"]
+        if item.get("domain")
+    }
     for app in manifest["applications"]:
         name = f"{product}-{app['name']}-{suffix}"
         found = _unique(existing, name, "application")
@@ -501,7 +512,30 @@ def _ensure_applications(
                 actual = str(_field(found, key) or "")
                 if actual != str(expected[key]):
                     raise ReconcileError(f"Existing application {name!r} is incompatible in {key!r}; automatic replacement is forbidden.")
-            actions.append({"resource": name, "kind": "application", "action": "reused"})
+            mutable_fields = (
+                "domains",
+                "instant_deploy",
+                "is_auto_deploy_enabled",
+                "autogenerate_domain",
+                "health_check_enabled",
+                "health_check_path",
+                "health_check_port",
+                "health_check_method",
+                "health_check_scheme",
+                "health_check_return_code",
+                "custom_docker_run_options",
+            )
+            changes = {
+                key: expected[key]
+                for key in mutable_fields
+                if str(_field(found, key) or "") != str(expected[key] or "")
+            }
+            if changes and client.apply:
+                client.patch(f"/applications/{urllib.parse.quote(identifier, safe='')}", changes)
+                found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
+                actions.append({"resource": name, "kind": "application", "action": "reconciled", "fields": sorted(changes)})
+            else:
+                actions.append({"resource": name, "kind": "application", "action": "reused"})
         if not client.apply:
             actions.append(
                 {
@@ -519,6 +553,7 @@ def _ensure_applications(
             redis_urls,
             legacy_values,
             current,
+            application_urls=application_urls,
         )
         for variable in desired:
             existing_variable = current.get(variable["key"])
