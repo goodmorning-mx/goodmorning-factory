@@ -329,6 +329,24 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual(values[0]["value"], "secret-value")
         self.assertTrue(values[0]["is_shown_once"])
 
+    def test_adoption_does_not_clear_undeclared_existing_volume_options(self):
+        value = contract.validate_manifest(manifest())
+        value["migration"] = {
+            "from_topology": "resources-v2", "mode": "adopt-in-place", "retain": True,
+            "resource_names": {"applications": ["helloworldv2-api-dev"], "databases": [], "redis": []},
+            "preserve": ["volumes"],
+        }
+        app = value["applications"][0]
+        payload = advanced._application_payload(value, {**app, "persistent_volume": None}, {
+            "project_uuid": "project", "environment_uuid": "environment", "server_uuid": "server",
+            "destination_uuid": "destination", "github_app_uuid": "github",
+        })
+        found = {"custom_docker_run_options": "--mount source=legacy-volume,target=/app/data"}
+        self.assertNotIn(
+            "custom_docker_run_options",
+            advanced._application_mutable_changes(found, payload, {**app, "persistent_volume": None}),
+        )
+
     def test_reviewed_redis_config_is_base64_encoded_for_coolify_api(self):
         self.assertEqual(
             base64.b64decode(advanced._redis_conf()).decode("utf-8"),

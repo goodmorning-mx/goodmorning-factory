@@ -428,6 +428,31 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
     }
 
 
+def _application_mutable_changes(found: dict[str, Any], expected: dict[str, Any], app: dict[str, Any]) -> dict[str, Any]:
+    mutable_fields = (
+        "domains",
+        "instant_deploy",
+        "is_auto_deploy_enabled",
+        "autogenerate_domain",
+        "health_check_enabled",
+        "health_check_path",
+        "health_check_port",
+        "health_check_method",
+        "health_check_scheme",
+        "health_check_return_code",
+    )
+    # An adoption manifest may intentionally omit a v2 volume because the
+    # volume exists only in Coolify state. Never clear that state implicitly;
+    # a v3 volume declaration is required to manage it.
+    if app.get("persistent_volume") is not None:
+        mutable_fields = (*mutable_fields, "custom_docker_run_options")
+    return {
+        key: expected[key]
+        for key in mutable_fields
+        if str(_field(found, key) or "") != str(expected[key] or "")
+    }
+
+
 def _environment_values(
     app: dict[str, Any],
     database_urls: dict[str, str],
@@ -560,24 +585,7 @@ def _ensure_applications(
                 actual = str(_field(found, key) or "")
                 if actual != str(expected[key]):
                     raise ReconcileError(f"Existing application {name!r} is incompatible in {key!r}; automatic replacement is forbidden.")
-            mutable_fields = (
-                "domains",
-                "instant_deploy",
-                "is_auto_deploy_enabled",
-                "autogenerate_domain",
-                "health_check_enabled",
-                "health_check_path",
-                "health_check_port",
-                "health_check_method",
-                "health_check_scheme",
-                "health_check_return_code",
-                "custom_docker_run_options",
-            )
-            changes = {
-                key: expected[key]
-                for key in mutable_fields
-                if str(_field(found, key) or "") != str(expected[key] or "")
-            }
+            changes = _application_mutable_changes(found, expected, app)
             if changes and client.apply:
                 client.patch(f"/applications/{urllib.parse.quote(identifier, safe='')}", changes)
                 found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
