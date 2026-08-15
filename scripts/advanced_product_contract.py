@@ -174,6 +174,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "topology", "product", "repository", "branch", "development_domain", "coolify_github_app_name",
         "legacy", "migration", "connections", "applications", "databases", "redis", "backup",
         "modules", "module_dependency_order", "resource_ownership",
+        "module_update_policy",
         "confirm_production", "promotion_policy",
     }
     _require(set(raw) <= allowed, "Advanced product manifest contains unknown top-level fields.")
@@ -519,6 +520,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "modules": raw.get("modules", []),
         "module_dependency_order": raw.get("module_dependency_order", []),
         "resource_ownership": ownership,
+        **({"module_update_policy": raw["module_update_policy"]} if raw.get("module_update_policy") is not None else {}),
         "applications": applications,
         "databases": databases,
         "redis": redis_resources,
