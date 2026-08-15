@@ -168,10 +168,13 @@ def apply_update(product_root: str | Path, product: dict[str, Any], module: dict
     changed: list[str] = []
     installed["version"] = target
     repository = module["repository"]
+    reference_found = False
     for path in [root / "backend" / "requirements.txt", root / "requirements.txt"]:
         if path.exists():
             text = path.read_text(encoding="utf-8")
             updated = _replace_ref(text, repository, target)
+            backend_package = module.get("backend_package")
+            reference_found = reference_found or (isinstance(backend_package, str) and backend_package in text and (f"#v{target}" in text or f"@v{target}" in text))
             if updated != text:
                 path.write_text(updated, encoding="utf-8")
                 changed.append(str(path))
@@ -183,12 +186,13 @@ def apply_update(product_root: str | Path, product: dict[str, Any], module: dict
             for key, value in list(data.get(section, {}).items()):
                 if key in {module.get("frontend_package"), module["name"]} and isinstance(value, str):
                     replacement = _replace_ref(value, repository, target)
+                    reference_found = reference_found or (f"#v{target}" in value or f"@v{target}" in value)
                     if replacement != value:
                         data[section][key] = replacement; touched = True
         if touched:
             package_path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
             changed.append(str(package_path))
-    if not changed:
+    if not changed and not reference_found:
         raise ModuleUpdateError(f"No backend/frontend dependency reference found for {module['name']!r}.")
     return changed
 
