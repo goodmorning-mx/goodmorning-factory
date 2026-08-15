@@ -1,29 +1,52 @@
 {
-    "topology": "resources-v2",
-    "product": "balletpourtous",
-    "repository": "goodmorning-mx/balletpourtous",
-    "branch": "dev",
-    "development_domain": "dev.balletpourtous.goodmorning.mx",
-    "coolify_github_app_name": "goodmorning-mx-coolify",
-    "backend_base_directory": "/backend",
+  "topology": "resources-v2",
+  "product": "balletpourtous",
+  "repository": "goodmorning-mx/balletpourtous",
+  "branch": "dev",
+  "development_domain": "dev.balletpourtous.goodmorning.mx",
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "backend_base_directory": "/backend",
   "frontend_base_directory": "/frontend",
   "module_update_policy": {
-    "default": {"patch": "auto", "minor": "manual", "major": "blocked"},
-    "modules": {"gm-pwa": {"patch": "auto"}}
+    "default": {
+      "patch": "auto",
+      "minor": "manual",
+      "major": "blocked"
+    },
+    "modules": {
+      "gm-pwa": {
+        "patch": "auto"
+      }
+    }
   },
   "modules": [
     {
       "name": "gm-pwa",
-      "version": "0.1.3",
+      "version": "0.1.4",
       "kind": "frontend",
       "frontend_package": "@goodmorning/gm-pwa",
-      "node_requires": ["react>=18"],
+      "node_requires": [
+        "react>=18"
+      ],
       "env": [],
       "required_secrets": {},
       "dependencies": [],
-      "migrations": {"mode": "none"},
-      "pwa": {"manifest_required": true, "service_worker_required": true, "update_mode": "prompt", "api_auth_cache": "network-only"},
-      "compatibility": {"node": ">=20", "factory_api": "^1.0", "products": ["balletpourtous"]}
+      "migrations": {
+        "mode": "none"
+      },
+      "pwa": {
+        "manifest_required": true,
+        "service_worker_required": true,
+        "update_mode": "prompt",
+        "api_auth_cache": "network-only"
+      },
+      "compatibility": {
+        "node": ">=20",
+        "factory_api": "^1.0",
+        "products": [
+          "balletpourtous"
+        ]
+      }
     },
     {
       "name": "gm-mcp",
@@ -31,7 +54,13 @@
       "kind": "backend",
       "backend_package": "gm-mcp",
       "dependencies": [],
-      "compatibility": {"python": ">=3.12", "factory_api": "^1.0", "products": ["balletpourtous"]}
+      "compatibility": {
+        "python": ">=3.12",
+        "factory_api": "^1.0",
+        "products": [
+          "balletpourtous"
+        ]
+      }
     },
     {
       "name": "gm-billing",
@@ -40,8 +69,19 @@
       "backend_package": "gm-billing",
       "frontend_package": "@goodmorning/gm-billing",
       "dependencies": [],
-      "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1},
-      "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["balletpourtous"]}
+      "migrations": {
+        "mode": "sql",
+        "path": "migrations",
+        "minimum_schema": 1
+      },
+      "compatibility": {
+        "python": ">=3.12",
+        "node": ">=20",
+        "factory_api": "^1.0",
+        "products": [
+          "balletpourtous"
+        ]
+      }
     },
     {
       "name": "gm-auth",
@@ -49,12 +89,25 @@
       "kind": "full-stack",
       "backend_package": "gm-auth",
       "frontend_package": "@goodmorning/gm-auth",
-      "node_requires": ["react>=18"],
+      "node_requires": [
+        "react>=18"
+      ],
       "env": [],
       "required_secrets": {},
       "dependencies": [],
-      "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1},
-      "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["balletpourtous"]}
+      "migrations": {
+        "mode": "sql",
+        "path": "migrations",
+        "minimum_schema": 1
+      },
+      "compatibility": {
+        "python": ">=3.12",
+        "node": ">=20",
+        "factory_api": "^1.0",
+        "products": [
+          "balletpourtous"
+        ]
+      }
     },
     {
       "name": "gm-agent",
@@ -62,10 +115,19 @@
       "kind": "full-stack",
       "backend_package": "gm-agent",
       "frontend_package": "@goodmorning/gm-agent",
-      "python_requires": ["gm-mcp>=0.1.0", "gm-billing>=0.1.1"],
-      "node_requires": ["react>=18"],
+      "python_requires": [
+        "gm-mcp>=0.1.0",
+        "gm-billing>=0.1.1"
+      ],
+      "node_requires": [
+        "react>=18"
+      ],
       "env": [
-        {"key": "AGENT_MODEL", "required": true, "default": "gpt-4o-mini"}
+        {
+          "key": "AGENT_MODEL",
+          "required": true,
+          "default": "gpt-4o-mini"
+        }
       ],
       "required_secrets": {
         "OPENAI_API_KEY": {
@@ -74,19 +136,31 @@
           "target": "backend"
         }
       },
-      "dependencies": ["gm-mcp", "gm-billing"],
-      "migrations": {"mode": "none"},
-      "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["balletpourtous"]}
+      "dependencies": [
+        "gm-mcp",
+        "gm-billing"
+      ],
+      "migrations": {
+        "mode": "none"
+      },
+      "compatibility": {
+        "python": ">=3.12",
+        "node": ">=20",
+        "factory_api": "^1.0",
+        "products": [
+          "balletpourtous"
+        ]
+      }
     }
   ],
   "backup": {
-        "enabled": true,
-        "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
-        "frequency": "0 3 * * *",
-        "local_retention_count": 1,
-        "local_retention_days": 1,
-        "s3_retention_count": 7,
-        "s3_retention_days": 7,
-        "timeout_seconds": 1800
-    }
+    "enabled": true,
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
+    "frequency": "0 3 * * *",
+    "local_retention_count": 1,
+    "local_retention_days": 1,
+    "s3_retention_count": 7,
+    "s3_retention_days": 7,
+    "timeout_seconds": 1800
+  }
 }
