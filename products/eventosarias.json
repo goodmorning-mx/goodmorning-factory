@@ -4,6 +4,32 @@
   "repository": "goodmorning-mx/eventosarias",
   "branch": "dev",
   "coolify_github_app_name": "goodmorning-mx-coolify",
+  "modules": [
+    {
+      "name": "gm-mcp",
+      "version": "0.1.0",
+      "kind": "backend",
+      "backend_package": "gm-mcp",
+      "deployment_modes": ["embedded", "gateway"],
+      "default_deployment_mode": "embedded",
+      "deployment_mode": "gateway",
+      "resource_requirements": [
+        {
+          "name": "mcp-gateway",
+          "kind": "gateway",
+          "resource_name": "mcp",
+          "shared": true,
+          "deployment_modes": ["gateway"],
+          "base_directory": "/backend",
+          "dockerfile": "/Dockerfile.mcp",
+          "port": 8001,
+          "public": true,
+          "health_path": "/health"
+        }
+      ],
+      "bindings": []
+    }
+  ],
   "applications": [
     {
       "name": "api",

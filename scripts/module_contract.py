@@ -430,8 +430,10 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
                     redis.append({"name": resource_name, "version": "7.4", "image": "redis:7.4-alpine", "public": False, "persistent": True})
                     redis_names.add(resource_name)
             else:
-                _require(resource_name not in app_by_name, f"Module application resource {resource_name!r} conflicts with an existing application.")
-                if resource_name not in app_by_name:
+                if resource_name in app_by_name:
+                    _require(requirement["shared"], f"Module application resource {resource_name!r} conflicts with an existing application.")
+                    _require(app_by_name[resource_name].get("role") == requirement["role"], f"Shared module application {resource_name!r} has an incompatible role.")
+                else:
                     public = requirement["public"]
                     product = manifest["product"]
                     production = manifest["topology"] == "resources-v3-production"
