@@ -8,7 +8,15 @@
       "frontend_package": "@goodmorning/gm-auth",
       "python_requires": ">=3.12",
       "node_requires": ">=20",
+      "deployment_modes": ["embedded", "service"],
+      "default_deployment_mode": "embedded",
       "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
+      ,"resource_requirements": [
+        {"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true}
+      ],
+      "bindings": [
+        {"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "backend"}
+      ]
     },
     {
       "name": "gm-agent",
@@ -17,14 +25,26 @@
       "frontend_package": "@goodmorning/gm-agent",
       "python_requires": ">=3.12",
       "node_requires": ">=20",
+      "deployment_modes": ["embedded", "service", "gateway"],
+      "default_deployment_mode": "embedded",
       "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
+      ,"resource_requirements": [
+        {"name": "agent-gateway", "kind": "gateway", "resource_name": "agent-gateway", "deployment_modes": ["gateway"], "port": 8100, "public": true}
+      ],
+      "bindings": []
     },
     {
       "name": "gm-mcp",
       "repository": "goodmorning-mx/gm-mcp",
       "backend_package": "gm-mcp",
       "python_requires": ">=3.12",
+      "deployment_modes": ["embedded", "gateway"],
+      "default_deployment_mode": "embedded",
       "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
+      ,"resource_requirements": [
+        {"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "deployment_modes": ["gateway"], "port": 8200, "public": true}
+      ],
+      "bindings": []
     },
     {
       "name": "gm-billing",
@@ -33,14 +53,22 @@
       "frontend_package": "@goodmorning/gm-billing",
       "python_requires": ">=3.12",
       "node_requires": ">=20",
+      "deployment_modes": ["embedded", "service"],
+      "default_deployment_mode": "embedded",
       "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
+      ,"resource_requirements": [],
+      "bindings": []
     },
     {
       "name": "gm-pwa",
       "repository": "goodmorning-mx/gm-pwa",
       "frontend_package": "@goodmorning/gm-pwa",
       "node_requires": ">=20",
+      "deployment_modes": ["embedded"],
+      "default_deployment_mode": "embedded",
       "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
+      ,"resource_requirements": [],
+      "bindings": []
     }
   ]
 }

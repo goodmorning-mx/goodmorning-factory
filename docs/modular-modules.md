@@ -41,3 +41,55 @@ injected only into the declared backend or frontend resource. `CUSTOMER_MANAGED`
 is accepted by the contract for future support but is not provisioned yet.
 `compile_installation` provides deterministic package lists, environment,
 secret-binding, and migration inputs for product onboarding.
+
+## Deployment and infrastructure contract
+
+Modules remain embedded unless a product explicitly selects another mode:
+
+```json
+{
+  "name": "gm-agent",
+  "deployment_modes": ["embedded", "service", "gateway"],
+  "default_deployment_mode": "embedded",
+  "deployment_mode": "gateway",
+  "resource_requirements": [
+    {"name": "queue", "kind": "redis", "resource_name": "shared-redis", "shared": true},
+    {
+      "name": "agent-gateway",
+      "kind": "gateway",
+      "resource_name": "agent-gateway",
+      "deployment_modes": ["gateway"],
+      "port": 8100,
+      "public": true,
+      "health_path": "/health"
+    }
+  ],
+  "bindings": [
+    {"key": "REDIS_URL", "source": "redis_url", "requirement": "queue", "target": "backend"}
+  ]
+}
+```
+
+Supported requirement kinds are `postgresql`, `timescaledb`, `redis`,
+`service`, `worker`, and `gateway`. Data resources are private by contract;
+application requirements become Resources V3 applications with native
+auto-deploy and healthchecks. `shared: true` plus a stable `resource_name`
+allows modules to consume an existing compatible resource without creating a
+duplicate.
+
+Factory composes `modules` into `applications`, `databases`, `redis`, and
+`connections` before validating the normal Resources V3 contract. It records
+`resource_ownership` entries with owner module, requirement, shared flag, and
+consumers. Ownership is reference metadata only: module uninstall/update never
+deletes a shared resource.
+
+Bindings compile to `DATABASE_URL`, `REDIS_URL`, and `SERVICE_URL` connections,
+or to generated/managed runtime secrets. Secret bindings are rejected for
+frontend targets. A module dependency or resource requirement cycle fails
+before any Coolify write.
+
+The module updater compares infrastructure metadata as well as package
+compatibility. Additive requirements produce a reconciliation plan and are
+reconciled through Resources V3 before the optional DEV deployment; removed or
+changed resources, bindings, or default deployment modes block auto-update for
+manual review.

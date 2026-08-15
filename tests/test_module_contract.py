@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.module_contract import ModuleContractError, compile_installation, validate_product_modules
+from scripts.module_contract import ModuleContractError, compile_installation, compose_resources_v3, validate_product_modules
 from scripts import reconcile_resource_product as resources_contract
 
 
@@ -102,3 +102,31 @@ class ModuleContractTests(unittest.TestCase):
         value[2]["unexpected"] = True
         with self.assertRaises(ModuleContractError):
             validate_product_modules(value)
+
+    def test_module_deployment_mode_composes_shared_redis_and_gateway(self):
+        value = modules()
+        value[0]["deployment_modes"] = ["embedded", "gateway"]
+        value[0]["default_deployment_mode"] = "embedded"
+        value[0]["deployment_mode"] = "gateway"
+        value[0]["resource_requirements"] = [
+            {"name": "queue", "kind": "redis", "resource_name": "shared-redis", "shared": True},
+            {"name": "gateway", "kind": "gateway", "resource_name": "agent-gateway", "depends_on": ["queue"], "port": 8100, "public": True},
+        ]
+        value[0]["bindings"] = [{"key": "REDIS_URL", "source": "redis_url", "requirement": "queue", "target": "gateway"}]
+        manifest = {
+            "topology": "resources-v3", "product": "demo", "repository": "goodmorning-mx/demo", "branch": "dev",
+            "coolify_github_app_name": "goodmorning-mx-coolify",
+            "applications": [
+                {"name": "api", "role": "api", "dockerfile": "/Dockerfile", "port": 8000, "domain": "https://api.dev.demo.goodmorning.mx", "health_path": "/health", "auto_deploy": True, "environment": []},
+                {"name": "frontend", "role": "frontend", "dockerfile": "/Dockerfile", "port": 80, "domain": "https://dev.demo.goodmorning.mx", "health_path": "/", "auto_deploy": True, "environment": []},
+            ],
+            "databases": [{"name": "postgres", "engine": "postgresql", "version": "16", "image": "postgres:16-alpine", "public": False, "backup": True}],
+            "redis": [], "modules": value,
+            "backup": {"enabled": True, "storage_uuid": "bk8cw0gkswgo04o0s88sk0kg", "frequency": "0 3 * * *", "local_retention_count": 1, "local_retention_days": 1, "s3_retention_count": 7, "s3_retention_days": 7, "timeout_seconds": 1800},
+        }
+        composed = compose_resources_v3(manifest)
+        self.assertEqual([item["name"] for item in composed["redis"]], ["shared-redis"])
+        gateway = next(item for item in composed["applications"] if item["name"] == "agent-gateway")
+        self.assertEqual(gateway["role"], "gateway")
+        self.assertEqual(composed["connections"][0]["source"], {"type": "redis", "resource": "shared-redis"})
+        self.assertEqual(composed["resource_ownership"][0]["owner_module"], "gm-agent")

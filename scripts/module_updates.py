@@ -19,6 +19,7 @@ from typing import Any, Callable
 SEMVER_RE = re.compile(r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
 SAFE_SLUG = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
 POLICIES = {"auto", "manual", "blocked"}
+INFRASTRUCTURE_FIELDS = ("deployment_modes", "default_deployment_mode", "resource_requirements", "bindings")
 
 
 class ModuleUpdateError(ValueError):
@@ -127,6 +128,57 @@ def compatibility_blockers(product: dict[str, Any], module: dict[str, Any], targ
     return blockers
 
 
+def infrastructure_plan(product: dict[str, Any], module: dict[str, Any]) -> dict[str, Any]:
+    """Compare effective module infrastructure and classify safe changes.
+
+    New resources can be reconciled additively by Resources V3. Removing a
+    resource or binding is blocked because the module updater cannot prove that
+    another module does not consume it.
+    """
+    declared = next((m for m in product.get("modules", []) if isinstance(m, dict) and m.get("name") == module["name"]), {})
+    old_mode = declared.get("deployment_mode", declared.get("default_deployment_mode", "embedded"))
+    new_mode = module.get("deployment_mode", module.get("default_deployment_mode", "embedded"))
+    old_requirements = {
+        item.get("name"): item
+        for item in declared.get("resource_requirements", [])
+        if isinstance(item, dict) and (not item.get("deployment_modes") or old_mode in item.get("deployment_modes", []))
+    }
+    new_requirements = {
+        item.get("name"): item
+        for item in module.get("resource_requirements", [])
+        if isinstance(item, dict) and (not item.get("deployment_modes") or new_mode in item.get("deployment_modes", []))
+    }
+    old_bindings = {(item.get("target"), item.get("key")): item for item in declared.get("bindings", []) if isinstance(item, dict)}
+    new_bindings = {(item.get("target"), item.get("key")): item for item in module.get("bindings", []) if isinstance(item, dict)}
+    added = sorted(set(new_requirements) - set(old_requirements))
+    removed = sorted(set(old_requirements) - set(new_requirements))
+    changed = sorted(name for name in set(old_requirements) & set(new_requirements) if old_requirements[name] != new_requirements[name])
+    added_bindings = sorted(set(new_bindings) - set(old_bindings))
+    removed_bindings = sorted(set(old_bindings) - set(new_bindings))
+    changed_bindings = sorted(key for key in set(old_bindings) & set(new_bindings) if old_bindings[key] != new_bindings[key])
+    breaking = []
+    if removed:
+        breaking.append("resource_removed")
+    if changed:
+        breaking.append("resource_changed")
+    if removed_bindings or changed_bindings:
+        breaking.append("binding_removed_or_changed")
+    if old_mode != new_mode:
+        breaking.append("default_deployment_mode_changed")
+    return {
+        "changed": bool(added or removed or changed or added_bindings or removed_bindings or changed_bindings or old_mode != new_mode),
+        "mode": {"from": old_mode, "to": new_mode},
+        "added_resources": added,
+        "removed_resources": removed,
+        "changed_resources": changed,
+        "added_bindings": [list(key) for key in added_bindings],
+        "removed_bindings": [list(key) for key in removed_bindings],
+        "changed_bindings": [list(key) for key in changed_bindings],
+        "breaking": breaking,
+        "requires_reconcile": bool(added or changed or added_bindings or old_mode != new_mode),
+    }
+
+
 def plan_updates(products_dir: str | Path, registry_path: str | Path, releases: dict[str, str] | None = None, opener: Callable[[str], Any] | None = None) -> dict[str, Any]:
     registry = load_registry(registry_path)
     plans: list[dict[str, Any]] = []
@@ -142,8 +194,10 @@ def plan_updates(products_dir: str | Path, registry_path: str | Path, releases: 
                 continue
             policy = product_policy(product, name, module["default_policy"])
             blockers = compatibility_blockers(product, module, available)
+            infrastructure = infrastructure_plan(product, module)
+            blockers.extend(f"infrastructure_{item}" for item in infrastructure["breaking"])
             action = "blocked" if blockers or policy[change] == "blocked" else policy[change]
-            plans.append({"product": product["product"], "module": name, "installed": installed.get("version"), "available": available, "change": change, "policy": policy[change], "action": action, "blockers": blockers})
+            plans.append({"product": product["product"], "module": name, "installed": installed.get("version"), "available": available, "change": change, "policy": policy[change], "action": action, "blockers": blockers, "infrastructure": infrastructure})
     return {"schema": 1, "plans": plans, "consumer_count": len({item["product"] for item in plans})}
 
 
@@ -197,7 +251,7 @@ def apply_update(product_root: str | Path, product: dict[str, Any], module: dict
     return changed
 
 
-def update_factory_manifest(product: dict[str, Any], module_name: str, target: str) -> str:
+def update_factory_manifest(product: dict[str, Any], module_name: str, target: str, module_metadata: dict[str, Any] | None = None) -> str:
     """Persist the installed version in Factory's product catalog."""
     target = normalize_version(target)
     item = next((value for value in product.get("modules", []) if isinstance(value, dict) and value.get("name") == module_name), None)
@@ -209,6 +263,13 @@ def update_factory_manifest(product: dict[str, Any], module_name: str, target: s
     updated, count = re.subn(pattern, lambda match: match.group(1) + target + '"', text, count=1)
     if count != 1:
         raise ModuleUpdateError(f"Unable to locate the installed version for {module_name!r} in Factory manifest.")
+    if module_metadata:
+        document = json.loads(updated)
+        declaration = next(item for item in document["modules"] if item.get("name") == module_name)
+        for field in INFRASTRUCTURE_FIELDS:
+            if field in module_metadata:
+                declaration[field] = module_metadata[field]
+        updated = json.dumps(document, indent=2) + "\n"
     path.write_text(updated, encoding="utf-8")
     return str(path)
 
