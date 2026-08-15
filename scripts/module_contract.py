@@ -55,6 +55,7 @@ def _required_secrets(raw: Any, module_name: str) -> dict[str, dict[str, str]]:
         binding = _string(item.get("binding"), f"Secret binding for {key!r} is required.")
         target = _string(item.get("target"), f"Secret target for {key!r} is required.")
         _require(target in ALLOWED_SECRET_TARGETS, f"Unsupported secret target {target!r} for {key!r}.")
+        _require(target == "backend", "Secrets must never be bound to frontend resources.")
         normalized[key] = {"source": source, "binding": binding, "target": target}
     return normalized
 

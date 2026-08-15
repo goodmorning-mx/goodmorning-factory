@@ -81,6 +81,19 @@ class ModuleContractTests(unittest.TestCase):
         value[0]["required_secrets"] = {"OPENAI_API_KEY": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/openai-default", "target": "backend"}}
         with self.assertRaises(ModuleContractError):
             validate_product_modules(value)
+
+    def test_rejects_required_secrets_for_frontend(self):
+        value = modules()
+        value[0].pop("env")
+        value[0]["required_secrets"] = {
+            "OPENAI_API_KEY": {
+                "source": "GOODMORNING_MANAGED",
+                "binding": "goodmorning/openai-default",
+                "target": "frontend",
+            }
+        }
+        with self.assertRaises(ModuleContractError):
+            validate_product_modules(value)
         value = modules()
         value[0].pop("env")
         value[0]["required_secrets"] = {"OPENAI_API_KEY": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/openai-default", "target": "sidecar"}}
