@@ -163,13 +163,6 @@ jobs:
           TARGET: ${{ steps.plan.outputs.available }}
         run: |
           set -euo pipefail
-          python - <<'PY'
-          import json, os
-          from scripts.module_updates import load_products, update_factory_manifest
-          product=next(p for p in load_products("products") if p["product"]==os.environ["PRODUCT"])
-          path=update_factory_manifest(product, os.environ["MODULE"], os.environ["TARGET"])
-          print(f"Recorded {path} at v{os.environ['TARGET']}")
-          PY
           branch="factory/record-${MODULE}-${TARGET}"
           if git ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1; then
             git fetch origin "${branch}:refs/remotes/origin/${branch}"
@@ -177,6 +170,13 @@ jobs:
           else
             git switch -c "${branch}"
           fi
+          python - <<'PY'
+          import json, os
+          from scripts.module_updates import load_products, update_factory_manifest
+          product=next(p for p in load_products("products") if p["product"]==os.environ["PRODUCT"])
+          path=update_factory_manifest(product, os.environ["MODULE"], os.environ["TARGET"])
+          print(f"Recorded {path} at v{os.environ['TARGET']}")
+          PY
           git add "products/${PRODUCT}.json"
           git config user.name "goodmorning-factory[bot]"
           git config user.email "goodmorning-factory[bot]@users.noreply.github.com"
