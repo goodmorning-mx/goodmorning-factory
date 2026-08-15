@@ -29,7 +29,7 @@ class RepositoryFirstFactoryWorkflowTests(unittest.TestCase):
         self.assertLess(sentinel, dispatch)
         self.assertLess(dispatch, wait)
         self.assertIn("scripts/register_product_manifest.py", self.create)
-        self.assertIn("scripts/reconcile_resource_product.py", self.create)
+        self.assertIn("scripts/reconcile_resources.py", self.create)
         self.assertIn("scripts/reconcile_database_backups.py", self.create)
         self.assertIn('manifest="${{ steps.catalog.outputs.manifest_path }}"', self.create)
 

@@ -12,6 +12,8 @@ on:
       - 'scripts/provision_product_development.py'
       - 'scripts/reconcile_database_backups.py'
       - 'scripts/reconcile_resource_product.py'
+      - 'scripts/reconcile_resources.py'
+      - 'scripts/resources_v3_migration.py'
       - '.github/workflows/provision-coolify-resources-development.yml'
   workflow_dispatch:
     inputs:
@@ -111,7 +113,7 @@ jobs:
           if [ ! -s "${selection_file}" ] && [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             if ! git diff --quiet "${{ github.event.before }}" "${GITHUB_SHA}" -- \
               scripts/provision_product_development.py \
-              scripts/reconcile_resource_product.py \
+              scripts/reconcile_resources.py \
               scripts/reconcile_database_backups.py \
               .github/workflows/provision-coolify-resources-development.yml; then
               echo "Control-plane implementation changed; selecting the full resources-v2 catalog."
@@ -161,7 +163,7 @@ jobs:
           selected=0
           while IFS= read -r manifest; do
             selected=$((selected + 1))
-            python scripts/reconcile_resource_product.py \
+            python scripts/reconcile_resources.py \
               --manifest "${manifest}" \
               --phase plan \
               --operation plan \
@@ -184,6 +186,7 @@ jobs:
           COOLIFY_ALLOW_DEPLOYMENTS: 'true'
           COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'true'
           COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'true'
+          COOLIFY_ALLOW_ADVANCED_WRITES: 'true'
         run: |
           set -euo pipefail
           echo "::add-mask::${COOLIFY_API_TOKEN}"
@@ -198,7 +201,7 @@ jobs:
               attempt_file="${RUNNER_TEMP}/${product}-reconcile-${attempt}.json"
               echo "Reconciling resources-v2 product ${product} (attempt ${attempt}/${MAX_RECONCILE_ATTEMPTS})"
               set +e
-              python scripts/reconcile_resource_product.py \
+              python scripts/reconcile_resources.py \
                 --manifest "${manifest}" \
                 --phase apply \
                 --operation deploy-full \

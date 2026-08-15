@@ -97,8 +97,8 @@ application environment.
 1. Merge and validate the product's `dev` runtime contract.
 2. Add its reviewed `resources-v3` catalog manifest. For a `resources-v2`
    adoption, run `resources_v3_migration.py` and review the generated manifest;
-   reuse exact names and supplied UUIDs while declaring only additive resources
-   or environment keys.
+   reuse exact names, source repository, and supplied UUIDs while declaring only
+   additive resources or environment keys.
 3. Factory plans the complete topology using read-only Coolify requests.
 4. Factory creates missing private data services and independent applications.
 5. Factory transfers allowlisted runtime configuration internally.
