@@ -178,7 +178,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
     _require(isinstance(repository, str) and REPOSITORY_RE.fullmatch(repository) is not None, "Invalid repository.")
     migration_input = raw.get("migration")
     legacy_repository_adoption = (
-        topology == TOPOLOGY
+        topology in {TOPOLOGY, PRODUCTION_TOPOLOGY}
         and isinstance(migration_input, dict)
         and migration_input.get("from_topology") == "resources-v2"
     )
@@ -223,10 +223,11 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
     migration_raw = raw.get("migration")
     migration: dict[str, Any] | None = None
     if migration_raw is not None:
-        _require(topology == TOPOLOGY, "Migration descriptors are only valid for resources-v3 development adoption.")
+        _require(topology in {TOPOLOGY, PRODUCTION_TOPOLOGY}, "Migration descriptors are only valid for resources-v3 adoption.")
         _require(isinstance(migration_raw, dict), "Migration descriptor must be an object.")
         _require(set(migration_raw) <= {"from_topology", "mode", "retain", "resource_names", "resource_uuids", "preserve"}, "Unknown migration descriptor field.")
-        _require(migration_raw.get("from_topology") == "resources-v2", "Only resources-v2 adoption is supported.")
+        expected_source_topology = "resources-v2-production" if production else "resources-v2"
+        _require(migration_raw.get("from_topology") == expected_source_topology, "Migration source topology does not match the target environment.")
         _require(migration_raw.get("mode") == "adopt-in-place" and migration_raw.get("retain") is True, "Migration must retain existing resources and use adopt-in-place mode.")
         names = migration_raw.get("resource_names")
         _require(isinstance(names, dict), "Migration resource_names must be an object.")
