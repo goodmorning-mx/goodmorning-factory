@@ -110,7 +110,7 @@ jobs:
           gh auth setup-git
           if git -C "${root}" ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1; then
             git -C "${root}" fetch origin "${branch}:refs/remotes/origin/${branch}"
-            git -C "${root}" switch -c "${branch}" --track "origin/${branch}"
+            git -C "${root}" switch -c "${branch}" FETCH_HEAD
           else
             git -C "${root}" switch -c "${branch}"
           fi
