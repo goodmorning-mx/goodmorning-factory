@@ -203,9 +203,13 @@ def update_factory_manifest(product: dict[str, Any], module_name: str, target: s
     item = next((value for value in product.get("modules", []) if isinstance(value, dict) and value.get("name") == module_name), None)
     if not item:
         raise ModuleUpdateError(f"Product does not declare {module_name!r}.")
-    item["version"] = target
     path = Path(product["_path"])
-    path.write_text(json.dumps({k: v for k, v in product.items() if not k.startswith("_")}, indent=2) + "\n", encoding="utf-8")
+    text = path.read_text(encoding="utf-8")
+    pattern = rf'("name"\s*:\s*"{re.escape(module_name)}"\s*,\s*"version"\s*:\s*")[^"]+"'
+    updated, count = re.subn(pattern, lambda match: match.group(1) + target + '"', text, count=1)
+    if count != 1:
+        raise ModuleUpdateError(f"Unable to locate the installed version for {module_name!r} in Factory manifest.")
+    path.write_text(updated, encoding="utf-8")
     return str(path)
 
 
