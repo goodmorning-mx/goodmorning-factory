@@ -129,7 +129,8 @@ jobs:
           echo "url=${pr_url}" >> "${GITHUB_OUTPUT}"
           echo "Consumer PR: ${pr_url}" >> "${GITHUB_STEP_SUMMARY}"
           if [ "${{ inputs.auto_merge }}" = true ]; then
-            gh pr merge "${pr_url}" --repo "${repo}" --auto --squash
+            gh pr checks "${pr_url}" --repo "${repo}" --watch --fail-fast
+            gh pr merge "${pr_url}" --repo "${repo}" --squash
             for _ in $(seq 1 60); do
               state="$(gh pr view "${pr_url}" --repo "${repo}" --json state --jq .state)"
               [ "${state}" = MERGED ] && break
@@ -163,7 +164,8 @@ jobs:
           git commit -m "chore: record ${MODULE} v${TARGET} for ${PRODUCT}"
           git push --set-upstream origin "${branch}"
           factory_pr="$(gh pr create --repo goodmorning-mx/goodmorning-factory --base dev --head "${branch}" --title "chore: record ${MODULE} v${TARGET} for ${PRODUCT}" --body "Records the installed module version after the consumer update PR passed validation and merged.")"
-          gh pr merge "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --auto --squash
+          gh pr checks "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --watch --fail-fast
+          gh pr merge "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --squash
           for _ in $(seq 1 60); do
             state="$(gh pr view "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --json state --jq .state)"
             [ "${state}" = MERGED ] && break
