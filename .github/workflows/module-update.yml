@@ -129,13 +129,20 @@ jobs:
             git -C "${root}" commit -m "chore: update ${MODULE} to v${TARGET}"
           fi
           git -C "${root}" push origin "HEAD:${branch}"
-          pr_url="$(gh pr list --repo "${repo}" --head "${branch}" --state open --json url --jq '.[0].url')"
+          consumer_already_merged="false"
+          pr_url="$(gh pr list --repo "${repo}" --head "${branch}" --state merged --json url --jq '.[0].url')"
+          if [ -n "${pr_url}" ]; then
+            consumer_already_merged="true"
+          fi
+          if [ -z "${pr_url}" ]; then
+            pr_url="$(gh pr list --repo "${repo}" --head "${branch}" --state open --json url --jq '.[0].url')"
+          fi
           if [ -z "${pr_url}" ]; then
             pr_url="$(gh pr create --repo "${repo}" --base dev --head "${branch}" --title "chore: update ${MODULE} to v${TARGET}" --body "Automated GoodMorning Factory module update.\n\n- module: ${MODULE}\n- target: v${TARGET}\n- policy: patch auto-update\n- validation: frontend build and backend compile\n\nFactory will record and deploy this update only after the PR is merged.")"
           fi
           echo "url=${pr_url}" >> "${GITHUB_OUTPUT}"
           echo "Consumer PR: ${pr_url}" >> "${GITHUB_STEP_SUMMARY}"
-          if [ "${{ inputs.auto_merge }}" = true ]; then
+          if [ "${{ inputs.auto_merge }}" = true ] && [ "${consumer_already_merged}" != true ]; then
             gh pr checks "${pr_url}" --repo "${repo}" --watch --fail-fast
             gh pr merge "${pr_url}" --repo "${repo}" --squash
             for _ in $(seq 1 60); do
