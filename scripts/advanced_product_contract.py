@@ -176,7 +176,16 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
     repository = raw.get("repository")
     _require(isinstance(product, str) and PRODUCT_RE.fullmatch(product) is not None, "Invalid product slug.")
     _require(isinstance(repository, str) and REPOSITORY_RE.fullmatch(repository) is not None, "Invalid repository.")
-    _require(repository == f"goodmorning-mx/{product}", "Repository must be the product repository in goodmorning-mx.")
+    migration_input = raw.get("migration")
+    legacy_repository_adoption = (
+        topology == TOPOLOGY
+        and isinstance(migration_input, dict)
+        and migration_input.get("from_topology") == "resources-v2"
+    )
+    _require(
+        repository == f"goodmorning-mx/{product}" or legacy_repository_adoption,
+        "Repository must be the product repository in goodmorning-mx unless adopting a v2 source in place.",
+    )
     expected_branch = "main" if production else "dev"
     _require(
         raw.get("branch") == expected_branch,

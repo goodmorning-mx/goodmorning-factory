@@ -214,6 +214,7 @@ jobs:
           COOLIFY_ALLOW_DEPLOYMENTS: 'true'
           COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'true'
           COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'true'
+          COOLIFY_ALLOW_ADVANCED_WRITES: 'true'
         run: |
           set -euo pipefail
           echo "::add-mask::${COOLIFY_API_TOKEN}"
@@ -221,7 +222,7 @@ jobs:
           converged=false
           for attempt in $(seq 1 6); do
             set +e
-            python scripts/reconcile_resource_product.py \
+            python scripts/reconcile_resources.py \
               --manifest "${manifest}" \
               --phase apply \
               --operation deploy-full \

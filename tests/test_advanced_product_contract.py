@@ -191,6 +191,10 @@ class AdvancedProductContractTests(unittest.TestCase):
         self.assertEqual(migrated["migration"]["resource_uuids"]["simple-api-dev"], "api-uuid")
         self.assertEqual(contract.resource_names(migrated)["applications"], ["simple-api-dev", "simple-frontend-dev"])
 
+        legacy["repository"] = "goodmorning-mx/factory-smoke-test"
+        migrated = migrate_v2_manifest(legacy)
+        self.assertEqual(migrated["repository"], "goodmorning-mx/factory-smoke-test")
+
     def test_production_rejects_development_domains_and_legacy_imports(self):
         value = production_manifest()
         value["applications"][0]["domain"] = (

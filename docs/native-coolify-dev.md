@@ -1,6 +1,7 @@
 # GoodMorning DEV deployment standard
 
-Every `resources-v2` product uses this immutable daily deployment contract:
+Every `resources-v3` product uses this immutable daily deployment contract,
+including products temporarily normalized from `resources-v2`:
 
 ```text
 product repository dev merge
