@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from scripts import advanced_product_contract as contract
+from scripts.resources_v3_migration import migrate_v2_manifest
 
 
 def manifest():
@@ -133,6 +134,31 @@ class AdvancedProductContractTests(unittest.TestCase):
             value[key] = replacement
             with self.subTest(key=key), self.assertRaises(contract.ContractError):
                 contract.validate_manifest(value)
+
+    def test_connections_compile_into_environment_references(self):
+        value = manifest()
+        value["connections"] = [
+            {"target": "api", "key": "CACHE_URL", "source": {"type": "redis", "resource": "redis"}},
+            {"target": "mobile", "key": "API_URL", "source": {"type": "application", "resource": "api"}},
+        ]
+        normalized = contract.validate_manifest(value)
+        api = next(app for app in normalized["applications"] if app["name"] == "api")
+        mobile = next(app for app in normalized["applications"] if app["name"] == "mobile")
+        self.assertIn({"key": "CACHE_URL", "source": "redis_url", "resource": "redis"}, api["environment"])
+        self.assertIn({"key": "API_URL", "source": "service_url", "resource": "api"}, mobile["environment"])
+
+    def test_v2_migration_is_additive_and_v3_valid(self):
+        legacy = {
+            "topology": "resources-v2", "product": "simple", "repository": "goodmorning-mx/simple",
+            "branch": "dev", "development_domain": "dev.simple.goodmorning.mx",
+            "coolify_github_app_name": "goodmorning-mx-coolify", "backend_base_directory": "/backend",
+            "frontend_base_directory": "/frontend", "backup": manifest()["backup"],
+        }
+        migrated = migrate_v2_manifest(legacy, resource_uuids={"simple-api-dev": "api-uuid"})
+        self.assertEqual(migrated["topology"], "resources-v3")
+        self.assertTrue(migrated["migration"]["retain"])
+        self.assertEqual(migrated["migration"]["resource_uuids"]["simple-api-dev"], "api-uuid")
+        self.assertEqual(contract.resource_names(migrated)["applications"], ["simple-api-dev", "simple-frontend-dev"])
 
     def test_production_rejects_development_domains_and_legacy_imports(self):
         value = production_manifest()

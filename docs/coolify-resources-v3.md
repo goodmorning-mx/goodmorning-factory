@@ -1,14 +1,15 @@
-# Coolify resources-v3 advanced product contract
+# Coolify resources-v3 product contract
 
-`resources-v3` extends Factory for products that need more than one public
-application, private workers, Redis, or a reviewed PostgreSQL-compatible image.
-It does not replace `resources-v2`; simple products retain the smaller canonical
-contract.
+`resources-v3` is the single declarative contract for every product, from a
+simple API/frontend pair to products with gateways, workers, Redis, TimescaleDB,
+multiple domains, and cross-application connections. `resources-v2` is a
+temporary compatibility input normalized by `scripts/resources_v3_migration.py`.
 
 ## Safety model
 
 - Development manifests accept only branch/environment `dev`; production
-  manifests use the distinct `resources-v3-production` topology and accept only
+  manifests use the environment-specific `resources-v3-production` compatibility
+  spelling and accept only
   branch `main`, environment `production`, `confirm_production=true`, and the
   reviewed `auto-on-main` promotion policy.
 - Additive migration: a declared legacy Coolify application is retained and is
@@ -57,11 +58,18 @@ Application variables support only:
 - `generated_secret`: a new high-entropy value created inside reconciliation,
   never stored in Git or output, and preserved on later runs. Reconciliation
   fails closed instead of rotating it when Coolify cannot return the real value.
+- `service_url`: the declared public URL of another application in the same
+  product, resolved by application name rather than a hardcoded hostname.
 
 Database URL variables may request `"driver": "psycopg"` to convert only the
 URL scheme to SQLAlchemy's `postgresql+psycopg://` form. Applications may also
-declare an exact `base_directory`, allowing `resources-v3` to adopt an existing
-`resources-v2` Dockerfile Application without replacing it.
+declare an exact `base_directory`, allowing v3 to adopt an existing v2
+Dockerfile Application without replacing it.
+
+Top-level `connections` compile database, Redis, and application sources into
+`database_url`, `redis_url`, and `service_url` environment entries. Coolify UUIDs
+and private URLs are discovered during reconciliation; manifests contain no
+hostnames or credentials.
 
 The reconciler outputs variable names only. Values matching credential, token,
 password, key, database URL or Redis URL contracts are redacted.
@@ -81,8 +89,9 @@ application environment.
 
 1. Merge and validate the product's `dev` runtime contract.
 2. Add its reviewed `resources-v3` catalog manifest. For a `resources-v2`
-   adoption, reuse the exact API, Frontend and Database names and declare only
-   additive applications or environment keys.
+   adoption, run `resources_v3_migration.py` and review the generated manifest;
+   reuse exact names and supplied UUIDs while declaring only additive resources
+   or environment keys.
 3. Factory plans the complete topology using read-only Coolify requests.
 4. Factory creates missing private data services and independent applications.
 5. Factory transfers allowlisted runtime configuration internally.

@@ -81,14 +81,31 @@ def validate(product: str, storage_uuid: str, branch: str) -> None:
 
 def build_manifest(product: str, storage_uuid: str) -> dict[str, Any]:
     return {
-        "topology": "resources-v2",
+        "topology": "resources-v3",
         "product": product,
         "repository": f"{ORG}/{product}",
         "branch": "dev",
         "development_domain": f"dev.{product}.goodmorning.mx",
         "coolify_github_app_name": "goodmorning-mx-coolify",
-        "backend_base_directory": "/backend",
-        "frontend_base_directory": "/frontend",
+        "applications": [
+            {
+                "name": "api", "role": "api", "base_directory": "/backend",
+                "dockerfile": "/Dockerfile", "port": 8000,
+                "domain": f"https://api.dev.{product}.goodmorning.mx",
+                "health_path": "/health", "auto_deploy": True, "environment": [],
+            },
+            {
+                "name": "frontend", "role": "frontend", "base_directory": "/frontend",
+                "dockerfile": "/Dockerfile", "port": 80,
+                "domain": f"https://dev.{product}.goodmorning.mx",
+                "health_path": "/", "auto_deploy": True, "environment": [],
+            },
+        ],
+        "databases": [{
+            "name": "postgres", "engine": "postgresql", "version": "16",
+            "image": "postgres:16-alpine", "public": False, "backup": True,
+        }],
+        "redis": [],
         "backup": {
             "enabled": True,
             "storage_uuid": storage_uuid,

@@ -163,7 +163,7 @@ jobs:
             > "${manifest_path}"
           jq -e \
             --arg product "${{ steps.request.outputs.product_name }}" \
-            '.topology == "resources-v2" and .product == $product' \
+            '.topology == "resources-v3" and .product == $product' \
             "${manifest_path}" > /dev/null
           echo "manifest_path=${manifest_path}" >> "${GITHUB_OUTPUT}"
 
