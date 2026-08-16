@@ -1,7 +1,9 @@
 # GoodMorning production contract
 
-Production is an explicit promotion of a reviewed product release. It never runs
-from a normal push and never reuses development data or resources.
+Production is an explicit promotion of a reviewed product release. A product's
+green `main` CI completion dispatches the exact SHA to Factory; Factory is the
+only component that deploys production. It never reuses development data or
+resources.
 
 ## Resource isolation
 
@@ -25,20 +27,49 @@ Both applications have `instant_deploy=false` and
 
 ## Promotion
 
-The workflow `Promote one GoodMorning product to production` is manual by
-design. It requires:
+The product release workflow dispatches `promote-advanced-product` to Factory
+after the `CI` workflow succeeds on `main`. The Factory workflow also retains a
+manual dispatch for recovery and operator-approved retries. An automatic
+promotion requires:
 
 1. an existing reviewed `production/<product>.json` manifest;
 2. `confirm_production=true` in that manifest;
-3. the exact typed confirmation `deploy:<product>:production`;
-4. Factory branch `dev`;
-5. the GitHub Environment `production`;
+3. the repository's production release workflow, with the Factory GitHub App
+   ID variable and private key secret configured;
+4. the exact `main` SHA and successful `CI` push run for that SHA;
+5. Factory branch `dev` and the GitHub Environment `production`;
 6. the existing Coolify and Oracle credentials.
 
 The workflow performs a GET-only plan, provisions isolated resources without
 deploying, verifies an external pre-deployment backup, deploys the API and waits
 for its migration/health smoke before deploying the frontend, then verifies a
 second external backup.
+
+Every successful promotion records the product, exact source SHA, environment,
+timestamp, reconciled resources, migrations, deployment IDs, healthchecks, and
+final status in the GitHub Actions summary. A failure stops the workflow and
+creates or updates a sanitized tracking issue.
+
+## Daily development and release flow
+
+```text
+feature → PR → dev → Coolify native DEV auto-deploy
+dev → release PR → main → product CI → Factory → Coolify PROD promotion
+```
+
+The product repository's `CI` workflow runs on pull requests and on pushes to
+both `dev` and `main`. Coolify observes only the product `dev` branch. The
+production application is not a passive observer of `main`; Factory resolves
+the exact green SHA and performs the production reconciliation.
+
+## Retrying a failed promotion
+
+Do not delete or recreate Coolify resources. Inspect the failed Factory run,
+resolve the reported preflight, backup, migration, or health issue, and rerun
+the same production workflow with the same manifest. The reconciler reuses
+resource names and UUIDs, and the backup gate runs again before deployment. If
+the release itself is invalid, merge a reviewed revert or corrective release to
+`main`; never copy the DEV database into production.
 
 ## Database migrations
 
