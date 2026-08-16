@@ -95,7 +95,10 @@ class AdvancedProductContractTests(unittest.TestCase):
         source = json.loads((Path(__file__).parents[1] / "products" / "balletpourtous.json").read_text())
         result = contract.validate_manifest(source)
         self.assertEqual(result["topology"], "resources-v3")
-        self.assertEqual([item["name"] for item in result["applications"]], ["api", "frontend"])
+        self.assertEqual([item["name"] for item in result["applications"]], ["api", "frontend", "mcp-gateway"])
+        gateway = next(item for item in result["applications"] if item["name"] == "mcp-gateway")
+        self.assertEqual(gateway["role"], "gateway")
+        self.assertEqual(gateway["dockerfile"], "/Dockerfile.mcp")
         self.assertEqual([item["name"] for item in result["databases"]], ["postgres"])
         self.assertEqual(result["redis"], [])
         self.assertEqual(
