@@ -160,6 +160,20 @@ class ModuleUpdateTests(unittest.TestCase):
             self.assertNotIn("infrastructure_default_deployment_mode_changed", item["blockers"])
             self.assertNotIn("infrastructure_resource_removed", item["blockers"])
 
+    def test_explicit_registry_mode_change_is_detected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); products = root / "products"; products.mkdir()
+            value = product(products / "demo.json")
+            value["modules"][0]["deployment_mode"] = "gateway"
+            (products / "demo.json").write_text(json.dumps(value), encoding="utf-8")
+            registry_value = json.loads(json.dumps(REGISTRY))
+            registry_value["modules"][0]["deployment_modes"] = ["embedded", "gateway"]
+            registry_value["modules"][0]["deployment_mode"] = "embedded"
+            registry = root / "registry.json"; registry.write_text(json.dumps(registry_value), encoding="utf-8")
+            item = plan_updates(products, registry, releases={"gm-pwa": "0.1.3"})["plans"][0]
+            self.assertEqual(item["infrastructure"]["mode"], {"from": "gateway", "to": "embedded"})
+            self.assertIn("infrastructure_default_deployment_mode_changed", item["blockers"])
+
 
 if __name__ == "__main__":
     unittest.main()
