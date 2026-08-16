@@ -139,7 +139,7 @@ jobs:
           COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'false'
           COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'false'
         run: |
-          python scripts/reconcile_resources.py \
+          python -m scripts.reconcile_resources \
             --manifest "${{ steps.authorize.outputs.manifest }}" \
             --phase plan --operation plan \
             --server "${COOLIFY_SERVER_NAME}" \
@@ -165,7 +165,7 @@ jobs:
           set -euo pipefail
           for attempt in $(seq 1 6); do
             set +e
-            python scripts/reconcile_resources.py \
+            python -m scripts.reconcile_resources \
               --manifest "${{ steps.authorize.outputs.manifest }}" \
               --phase apply --operation provision \
               --server "${COOLIFY_SERVER_NAME}" \
@@ -205,7 +205,7 @@ jobs:
           set -euo pipefail
           for attempt in $(seq 1 6); do
             set +e
-            python scripts/reconcile_resources.py \
+            python -m scripts.reconcile_resources \
               --manifest "${{ steps.authorize.outputs.manifest }}" \
               --phase apply --operation deploy-full \
               --server "${COOLIFY_SERVER_NAME}" \

@@ -222,7 +222,7 @@ jobs:
           converged=false
           for attempt in $(seq 1 6); do
             set +e
-            python scripts/reconcile_resources.py \
+            python -m scripts.reconcile_resources \
               --manifest "${manifest}" \
               --phase apply \
               --operation deploy-full \
