@@ -15,7 +15,10 @@
       "domain": "https://api.dev.factory-e2e-test.goodmorning.mx",
       "health_path": "/health",
       "auto_deploy": true,
-      "environment": []
+      "environment": [
+        {"key": "DATABASE_URL", "source": "database_url", "resource": "postgres", "driver": "psycopg"},
+        {"key": "REDIS_URL", "source": "redis_url", "resource": "redis"}
+      ]
     },
     {
       "name": "frontend",
@@ -26,7 +29,9 @@
       "domain": "https://dev.factory-e2e-test.goodmorning.mx",
       "health_path": "/",
       "auto_deploy": true,
-      "environment": []
+      "environment": [
+        {"key": "VITE_API_URL", "source": "literal", "value": "https://api.dev.factory-e2e-test.goodmorning.mx"}
+      ]
     }
   ],
   "databases": [
@@ -39,7 +44,10 @@
       "backup": true
     }
   ],
-  "redis": [],
+  "redis": [{
+    "name": "redis", "version": "7.4", "image": "redis:7.4-alpine",
+    "public": false, "persistent": true
+  }],
   "backup": {
     "enabled": true,
     "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
