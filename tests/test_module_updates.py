@@ -135,6 +135,31 @@ class ModuleUpdateTests(unittest.TestCase):
             self.assertEqual(item["action"], "blocked")
             self.assertIn("infrastructure_resource_removed", item["blockers"])
 
+    def test_update_preserves_consumer_selected_gateway_mode(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); products = root / "products"; products.mkdir()
+            value = product(products / "demo.json")
+            value["modules"][0]["deployment_modes"] = ["embedded", "gateway"]
+            value["modules"][0]["default_deployment_mode"] = "embedded"
+            value["modules"][0]["deployment_mode"] = "gateway"
+            value["modules"][0]["resource_requirements"] = [{
+                "name": "gateway", "kind": "gateway", "resource_name": "pwa-gateway",
+                "deployment_modes": ["gateway"],
+            }]
+            (products / "demo.json").write_text(json.dumps(value), encoding="utf-8")
+            registry_value = json.loads(json.dumps(REGISTRY))
+            registry_value["modules"][0]["deployment_modes"] = ["embedded", "gateway"]
+            registry_value["modules"][0]["default_deployment_mode"] = "embedded"
+            registry_value["modules"][0]["resource_requirements"] = [{
+                "name": "gateway", "kind": "gateway", "resource_name": "pwa-gateway",
+                "deployment_modes": ["gateway"],
+            }]
+            registry = root / "registry.json"; registry.write_text(json.dumps(registry_value), encoding="utf-8")
+            item = plan_updates(products, registry, releases={"gm-pwa": "0.1.3"})["plans"][0]
+            self.assertEqual(item["infrastructure"]["mode"], {"from": "gateway", "to": "gateway"})
+            self.assertNotIn("infrastructure_default_deployment_mode_changed", item["blockers"])
+            self.assertNotIn("infrastructure_resource_removed", item["blockers"])
+
 
 if __name__ == "__main__":
     unittest.main()
