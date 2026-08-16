@@ -55,7 +55,7 @@
       "backend_package": "gm-auth", "frontend_package": "@goodmorning/gm-auth",
       "deployment_modes": ["embedded", "service"], "default_deployment_mode": "embedded",
       "resource_requirements": [{"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true}],
-      "bindings": [{"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "backend"}],
+      "bindings": [{"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "backend", "driver": "psycopg"}],
       "node_requires": ["react>=18"], "env": [], "required_secrets": {}, "dependencies": [],
       "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1},
       "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["balletpourtous"]}
