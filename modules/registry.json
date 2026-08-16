@@ -43,9 +43,12 @@
       "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
       ,"resource_requirements": [
         {"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true, "deployment_modes": ["gateway"]},
-        {"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "deployment_modes": ["gateway"], "base_directory": "/backend", "dockerfile": "/Dockerfile.mcp", "port": 8200, "public": true, "health_path": "/health"}
+        {"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "shared": true, "deployment_modes": ["gateway"], "base_directory": "/backend", "dockerfile": "/Dockerfile.mcp", "port": 8200, "public": true, "health_path": "/health"}
       ],
-      "bindings": [{"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "mcp-gateway", "driver": "psycopg"}]
+      "bindings": [
+        {"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "mcp-gateway", "driver": "psycopg"},
+        {"key": "MCP_OAUTH_SECRET", "source": "generated_secret", "target": "mcp-gateway"}
+      ]
     },
     {
       "name": "gm-billing",

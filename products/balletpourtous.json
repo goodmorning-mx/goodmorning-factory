@@ -68,7 +68,7 @@
     },
     {
       "name": "gm-mcp",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "kind": "backend",
       "backend_package": "gm-mcp",
       "deployment_modes": ["embedded", "gateway"],
@@ -76,9 +76,9 @@
       "default_deployment_mode": "embedded",
       "resource_requirements": [
         {"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true, "deployment_modes": ["gateway"]},
-        {"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "deployment_modes": ["gateway"], "dockerfile": "/Dockerfile.mcp", "base_directory": "/backend", "port": 8200, "public": true, "health_path": "/health"}
+        {"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "shared": true, "deployment_modes": ["gateway"], "dockerfile": "/Dockerfile.mcp", "base_directory": "/backend", "port": 8200, "public": true, "health_path": "/health"}
       ],
-      "bindings": [{"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "mcp-gateway", "driver": "psycopg"}],
+      "bindings": [{"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "mcp-gateway", "driver": "psycopg"}, {"key": "MCP_OAUTH_SECRET", "source": "generated_secret", "target": "mcp-gateway"}],
       "dependencies": [],
       "compatibility": {
         "python": ">=3.12",
@@ -160,7 +160,7 @@
       ],
       "bindings": [],
       "python_requires": [
-        "gm-mcp>=0.1.0",
+        "gm-mcp>=0.3.0",
         "gm-billing>=0.1.1"
       ],
       "node_requires": [
@@ -207,6 +207,14 @@
       "name": "frontend", "role": "frontend", "base_directory": "/frontend", "dockerfile": "/Dockerfile", "port": 80,
       "domain": "https://dev.balletpourtous.goodmorning.mx", "health_path": "/", "auto_deploy": true,
       "environment": [], "dependencies": []
+    },
+    {
+      "name": "mcp-gateway", "role": "gateway", "base_directory": "/backend", "dockerfile": "/Dockerfile.mcp", "port": 8200,
+      "domain": "https://mcp-gateway.dev.balletpourtous.goodmorning.mx", "health_path": "/health", "auto_deploy": true,
+      "environment": [
+        {"key": "APP_ENV", "source": "literal", "value": "dev"},
+        {"key": "MCP_PUBLIC_URL", "source": "literal", "value": "https://mcp-gateway.dev.balletpourtous.goodmorning.mx/mcp"}
+      ], "dependencies": ["postgres"]
     }
   ],
   "databases": [
