@@ -55,6 +55,9 @@ jobs:
           app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
           private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
           owner: goodmorning-mx
+          repositories: goodmorning-factory,balletpourtous
+          permission-actions: read
+          permission-contents: read
 
       - name: Validate production release authorization
         id: authorize
