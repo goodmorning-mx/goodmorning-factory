@@ -39,8 +39,8 @@
       "backend_package": "gm-mcp", "deployment_modes": ["embedded", "gateway"],
       "deployment_mode": "gateway",
       "default_deployment_mode": "embedded",
-      "resource_requirements": [{"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "deployment_modes": ["gateway"], "dockerfile": "/Dockerfile.mcp", "base_directory": "/backend", "port": 8200, "public": true, "health_path": "/health"}],
-      "bindings": [], "dependencies": [],
+      "resource_requirements": [{"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true, "deployment_modes": ["gateway"]}, {"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "deployment_modes": ["gateway"], "dockerfile": "/Dockerfile.mcp", "base_directory": "/backend", "port": 8200, "public": true, "health_path": "/health"}],
+      "bindings": [{"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "mcp-gateway", "driver": "psycopg"}], "dependencies": [],
       "compatibility": {"python": ">=3.12", "factory_api": "^1.0", "products": ["balletpourtous"]}
     },
     {
