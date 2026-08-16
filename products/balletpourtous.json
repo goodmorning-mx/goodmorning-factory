@@ -149,7 +149,7 @@
     },
     {
       "name": "gm-agent",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "kind": "full-stack",
       "backend_package": "gm-agent",
       "frontend_package": "@goodmorning/gm-agent",
