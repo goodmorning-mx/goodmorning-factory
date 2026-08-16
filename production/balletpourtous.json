@@ -35,10 +35,11 @@
       "compatibility": {"node": ">=20", "factory_api": "^1.0", "products": ["balletpourtous"]}
     },
     {
-      "name": "gm-mcp", "version": "0.1.0", "kind": "backend",
+      "name": "gm-mcp", "version": "0.2.0", "kind": "backend",
       "backend_package": "gm-mcp", "deployment_modes": ["embedded", "gateway"],
+      "deployment_mode": "gateway",
       "default_deployment_mode": "embedded",
-      "resource_requirements": [{"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "deployment_modes": ["gateway"], "port": 8200, "public": true}],
+      "resource_requirements": [{"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "deployment_modes": ["gateway"], "dockerfile": "/Dockerfile.mcp", "base_directory": "/backend", "port": 8200, "public": true, "health_path": "/health"}],
       "bindings": [], "dependencies": [],
       "compatibility": {"python": ">=3.12", "factory_api": "^1.0", "products": ["balletpourtous"]}
     },

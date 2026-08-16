@@ -42,7 +42,7 @@
       "default_deployment_mode": "embedded",
       "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
       ,"resource_requirements": [
-        {"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "deployment_modes": ["gateway"], "port": 8200, "public": true}
+        {"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "deployment_modes": ["gateway"], "base_directory": "/backend", "dockerfile": "/Dockerfile.mcp", "port": 8200, "public": true, "health_path": "/health"}
       ],
       "bindings": []
     },
