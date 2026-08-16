@@ -99,16 +99,19 @@ class AdvancedProductContractTests(unittest.TestCase):
         gateway = next(item for item in result["applications"] if item["name"] == "mcp-gateway")
         self.assertEqual(gateway["role"], "gateway")
         self.assertEqual(gateway["dockerfile"], "/Dockerfile.mcp")
+        mcp = next(item for item in result["modules"] if item["name"] == "gm-mcp")
+        self.assertEqual(mcp["bindings"][0]["key"], "DATABASE_URL")
+        self.assertEqual(mcp["bindings"][0]["target"], "mcp-gateway")
         self.assertEqual([item["name"] for item in result["databases"]], ["postgres"])
         self.assertEqual(result["redis"], [])
         self.assertEqual(
             [item["name"] for item in result["modules"]],
             ["gm-agent", "gm-auth", "gm-billing", "gm-mcp", "gm-pwa"],
         )
-        self.assertEqual(result["connections"], [{
-            "target": "api", "key": "DATABASE_URL",
-            "source": {"type": "database", "resource": "postgres"},
-        }])
+        self.assertEqual(result["connections"], [
+            {"target": "mcp-gateway", "key": "DATABASE_URL", "source": {"type": "database", "resource": "postgres", "driver": "psycopg"}},
+            {"target": "api", "key": "DATABASE_URL", "source": {"type": "database", "resource": "postgres"}},
+        ])
 
     def test_valid_manifest_is_normalized(self):
         result = contract.validate_manifest(manifest())
