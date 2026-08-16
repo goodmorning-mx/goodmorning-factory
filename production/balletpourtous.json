@@ -35,7 +35,7 @@
       "compatibility": {"node": ">=20", "factory_api": "^1.0", "products": ["balletpourtous"]}
     },
     {
-      "name": "gm-mcp", "version": "0.3.0", "kind": "backend",
+      "name": "gm-mcp", "version": "0.3.1", "kind": "backend",
       "backend_package": "gm-mcp", "deployment_modes": ["embedded", "gateway"],
       "deployment_mode": "gateway",
       "default_deployment_mode": "embedded",
@@ -66,7 +66,7 @@
       "backend_package": "gm-agent", "frontend_package": "@goodmorning/gm-agent",
       "deployment_modes": ["embedded", "service", "gateway"], "default_deployment_mode": "embedded",
       "resource_requirements": [{"name": "agent-gateway", "kind": "gateway", "resource_name": "agent-gateway", "deployment_modes": ["gateway"], "port": 8100, "public": true}],
-      "bindings": [], "python_requires": ["gm-mcp>=0.3.0", "gm-billing>=0.1.1"], "node_requires": ["react>=18"],
+      "bindings": [], "python_requires": ["gm-mcp>=0.3.1", "gm-billing>=0.1.1"], "node_requires": ["react>=18"],
       "env": [{"key": "AGENT_MODEL", "required": true, "default": "gpt-4o-mini"}],
       "required_secrets": {"OPENAI_API_KEY": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/openai-default", "target": "backend"}},
       "dependencies": ["gm-mcp", "gm-billing"], "migrations": {"mode": "none"},

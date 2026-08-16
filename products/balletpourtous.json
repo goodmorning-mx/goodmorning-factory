@@ -68,7 +68,7 @@
     },
     {
       "name": "gm-mcp",
-      "version": "0.3.0",
+      "version": "0.3.1",
       "kind": "backend",
       "backend_package": "gm-mcp",
       "deployment_modes": ["embedded", "gateway"],
@@ -160,7 +160,7 @@
       ],
       "bindings": [],
       "python_requires": [
-        "gm-mcp>=0.3.0",
+        "gm-mcp>=0.3.1",
         "gm-billing>=0.1.1"
       ],
       "node_requires": [
