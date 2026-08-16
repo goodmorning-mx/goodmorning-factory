@@ -123,13 +123,35 @@ jobs:
           } >> "${GITHUB_OUTPUT}"
 
       - name: Plan production changes read-only
+        id: plan
         shell: bash
         run: |
+          set -euo pipefail
+          plan_file="${RUNNER_TEMP}/production-plan.json"
           python scripts/reconcile_advanced_product.py \
             --manifest "${{ steps.authorize.outputs.manifest }}" \
             --phase plan \
             --server "${COOLIFY_SERVER_NAME}" \
-            --destination-uuid "${COOLIFY_DESTINATION_UUID}"
+            --destination-uuid "${COOLIFY_DESTINATION_UUID}" | tee "${plan_file}"
+          if jq -e '.actions[] | select(.kind == "database" and .action == "would_create")' "${plan_file}" >/dev/null; then
+            echo "needs_bootstrap=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "needs_bootstrap=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Bootstrap missing production resources without deployment
+        if: steps.plan.outputs.needs_bootstrap == 'true'
+        shell: bash
+        env:
+          COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES: "true"
+        run: |
+          python scripts/reconcile_advanced_product.py \
+            --manifest "${{ steps.authorize.outputs.manifest }}" \
+            --phase apply \
+            --server "${COOLIFY_SERVER_NAME}" \
+            --destination-uuid "${COOLIFY_DESTINATION_UUID}" \
+            --confirm-product "${{ steps.authorize.outputs.product }}" \
+            --confirm-environment production
 
       - name: Verify pre-deployment production backup
         shell: bash
