@@ -141,7 +141,7 @@ def infrastructure_plan(product: dict[str, Any], module: dict[str, Any]) -> dict
     # selected mode. Preserve an existing consumer mode unless the product
     # explicitly declares a new one; otherwise a gateway consumer is falsely
     # planned as an embedded deployment during a routine module update.
-    new_mode = declared.get("deployment_mode", module.get("deployment_mode", module.get("default_deployment_mode", "embedded")))
+    new_mode = module.get("deployment_mode", declared.get("deployment_mode", module.get("default_deployment_mode", "embedded")))
     old_requirements = {
         item.get("name"): item
         for item in declared.get("resource_requirements", [])
