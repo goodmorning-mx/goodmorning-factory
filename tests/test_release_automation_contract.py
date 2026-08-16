@@ -13,6 +13,7 @@ class ReleaseAutomationContractTests(unittest.TestCase):
         required = (
             "repository_dispatch:",
             "- promote-product",
+            "resources-v3-production",
             "actions/create-github-app-token@v2",
             "EVENT_SOURCE_RUN_ID:",
             "promotion_policy // empty",
@@ -28,6 +29,7 @@ class ReleaseAutomationContractTests(unittest.TestCase):
         for marker in required:
             self.assertIn(marker, workflow)
 
+        self.assertNotIn('resources-v2-production', workflow)
         self.assertNotIn("on:\n  push:", workflow)
         self.assertNotIn("schedule:", workflow)
 

@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       manifest_path:
-        description: Exact production/<product>.json manifest.
+        description: Exact production/<product>.json resources-v3-production manifest.
         required: true
         type: string
       confirmation:
@@ -96,7 +96,7 @@ jobs:
           test "${source_branch}" = "main"
           [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
           test -f "${manifest}"
-          test "$(jq -r '.topology' "${manifest}")" = "resources-v2-production"
+          test "$(jq -r '.topology' "${manifest}")" = "resources-v3-production"
           test "$(jq -r '.product' "${manifest}")" = "${product}"
           test "$(jq -r '.repository' "${manifest}")" = "${repository}"
           test "$(jq -r '.branch' "${manifest}")" = "${source_branch}"
