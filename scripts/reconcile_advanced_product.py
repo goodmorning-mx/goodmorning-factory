@@ -256,7 +256,10 @@ def _ensure_project_environment(client: Coolify, manifest: dict[str, Any], conte
             actions.append({"resource": environment_name, "kind": "environment", "action": "would_create"})
             return
         path = f"/projects/{urllib.parse.quote(str(context['project_uuid']), safe='')}/environments"
-        created = client.post(path, {"name": environment_name, "description": f"{product} {environment_name}."})
+        # Coolify's environment endpoint accepts the environment name only.
+        # Project descriptions remain useful, but sending one here causes
+        # Coolify 4.1.x to reject the otherwise valid create request with 422.
+        created = client.post(path, {"name": environment_name})
         context["environment_uuid"] = _uuid(created, "environment")
         actions.append({"resource": environment_name, "kind": "environment", "action": "created"})
     else:
