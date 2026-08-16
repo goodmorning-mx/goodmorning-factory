@@ -605,6 +605,11 @@ def _ensure_applications(
                 else:
                     expected_value = str(expected[key])
                 if actual != expected_value:
+                    if key == "git_repository":
+                        raise ReconcileError(
+                            f"Existing application {name!r} is incompatible in {key!r}; "
+                            f"found {actual!r}, expected {expected_value!r}; automatic replacement is forbidden."
+                        )
                     raise ReconcileError(f"Existing application {name!r} is incompatible in {key!r}; automatic replacement is forbidden.")
             changes = _application_mutable_changes(found, expected, app)
             if changes and client.apply:
