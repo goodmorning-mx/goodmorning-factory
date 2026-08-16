@@ -41,6 +41,7 @@ jobs:
       OCI_S3_BUCKET: ${{ vars.OCI_S3_BUCKET }}
       OCI_S3_REGION: ${{ vars.OCI_S3_REGION }}
       OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
+      GOODMORNING_MANAGED_OPENAI_API_KEY: ${{ secrets.GOODMORNING_MANAGED_OPENAI_API_KEY }}
     steps:
       - name: Check out reviewed Factory dev
         uses: actions/checkout@v4
