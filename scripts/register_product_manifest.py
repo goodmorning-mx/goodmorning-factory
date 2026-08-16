@@ -92,13 +92,17 @@ def build_manifest(product: str, storage_uuid: str) -> dict[str, Any]:
                 "name": "api", "role": "api", "base_directory": "/backend",
                 "dockerfile": "/Dockerfile", "port": 8000,
                 "domain": f"https://api.dev.{product}.goodmorning.mx",
-                "health_path": "/health", "auto_deploy": True, "environment": [],
+                "health_path": "/health", "auto_deploy": True, "environment": [
+                    {"key": "DATABASE_URL", "source": "database_url", "resource": "postgres", "driver": "psycopg"},
+                ],
             },
             {
                 "name": "frontend", "role": "frontend", "base_directory": "/frontend",
                 "dockerfile": "/Dockerfile", "port": 80,
                 "domain": f"https://dev.{product}.goodmorning.mx",
-                "health_path": "/", "auto_deploy": True, "environment": [],
+                "health_path": "/", "auto_deploy": True, "environment": [
+                    {"key": "VITE_API_URL", "source": "literal", "value": f"https://api.dev.{product}.goodmorning.mx"},
+                ],
             },
         ],
         "databases": [{
