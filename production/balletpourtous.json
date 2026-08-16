@@ -77,7 +77,10 @@
     {
       "name": "api", "role": "api", "base_directory": "/backend", "dockerfile": "/Dockerfile", "port": 8000,
       "domain": "https://api.balletpourtous.goodmorning.mx", "health_path": "/health", "auto_deploy": true,
-      "environment": [{"key": "APP_ENV", "source": "literal", "value": "prod"}], "dependencies": ["postgres"]
+      "environment": [
+        {"key": "APP_ENV", "source": "literal", "value": "prod"},
+        {"key": "MCP_OAUTH_SECRET", "source": "generated_secret"}
+      ], "dependencies": ["postgres"]
     },
     {
       "name": "frontend", "role": "frontend", "base_directory": "/frontend", "dockerfile": "/Dockerfile", "port": 80,
