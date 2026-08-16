@@ -83,6 +83,22 @@ def _field(item: dict[str, Any], *names: str) -> Any:
     return None
 
 
+def _normalize_repository(value: Any) -> str:
+    """Compare Coolify's repository URL forms by GitHub identity."""
+    text = str(value or "").strip().removesuffix(".git")
+    prefixes = (
+        "https://github.com/",
+        "http://github.com/",
+        "ssh://git@github.com/",
+        "git@github.com:",
+    )
+    for prefix in prefixes:
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    return text.strip("/")
+
+
 def _redacted(value: Any) -> Any:
     if isinstance(value, dict):
         environment_key = value.get("key")
@@ -583,7 +599,12 @@ def _ensure_applications(
             expected = _application_payload(manifest, app, context)
             for key in ("git_repository", "git_branch", "build_pack", "base_directory", "dockerfile_location", "ports_exposes"):
                 actual = str(_field(found, key) or "")
-                if actual != str(expected[key]):
+                if key == "git_repository":
+                    actual = _normalize_repository(actual)
+                    expected_value = _normalize_repository(expected[key])
+                else:
+                    expected_value = str(expected[key])
+                if actual != expected_value:
                     raise ReconcileError(f"Existing application {name!r} is incompatible in {key!r}; automatic replacement is forbidden.")
             changes = _application_mutable_changes(found, expected, app)
             if changes and client.apply:

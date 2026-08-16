@@ -53,6 +53,18 @@ class ExistingAppPlanClient(FakeClient):
 
 
 class ReconcileAdvancedProductTests(unittest.TestCase):
+    def test_repository_identity_accepts_coolify_url_forms(self):
+        for value in (
+            "goodmorning-mx/balletpourtous",
+            "https://github.com/goodmorning-mx/balletpourtous.git",
+            "ssh://git@github.com/goodmorning-mx/balletpourtous.git",
+            "git@github.com:goodmorning-mx/balletpourtous.git",
+        ):
+            self.assertEqual(
+                advanced._normalize_repository(value),
+                "goodmorning-mx/balletpourtous",
+            )
+
     def test_plan_is_read_only_and_lists_every_resource(self):
         client = FakeClient()
         result = advanced.reconcile(
