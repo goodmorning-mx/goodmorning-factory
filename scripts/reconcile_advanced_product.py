@@ -14,6 +14,7 @@ import json
 import os
 import secrets
 import sys
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -202,6 +203,28 @@ def _expected_migration_uuid(manifest: dict[str, Any], kind: str, resource_name:
     uuids = migration.get("resource_uuids") or {}
     value = uuids.get(resource_name)
     return str(value) if value else None
+
+
+def _wait_for_deployments(client: Coolify, deployment_ids: list[str], actions: list[dict[str, Any]]) -> None:
+    """Wait for queued deployments so a green reconcile means runnable apps."""
+    for deployment_id in deployment_ids:
+        deadline = time.monotonic() + 600
+        last_status = "queued"
+        while time.monotonic() < deadline:
+            current = client.get(f"/deployments/{urllib.parse.quote(deployment_id, safe='')}")
+            last_status = str(_field(current, "status", "deployment.status") or "unknown").lower()
+            if last_status in TERMINAL_DEPLOYMENT:
+                if last_status not in SUCCESS_DEPLOYMENT:
+                    raise ReconcileError(
+                        f"Coolify deployment {deployment_id} ended with status {last_status}."
+                    )
+                actions.append({"kind": "deployment", "action": "finished", "deployment_uuid": deployment_id})
+                break
+            time.sleep(10)
+        else:
+            raise ReconcileError(
+                f"Timed out waiting for Coolify deployment {deployment_id}; last status was {last_status}."
+            )
 
 
 def _verify_adopted_uuid(manifest: dict[str, Any], kind: str, resource_name: str, found: dict[str, Any]) -> None:
@@ -542,6 +565,7 @@ def _ensure_applications(
     actions: list[dict[str, Any]],
     deploy: bool,
 ) -> None:
+    deployment_ids: list[str] = []
     product = manifest["product"]
     suffix = _suffix(manifest)
     if context["project_uuid"] is None or context["environment_uuid"] is None:
@@ -662,7 +686,11 @@ def _ensure_applications(
                 deployment_uuid = _field(entries[0], "deployment_uuid") if entries else None
             if not deployment_uuid:
                 raise ReconcileError(f"Deployment identity for {name!r} was not returned.")
-            actions.append({"resource": name, "kind": "deployment", "action": "queued", "deployment_uuid": str(deployment_uuid)})
+            deployment_id = str(deployment_uuid)
+            deployment_ids.append(deployment_id)
+            actions.append({"resource": name, "kind": "deployment", "action": "queued", "deployment_uuid": deployment_id})
+    if deploy and deployment_ids:
+        _wait_for_deployments(client, deployment_ids, actions)
 
 
 def reconcile(
