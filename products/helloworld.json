@@ -54,6 +54,7 @@
       "version": "0.1.0",
       "kind": "full-stack",
       "backend_package": "gm-billing",
+      "frontend_package": "@goodmorning/gm-billing",
       "deployment_modes": ["embedded", "service"],
       "default_deployment_mode": "embedded",
       "deployment_mode": "embedded",
