@@ -216,8 +216,14 @@ def _wait_for_deployments(client: Coolify, deployment_ids: list[str], actions: l
             last_status = str(_field(source, "status", "state", "deployment_status") or "unknown").lower()
             if last_status in {"success", "successful", "finished", "succeeded", "complete", "completed", "failed", "failure", "error", "cancelled", "canceled"}:
                 if last_status not in {"success", "successful", "finished", "succeeded", "complete", "completed"}:
+                    detail = ""
+                    try:
+                        logs = client.get(f"/deployments/{urllib.parse.quote(deployment_id, safe='')}/logs")
+                        detail = json.dumps(_redacted(logs), sort_keys=True)[-4000:]
+                    except ReconcileError as exc:
+                        detail = str(exc)
                     raise ReconcileError(
-                        f"Coolify deployment {deployment_id} ended with status {last_status}."
+                        f"Coolify deployment {deployment_id} ended with status {last_status}. Logs: {detail}"
                     )
                 actions.append({"kind": "deployment", "action": "finished", "deployment_uuid": deployment_id})
                 break
