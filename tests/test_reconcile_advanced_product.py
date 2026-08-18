@@ -315,6 +315,17 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertTrue(created[0]["is_shown_once"])
         generator.assert_called_once_with(48)
 
+    def test_generated_secret_does_not_reuse_coolify_literal_quotes(self):
+        values = advanced._environment_values(
+            {"environment": [{"key": "MCP_AUTH_TOKEN", "source": "generated_secret"}]},
+            {},
+            {},
+            {},
+            {"MCP_AUTH_TOKEN": {"key": "MCP_AUTH_TOKEN", "real_value": "'existing-secret'"}},
+        )
+
+        self.assertEqual(values[0]["value"], "existing-secret")
+
     def test_generated_secret_refuses_rotation_when_real_value_is_unavailable(self):
         app = {
             "environment": [
