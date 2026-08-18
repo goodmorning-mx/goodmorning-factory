@@ -55,7 +55,7 @@ jobs:
           app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
           private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
           owner: goodmorning-mx
-          repositories: goodmorning-factory,balletpourtous,factory-e2e-test
+          repositories: goodmorning-factory,balletpourtous,factory-e2e-test,george
           permission-actions: read
           permission-contents: read
 
