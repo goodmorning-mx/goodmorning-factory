@@ -84,6 +84,19 @@ def _field(item: dict[str, Any], *names: str) -> Any:
     return None
 
 
+def _strip_coolify_literal_quotes(value: str) -> str:
+    """Return a secret value without Coolify's display-only literal quotes.
+
+    Coolify exposes ``real_value`` with single quotes when an environment
+    variable is marked literal. Those quotes are for its generated env file,
+    not part of the secret. Reusing them as the API value causes the next
+    deployment to produce a malformed value such as ``''secret''``.
+    """
+    if len(value) >= 2 and value[0] == "'" and value[-1] == "'":
+        return value[1:-1]
+    return value
+
+
 def _normalize_repository(value: Any) -> str:
     """Compare Coolify's repository URL forms by GitHub identity."""
     text = str(value or "").strip().removesuffix(".git")
@@ -544,6 +557,8 @@ def _environment_values(
                 value = secrets.token_urlsafe(48)
             else:
                 value = _field(existing, "real_value")
+                if isinstance(value, str):
+                    value = _strip_coolify_literal_quotes(value)
                 if not isinstance(value, str) or not value:
                     raise ReconcileError(
                         f"Existing generated secret {item['key']!r} cannot be read; refusing implicit rotation."
