@@ -212,9 +212,10 @@ def _wait_for_deployments(client: Coolify, deployment_ids: list[str], actions: l
         last_status = "queued"
         while time.monotonic() < deadline:
             current = client.get(f"/deployments/{urllib.parse.quote(deployment_id, safe='')}")
-            last_status = str(_field(current, "status", "deployment.status") or "unknown").lower()
-            if last_status in TERMINAL_DEPLOYMENT:
-                if last_status not in SUCCESS_DEPLOYMENT:
+            source = current.get("data") if isinstance(current, dict) and isinstance(current.get("data"), dict) else current
+            last_status = str(_field(source, "status", "state", "deployment_status") or "unknown").lower()
+            if last_status in {"success", "successful", "finished", "succeeded", "complete", "completed", "failed", "failure", "error", "cancelled", "canceled"}:
+                if last_status not in {"success", "successful", "finished", "succeeded", "complete", "completed"}:
                     raise ReconcileError(
                         f"Coolify deployment {deployment_id} ended with status {last_status}."
                     )
