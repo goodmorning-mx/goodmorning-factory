@@ -211,7 +211,13 @@ def _wait_for_deployments(client: Coolify, deployment_ids: list[str], actions: l
         deadline = time.monotonic() + 180
         last_status = "queued"
         while time.monotonic() < deadline:
-            current = client.get(f"/deployments/{urllib.parse.quote(deployment_id, safe='')}")
+            try:
+                current = client.get(f"/deployments/{urllib.parse.quote(deployment_id, safe='')}")
+            except ReconcileError as exc:
+                if "HTTP 404" in str(exc):
+                    time.sleep(10)
+                    continue
+                raise
             source = current.get("data") if isinstance(current, dict) and isinstance(current.get("data"), dict) else current
             last_status = str(_field(source, "status", "state", "deployment_status") or "unknown").lower()
             if last_status in {"success", "successful", "finished", "succeeded", "complete", "completed", "failed", "failure", "error", "cancelled", "canceled"}:
