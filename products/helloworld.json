@@ -92,14 +92,7 @@
       "domain": "https://api.dev.helloworld.goodmorning.mx",
       "health_path": "/health",
       "auto_deploy": true,
-      "environment": [
-        {
-          "key": "DATABASE_URL",
-          "source": "database_url",
-          "resource": "postgres",
-          "driver": "psycopg"
-        }
-      ]
+      "environment": []
     },
     {
       "name": "frontend",
