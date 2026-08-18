@@ -208,7 +208,7 @@ def _expected_migration_uuid(manifest: dict[str, Any], kind: str, resource_name:
 def _wait_for_deployments(client: Coolify, deployment_ids: list[str], actions: list[dict[str, Any]]) -> None:
     """Wait for queued deployments so a green reconcile means runnable apps."""
     for deployment_id in deployment_ids:
-        deadline = time.monotonic() + 600
+        deadline = time.monotonic() + 180
         last_status = "queued"
         while time.monotonic() < deadline:
             current = client.get(f"/deployments/{urllib.parse.quote(deployment_id, safe='')}")
