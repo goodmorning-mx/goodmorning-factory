@@ -1,0 +1,84 @@
+name: Reconcile product agent instructions
+
+on:
+  push:
+    branches: [dev]
+    paths:
+      - 'products/*.json'
+      - 'templates/product-instructions.md'
+      - 'scripts/product_instructions.py'
+      - 'scripts/reconcile_product_instructions.py'
+      - 'scripts/register_product_manifest.py'
+      - '.github/workflows/reconcile-product-instructions.yml'
+  workflow_dispatch:
+    inputs:
+      product:
+        description: Optional product slug; leave empty to reconcile the catalog.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goodmorning-product-instructions
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    name: Reconcile instructions.md in products
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out Factory dev
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          persist-credentials: false
+
+      - name: Create Factory GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
+          private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
+          owner: goodmorning-mx
+
+      - name: Select catalog manifests
+        id: select
+        shell: bash
+        env:
+          REQUESTED_PRODUCT: ${{ inputs.product }}
+        run: |
+          set -euo pipefail
+          selection="${RUNNER_TEMP}/product-instructions-manifests.txt"
+          : > "${selection}"
+          if [ -n "${REQUESTED_PRODUCT}" ]; then
+            if [[ ! "${REQUESTED_PRODUCT}" =~ ^[a-z0-9][a-z0-9-]*$ ]] || [ ! -f "products/${REQUESTED_PRODUCT}.json" ]; then
+              echo "Requested product is not a catalog product."
+              exit 1
+            fi
+            printf '%s\n' "products/${REQUESTED_PRODUCT}.json" >> "${selection}"
+          else
+            shopt -s nullglob
+            manifests=(products/*.json)
+            if [ "${#manifests[@]}" -eq 0 ]; then
+              echo "No product manifests found."
+              exit 1
+            fi
+            printf '%s\n' "${manifests[@]}" > "${selection}"
+          fi
+          echo "INSTRUCTION_MANIFESTS=${selection}" >> "${GITHUB_ENV}"
+          sed 's/^/- /' "${selection}"
+
+      - name: Reconcile managed instructions
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${GH_TOKEN}"
+          args=()
+          while IFS= read -r manifest; do
+            args+=(--manifest "${manifest}")
+          done < "${INSTRUCTION_MANIFESTS}"
+          python3 scripts/reconcile_product_instructions.py "${args[@]}"

@@ -13,6 +13,11 @@ import urllib.parse
 import urllib.request
 from typing import Any
 
+try:
+    from scripts.product_instructions import InstructionsError, reconcile_remote
+except ModuleNotFoundError:  # Direct execution: python scripts/register_product_manifest.py
+    from product_instructions import InstructionsError, reconcile_remote
+
 API = "https://api.github.com"
 ORG = "goodmorning-mx"
 FACTORY_REPO = "goodmorning-factory"
@@ -152,7 +157,11 @@ def register(product: str, storage_uuid: str, branch: str = FACTORY_BRANCH) -> d
             raise CatalogError("Existing product manifest is not valid UTF-8 JSON.") from exc
         if current != manifest:
             raise CatalogError(f"Catalog manifest {manifest_path} already exists with incompatible content.")
-        return {"status": "unchanged", "product": product, "manifest_path": manifest_path, "repository": f"{ORG}/{product}"}
+        try:
+            instructions = reconcile_remote(product, manifest, request, branch=branch)
+        except InstructionsError as exc:
+            raise CatalogError(f"Unable to reconcile product instructions: {exc}") from exc
+        return {"status": "unchanged", "product": product, "manifest_path": manifest_path, "repository": f"{ORG}/{product}", "instructions": instructions}
     if status != 404:
         raise CatalogError(f"Unable to inspect catalog manifest {manifest_path}.")
 
@@ -169,12 +178,17 @@ def register(product: str, storage_uuid: str, branch: str = FACTORY_BRANCH) -> d
     if create_status not in (200, 201) or not isinstance(created, dict):
         raise CatalogError(f"GitHub did not confirm catalog registration for {product}.")
     commit = created.get("commit") if isinstance(created.get("commit"), dict) else {}
+    try:
+        instructions = reconcile_remote(product, manifest, request, branch=branch)
+    except InstructionsError as exc:
+        raise CatalogError(f"Unable to reconcile product instructions: {exc}") from exc
     return {
         "status": "registered",
         "product": product,
         "manifest_path": manifest_path,
         "repository": f"{ORG}/{product}",
         "commit_sha": commit.get("sha"),
+        "instructions": instructions,
     }
 
 
