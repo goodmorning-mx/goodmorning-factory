@@ -74,6 +74,18 @@ class ProductInstructionsTests(unittest.TestCase):
         with self.assertRaises(InstructionsError):
             reconcile_remote("other", build_manifest("acme", "storageuuid123"), mock.Mock())
 
+    def test_reconcile_remote_uses_manifest_repository_for_legacy_aliases(self):
+        manifest = build_manifest("alejandro", "storageuuid123")
+        manifest["repository"] = "goodmorning-mx/factory-smoke-test"
+        calls = []
+
+        def request(method, path, **kwargs):
+            calls.append((method, path))
+            return (404, {}) if method == "GET" else (201, {"commit": {"sha": "commit-1"}})
+
+        reconcile_remote("alejandro", manifest, request)
+        self.assertTrue(calls[0][1].startswith("/repos/goodmorning-mx/factory-smoke-test/contents/"))
+
 
 if __name__ == "__main__":
     unittest.main()

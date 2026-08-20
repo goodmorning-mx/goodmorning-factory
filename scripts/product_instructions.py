@@ -23,6 +23,7 @@ MANAGED_END = "<!-- GOODMORNING FACTORY: MANAGED END -->"
 CUSTOM_START = "<!-- GOODMORNING PRODUCT: CUSTOM START -->"
 CUSTOM_END = "<!-- GOODMORNING PRODUCT: CUSTOM END -->"
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+REPOSITORY_RE = re.compile(r"^goodmorning-mx/[A-Za-z0-9_.-]+$")
 SECRET_VALUE = re.compile(r"(?:gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]{16,}|-----BEGIN [^-]+-----|postgres(?:ql)?://[^\s]+:[^\s@]+@)")
 
 
@@ -39,6 +40,13 @@ def _manifest_product(manifest: dict[str, Any]) -> str:
     if not isinstance(product, str) or not PRODUCT_RE.fullmatch(product):
         raise InstructionsError("Manifest product must be a lowercase DNS-safe slug.")
     return product
+
+
+def _manifest_repository(manifest: dict[str, Any]) -> str:
+    repository = manifest.get("repository")
+    if not isinstance(repository, str) or not REPOSITORY_RE.fullmatch(repository):
+        raise InstructionsError("Manifest repository must be a goodmorning-mx repository.")
+    return repository
 
 
 def _safe_environment(environment: Any) -> list[dict[str, str]]:
@@ -221,9 +229,10 @@ def reconcile_remote(product: str, manifest: dict[str, Any], request_fn: Request
     """Upsert instructions.md in a product repository using a supplied API client."""
     if product != _manifest_product(manifest):
         raise InstructionsError("Product argument does not match the manifest.")
+    repository = _manifest_repository(manifest)
     path = f"instructions.md"
     encoded = urllib.parse.quote(path, safe="/")
-    endpoint = f"/repos/goodmorning-mx/{product}/contents/{encoded}?ref={urllib.parse.quote(branch, safe='')}"
+    endpoint = f"/repos/{repository}/contents/{encoded}?ref={urllib.parse.quote(branch, safe='')}"
     status, current = request_fn("GET", endpoint)
     existing = _decode_content(current) if status == 200 and isinstance(current, dict) else None
     rendered = render_instructions(manifest, existing)
@@ -237,8 +246,8 @@ def reconcile_remote(product: str, manifest: dict[str, Any], request_fn: Request
     if status == 200 and isinstance(current, dict) and isinstance(current.get("sha"), str):
         body["sha"] = current["sha"]
     elif status != 404:
-        raise InstructionsError(f"Unable to inspect {product}/instructions.md (HTTP {status}).")
-    updated_status, updated = request_fn("PUT", f"/repos/goodmorning-mx/{product}/contents/{encoded}", body=body)
+        raise InstructionsError(f"Unable to inspect {repository}/instructions.md (HTTP {status}).")
+    updated_status, updated = request_fn("PUT", f"/repos/{repository}/contents/{encoded}", body=body)
     if updated_status not in {200, 201} or not isinstance(updated, dict):
         raise InstructionsError(f"GitHub did not confirm instructions update for {product} (HTTP {updated_status}).")
     commit = updated.get("commit") if isinstance(updated.get("commit"), dict) else {}

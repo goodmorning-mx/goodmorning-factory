@@ -44,6 +44,12 @@ private keys, database URLs, Coolify UUIDs or internal hostnames to the file.
 - Updates are idempotent. A missing or legacy file is preserved inside the
   product-owned section rather than overwritten.
 
+Legacy catalogs can contain aliases whose `product` slug differs from the
+repository slug. Bulk adoption fails closed for ambiguous aliases and only
+reconciles a repository when there is one canonical manifest whose slug
+matches that repository; this prevents one stale alias from overwriting
+another product's instructions.
+
 Instruction changes do not provision Coolify resources or deploy production.
 They are a repository-contract update and remain subject to the normal GitHub
 App permissions, CI checks, branch protections, and Factory approval rules.
