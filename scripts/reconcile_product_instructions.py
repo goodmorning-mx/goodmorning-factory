@@ -20,12 +20,30 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--branch", default="dev")
     args = parser.parse_args(argv)
     try:
-        results = []
+        manifests = []
         for source in args.manifest:
             manifest = json.loads(Path(source).read_text(encoding="utf-8"))
             product = manifest.get("product")
             if not isinstance(product, str):
                 raise InstructionsError(f"Manifest {source} has no product slug.")
+            manifests.append((source, product, manifest))
+
+        # Historical catalogs may contain aliases that point multiple product
+        # slugs at one repository.  Only a manifest whose slug matches the
+        # repository name is canonical; silently overwriting one repository
+        # with whichever alias happens to sort last would be unsafe.
+        by_repository: dict[str, list[tuple[str, str, dict]]]= {}
+        for item in manifests:
+            repository = item[2].get("repository")
+            by_repository.setdefault(str(repository), []).append(item)
+        results = []
+        for repository, items in by_repository.items():
+            repo_slug = repository.rsplit("/", 1)[-1]
+            canonical = [item for item in items if item[1] == repo_slug]
+            if len(canonical) != 1:
+                results.append({"status": "skipped", "repository": repository, "reason": "no_unique_canonical_manifest"})
+                continue
+            _, product, manifest = canonical[0]
             results.append(reconcile_remote(product, manifest, request, branch=args.branch))
         print(json.dumps(results, sort_keys=True))
         return 0
