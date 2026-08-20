@@ -53,6 +53,19 @@ class ExistingAppPlanClient(FakeClient):
 
 
 class ReconcileAdvancedProductTests(unittest.TestCase):
+    def test_resolve_deployment_uuid_uses_latest_persisted_record_after_deduplication(self):
+        class DeploymentHistoryClient:
+            def get(self, path):
+                self.path = path
+                return {"count": 2, "deployments": [{"deployment_uuid": "persisted-new"}, {"deployment_uuid": "persisted-old"}]}
+
+        client = DeploymentHistoryClient()
+        self.assertEqual(
+            advanced._resolve_deployment_uuid(client, "app-uuid", "returned-not-persisted"),
+            "persisted-new",
+        )
+        self.assertEqual(client.path, "/deployments/applications/app-uuid?skip=0&take=10")
+
     def test_deployment_timeout_is_configurable_and_has_operational_default(self):
         with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(advanced._deployment_timeout_seconds(), 900)

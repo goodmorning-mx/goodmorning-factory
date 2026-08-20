@@ -234,6 +234,25 @@ def _expected_migration_uuid(manifest: dict[str, Any], kind: str, resource_name:
     return str(value) if value else None
 
 
+def _resolve_deployment_uuid(client: Coolify, application_uuid: str, requested_uuid: str) -> str:
+    """Resolve Coolify's persisted deployment after queue deduplication."""
+    path = f"/deployments/applications/{urllib.parse.quote(application_uuid, safe='')}?skip=0&take=10"
+    try:
+        response = client.get(path)
+    except ReconcileError:
+        return requested_uuid
+    entries = _items(response.get("deployments") if isinstance(response, dict) else response)
+    for entry in entries:
+        deployment_uuid = _field(entry, "deployment_uuid", "uuid", "id")
+        if str(deployment_uuid or "") == requested_uuid:
+            return requested_uuid
+    if entries:
+        latest_uuid = _field(entries[0], "deployment_uuid", "uuid", "id")
+        if latest_uuid:
+            return str(latest_uuid)
+    return requested_uuid
+
+
 def _wait_for_deployments(client: Coolify, deployment_ids: list[str], actions: list[dict[str, Any]]) -> None:
     """Wait for queued deployments so a green reconcile means runnable apps."""
     for deployment_id in deployment_ids:
@@ -730,9 +749,14 @@ def _ensure_applications(
                 deployment_uuid = _field(entries[0], "deployment_uuid") if entries else None
             if not deployment_uuid:
                 raise ReconcileError(f"Deployment identity for {name!r} was not returned.")
-            deployment_id = str(deployment_uuid)
+            requested_deployment_id = str(deployment_uuid)
+            deployment_id = _resolve_deployment_uuid(client, identifier, requested_deployment_id)
             deployment_ids.append(deployment_id)
-            actions.append({"resource": name, "kind": "deployment", "action": "queued", "deployment_uuid": deployment_id})
+            action = {"resource": name, "kind": "deployment", "action": "queued", "deployment_uuid": deployment_id}
+            if deployment_id != requested_deployment_id:
+                action["requested_deployment_uuid"] = requested_deployment_id
+                action["action"] = "resolved_persisted_deployment"
+            actions.append(action)
     if deploy and deployment_ids:
         _wait_for_deployments(client, deployment_ids, actions)
 
