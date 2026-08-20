@@ -33,6 +33,11 @@ Development PostgreSQL resources declare daily external backups that Factory ver
 See `docs/coolify-resources-v3.md` and `docs/production-release-contract.md` for the canonical contracts and
 `scripts/provision_product_development.py` for the audited provisioner.
 
+Agent operating instructions are defined in `AGENTS.md`. Factory generates the
+product-specific `instructions.md` contract from
+`templates/product-instructions.md` and each catalog manifest; see
+`docs/agent-instructions.md` for the lifecycle and extension rules.
+
 ## Legacy resources-v2 compatibility
 
 `resources-v2` is accepted temporarily through the safe v2→v3 migration adapter.

@@ -4,6 +4,7 @@ import unittest
 from unittest import mock
 
 import scripts.register_product_manifest as catalog
+from scripts.product_instructions import render_instructions
 
 
 class RegisterProductManifestTests(unittest.TestCase):
@@ -34,12 +35,20 @@ class RegisterProductManifestTests(unittest.TestCase):
                 return 200, {"name": path.rsplit("/", 1)[-1]}
             if method == "GET" and "/contents/products/acme.json" in path:
                 return 404, {"message": "Not Found"}
+            if method == "GET" and "/contents/instructions.md" in path:
+                return 404, {"message": "Not Found"}
             if method == "PUT" and "/contents/products/acme.json" in path:
                 body = kwargs["body"]
                 decoded = json.loads(base64.b64decode(body["content"]).decode("utf-8"))
                 self.assertEqual(decoded["repository"], "goodmorning-mx/acme")
                 self.assertEqual(body["branch"], "dev")
                 return 201, {"commit": {"sha": "commit123"}}
+            if method == "PUT" and "/contents/instructions.md" in path:
+                body = kwargs["body"]
+                decoded = base64.b64decode(body["content"]).decode("utf-8")
+                self.assertIn("GOODMORNING FACTORY: MANAGED START", decoded)
+                self.assertNotIn("storageuuid123", decoded)
+                return 201, {"commit": {"sha": "instructions123"}}
             raise AssertionError((method, path))
 
         with mock.patch.object(catalog, "request", side_effect=fake_request):
@@ -59,6 +68,8 @@ class RegisterProductManifestTests(unittest.TestCase):
                 return 200, {}
             if "/contents/products/acme.json" in path:
                 return 200, {"content": encoded}
+            if "/contents/instructions.md" in path:
+                return 200, {"content": base64.b64encode(render_instructions(manifest).encode()).decode(), "sha": "instructions-sha"}
             raise AssertionError((method, path))
 
         with mock.patch.object(catalog, "request", side_effect=fake_request):
