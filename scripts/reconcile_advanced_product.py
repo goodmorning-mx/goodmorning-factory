@@ -37,6 +37,7 @@ except ModuleNotFoundError:  # Imported as scripts.reconcile_advanced_product in
     )
 
 TIMEOUT = 30
+DEFAULT_DEPLOYMENT_TIMEOUT_SECONDS = 900
 TERMINAL_DEPLOYMENT = {"finished", "failed", "cancelled", "canceled"}
 SUCCESS_DEPLOYMENT = {"finished"}
 SENSITIVE_NAME = ("PASSWORD", "SECRET", "TOKEN", "KEY", "DATABASE_URL", "REDIS_URL")
@@ -55,6 +56,21 @@ def _suffix(manifest: dict[str, Any]) -> str:
 
 class ReconcileError(RuntimeError):
     pass
+
+
+def _deployment_timeout_seconds() -> float:
+    """Return the bounded wait used for Coolify's asynchronous deploy queue."""
+    raw = os.environ.get(
+        "COOLIFY_DEPLOYMENT_TIMEOUT_SECONDS",
+        str(DEFAULT_DEPLOYMENT_TIMEOUT_SECONDS),
+    )
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise ReconcileError("COOLIFY_DEPLOYMENT_TIMEOUT_SECONDS must be numeric.") from exc
+    if value <= 0:
+        raise ReconcileError("COOLIFY_DEPLOYMENT_TIMEOUT_SECONDS must be positive.")
+    return value
 
 
 def _bool_env(name: str) -> bool:
@@ -221,7 +237,7 @@ def _expected_migration_uuid(manifest: dict[str, Any], kind: str, resource_name:
 def _wait_for_deployments(client: Coolify, deployment_ids: list[str], actions: list[dict[str, Any]]) -> None:
     """Wait for queued deployments so a green reconcile means runnable apps."""
     for deployment_id in deployment_ids:
-        deadline = time.monotonic() + 180
+        deadline = time.monotonic() + _deployment_timeout_seconds()
         last_status = "queued"
         while time.monotonic() < deadline:
             try:

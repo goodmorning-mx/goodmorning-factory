@@ -53,6 +53,15 @@ class ExistingAppPlanClient(FakeClient):
 
 
 class ReconcileAdvancedProductTests(unittest.TestCase):
+    def test_deployment_timeout_is_configurable_and_has_operational_default(self):
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(advanced._deployment_timeout_seconds(), 900)
+        with patch.dict(os.environ, {"COOLIFY_DEPLOYMENT_TIMEOUT_SECONDS": "42.5"}):
+            self.assertEqual(advanced._deployment_timeout_seconds(), 42.5)
+        with patch.dict(os.environ, {"COOLIFY_DEPLOYMENT_TIMEOUT_SECONDS": "0"}):
+            with self.assertRaises(advanced.ReconcileError):
+                advanced._deployment_timeout_seconds()
+
     def test_repository_identity_accepts_coolify_url_forms(self):
         for value in (
             "goodmorning-mx/balletpourtous",
