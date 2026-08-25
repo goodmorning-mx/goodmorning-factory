@@ -21,6 +21,16 @@
           "source": "database_url",
           "resource": "postgres",
           "driver": "psycopg"
+        },
+        {
+          "key": "APP_ENV",
+          "source": "literal",
+          "value": "dev"
+        },
+        {
+          "key": "CORS_ORIGINS",
+          "source": "literal",
+          "value": "https://dev.esim.goodmorning.mx"
         }
       ]
     },
