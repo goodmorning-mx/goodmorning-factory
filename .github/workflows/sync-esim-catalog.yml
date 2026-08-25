@@ -24,12 +24,24 @@ jobs:
         run: |
           set -euo pipefail
           response_file="${RUNNER_TEMP}/esim-catalog-sync.json"
-          status="$(curl --fail-with-body --silent --show-error --max-time 180 \
+          status="$(curl --silent --show-error --max-time 180 \
             --output "${response_file}" --write-out '%{http_code}' \
             --request POST \
             --header "X-Sync-Token: ${CATALOG_SYNC_TOKEN}" \
             https://api.dev.esim.goodmorning.mx/catalog/sync)"
-          test "${status}" = "200"
+          if [ "${status}" != "200" ]; then
+            python3 - <<'PY' "${response_file}" "${status}"
+            import json
+            import sys
+            try:
+                payload = json.load(open(sys.argv[1], encoding="utf-8"))
+                detail = payload.get("detail", "catalog sync failed")
+            except (OSError, ValueError):
+                detail = "catalog sync failed"
+            print(f"Catalog sync failed with HTTP {sys.argv[2]}: {detail}")
+            PY
+            exit 1
+          fi
           python3 - <<'PY' "${response_file}"
           import json
           import sys
