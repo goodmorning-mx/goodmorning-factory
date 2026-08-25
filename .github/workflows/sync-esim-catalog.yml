@@ -30,26 +30,8 @@ jobs:
             --header "X-Sync-Token: ${CATALOG_SYNC_TOKEN}" \
             https://api.dev.esim.goodmorning.mx/catalog/sync)"
           if [ "${status}" != "200" ]; then
-            python3 - <<'PY' "${response_file}" "${status}"
-            import json
-            import sys
-            try:
-                payload = json.load(open(sys.argv[1], encoding="utf-8"))
-                detail = payload.get("detail", "catalog sync failed")
-            except (OSError, ValueError):
-                detail = "catalog sync failed"
-            print(f"Catalog sync failed with HTTP {sys.argv[2]}: {detail}")
-            PY
+            detail="$(jq -r '.detail // "catalog sync failed"' "${response_file}" 2>/dev/null || true)"
+            echo "Catalog sync failed with HTTP ${status}: ${detail}"
             exit 1
           fi
-          python3 - <<'PY' "${response_file}"
-          import json
-          import sys
-          data = json.load(open(sys.argv[1], encoding="utf-8"))
-          print(json.dumps({
-              "status": data.get("status"),
-              "plans": data.get("plans"),
-              "destinations": data.get("destinations"),
-              "completed_at": data.get("completed_at"),
-          }, sort_keys=True))
-          PY
+          jq '{status, plans, destinations, completed_at}' "${response_file}"
