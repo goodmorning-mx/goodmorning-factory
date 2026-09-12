@@ -48,6 +48,30 @@ jobs:
           ref: dev
           persist-credentials: false
 
+      - name: Resolve production product repository scope
+        id: scope
+        shell: bash
+        env:
+          REQUESTED_MANIFEST: ${{ inputs.manifest_path }}
+          EVENT_PRODUCT: ${{ github.event.client_payload.product }}
+          EVENT_MANIFEST_PATH: ${{ github.event.client_payload.manifest_path }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            product="${EVENT_PRODUCT}"
+            manifest="${EVENT_MANIFEST_PATH}"
+          else
+            manifest="${REQUESTED_MANIFEST}"
+            [[ "${manifest}" =~ ^production/[a-z0-9][a-z0-9-]*\.json$ ]]
+            product="$(jq -er '.product' "${manifest}")"
+          fi
+          [[ "${product}" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          test "${manifest}" = "production/${product}.json"
+          test -f "${manifest}"
+          test "$(jq -er '.product' "${manifest}")" = "${product}"
+          test "$(jq -er '.repository' "${manifest}")" = "goodmorning-mx/${product}"
+          echo "product=${product}" >> "${GITHUB_OUTPUT}"
+
       - name: Create source verification token
         id: app-token
         uses: actions/create-github-app-token@v2
@@ -55,7 +79,7 @@ jobs:
           app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
           private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
           owner: goodmorning-mx
-          repositories: goodmorning-factory,balletpourtous,factory-e2e-test,george
+          repositories: goodmorning-factory,${{ steps.scope.outputs.product }}
           permission-actions: read
           permission-contents: read
 
