@@ -16,6 +16,21 @@
       "auto_deploy": true,
       "environment": [
         {
+          "key": "APP_NAME",
+          "source": "literal",
+          "value": "GoodMorning Marketing Adapters API"
+        },
+        {
+          "key": "APP_ENV",
+          "source": "literal",
+          "value": "production"
+        },
+        {
+          "key": "CORS_ORIGINS",
+          "source": "literal",
+          "value": "https://marketing.goodmorning.mx"
+        },
+        {
           "key": "DATABASE_URL",
           "source": "database_url",
           "resource": "postgres",
