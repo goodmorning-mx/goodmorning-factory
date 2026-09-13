@@ -24,6 +24,7 @@ REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 SAFE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 ALLOWED_ROLES = {"api", "frontend", "mobile", "worker", "gateway"}
+HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 ALLOWED_DATABASE_ENGINES = {"postgresql", "timescaledb"}
 ALLOWED_ENV_SOURCES = {
     "literal",
@@ -174,7 +175,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "topology", "product", "repository", "branch", "development_domain", "coolify_github_app_name",
         "legacy", "migration", "connections", "applications", "databases", "redis", "backup",
         "modules", "module_dependency_order", "resource_ownership",
-        "module_update_policy",
+        "module_update_policy", "domain_bindings",
         "confirm_production", "promotion_policy",
     }
     _require(set(raw) <= allowed, "Advanced product manifest contains unknown top-level fields.")
@@ -361,10 +362,41 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
                 **item,
                 "base_directory": base_directory,
                 "domain": domain,
+                "custom_domains": [],
                 "environment": environment,
                 "dependencies": dependencies,
             }
         )
+
+    domain_bindings_raw = raw.get("domain_bindings", [])
+    _require(isinstance(domain_bindings_raw, list), "domain_bindings must be a list.")
+    _require(not domain_bindings_raw or production, "Custom domain bindings are supported only by production manifests.")
+    applications_by_name = {item["name"]: item for item in applications}
+    bound_hosts: set[str] = set(public_domains)
+    domain_bindings: list[dict[str, Any]] = []
+    for binding in domain_bindings_raw:
+        _require(isinstance(binding, dict), "Domain bindings must be objects.")
+        _require(
+            set(binding) == {"apex", "aliases", "application", "environment", "desired_state"},
+            "Domain binding fields must be exactly apex, aliases, application, environment, and desired_state.",
+        )
+        apex = binding.get("apex")
+        aliases = binding.get("aliases")
+        application = binding.get("application")
+        environment = binding.get("environment")
+        desired_state = binding.get("desired_state")
+        _require(isinstance(apex, str) and HOSTNAME_RE.fullmatch(apex) is not None, "Domain binding apex must be a lowercase fully-qualified DNS name.")
+        _require(isinstance(aliases, list) and all(isinstance(alias, str) and HOSTNAME_RE.fullmatch(alias) is not None for alias in aliases), "Domain binding aliases must be lowercase fully-qualified DNS names.")
+        _require(len(aliases) == len(set(aliases)), "Domain binding aliases must be unique.")
+        _require(apex not in aliases, "Domain binding apex cannot also be an alias.")
+        _require(isinstance(application, str) and application in applications_by_name and applications_by_name[application]["role"] != "worker", "Domain binding must target a declared public application.")
+        _require(environment == "production", "Domain binding environment must be production.")
+        _require(desired_state == "active", "Only active desired domain bindings are supported.")
+        hosts = [apex, *aliases]
+        _require(not (bound_hosts & set(hosts)), "Domain binding duplicates a domain already assigned to an application.")
+        bound_hosts.update(hosts)
+        domain_bindings.append(dict(binding))
+        applications_by_name[application]["custom_domains"].extend(f"https://{host}" for host in hosts)
 
     _require(api_count == 1, "Advanced product must declare exactly one API.")
     _require(mobile_count <= 1, "Advanced product may declare at most one mobile frontend.")
@@ -522,6 +554,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "resource_ownership": ownership,
         **({"module_update_policy": raw["module_update_policy"]} if raw.get("module_update_policy") is not None else {}),
         "applications": applications,
+        "domain_bindings": domain_bindings,
         "databases": databases,
         "redis": redis_resources,
         "backup": dict(backup),

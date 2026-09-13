@@ -30,6 +30,17 @@
     ]
   },
   "connections": [],
+  "domain_bindings": [
+    {
+      "apex": "inbrainmedical.com",
+      "aliases": [
+        "www.inbrainmedical.com"
+      ],
+      "application": "frontend",
+      "environment": "production",
+      "desired_state": "active"
+    }
+  ],
   "modules": [],
   "module_dependency_order": [],
   "resource_ownership": [],

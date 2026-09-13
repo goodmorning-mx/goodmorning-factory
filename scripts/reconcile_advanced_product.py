@@ -500,6 +500,8 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
     run_options = ""
     if volume:
         run_options = f"--mount source={volume['name']},target={volume['mount_path']}"
+    domains = [app["domain"]] if app["domain"] else []
+    domains.extend(app.get("custom_domains", []))
     return {
         "name": f"{product}-{app['name']}-{suffix}",
         "project_uuid": context["project_uuid"],
@@ -514,7 +516,10 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         "base_directory": app["base_directory"],
         "dockerfile_location": app["dockerfile"],
         "ports_exposes": str(app["port"]),
-        "domains": app["domain"] or "",
+        # Coolify's application API accepts comma-separated HTTPS domains.
+        # Keep the manifest's established primary domain first, then append
+        # explicitly reviewed custom-domain bindings.
+        "domains": ",".join(domains),
         # Native Coolify auto-deploy is part of the v3 desired state.  The
         # initial create may still be followed by an explicit deploy request.
         "instant_deploy": True,
@@ -554,6 +559,14 @@ def _application_mutable_changes(found: dict[str, Any], expected: dict[str, Any]
         for key in mutable_fields
         if str(_field(found, key) or "") != str(expected[key] or "")
     }
+
+
+def _normalized_domain_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        values = value
+    else:
+        values = str(value or "").split(",")
+    return [str(item).strip().rstrip("/") for item in values if str(item).strip()]
 
 
 def _environment_values(
@@ -705,7 +718,11 @@ def _ensure_applications(
             if changes and client.apply:
                 client.patch(f"/applications/{urllib.parse.quote(identifier, safe='')}", changes)
                 found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
+                if _normalized_domain_list(_field(found, "domains", "domain", "fqdn")) != _normalized_domain_list(expected["domains"]):
+                    raise ReconcileError(f"Coolify did not verify the requested domains for application {name!r}.")
                 actions.append({"resource": name, "kind": "application", "action": "reconciled", "fields": sorted(changes)})
+            elif changes:
+                actions.append({"resource": name, "kind": "application", "action": "would_update", "fields": sorted(changes)})
             else:
                 actions.append({"resource": name, "kind": "application", "action": "reused"})
         if not client.apply:

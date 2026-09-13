@@ -1,0 +1,99 @@
+name: Reconcile production custom domains
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        description: Product slug whose production manifest declares the domain binding.
+        required: true
+        type: string
+      phase:
+        description: Plan is GET-only. Apply updates the existing Coolify Application domains field.
+        required: true
+        type: choice
+        options:
+          - plan
+          - apply
+        default: plan
+      confirmation:
+        description: For apply, enter domain:<product>:production exactly.
+        required: false
+        type: string
+      validate_live:
+        description: Check public DNS, HTTPS, frontend 200, and declared API health endpoints.
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: production-domains-${{ inputs.product }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'localhost' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID }}
+      COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES: ${{ vars.COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: dev
+
+      - name: Validate selected production manifest and confirmations
+        shell: bash
+        env:
+          PRODUCT: ${{ inputs.product }}
+          PHASE: ${{ inputs.phase }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+          [[ "${PRODUCT}" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          manifest="production/${PRODUCT}.json"
+          test -f "${manifest}"
+          test "$(jq -er '.topology' "${manifest}")" = "resources-v3-production"
+          test "$(jq -er '.product' "${manifest}")" = "${PRODUCT}"
+          test "$(jq -er '.confirm_production' "${manifest}")" = "true"
+          test -n "${COOLIFY_BASE_URL:-}"
+          test -n "${COOLIFY_API_TOKEN:-}"
+          test -n "${COOLIFY_DESTINATION_UUID:-}"
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+          if [ "${PHASE}" = "apply" ]; then
+            test "${CONFIRMATION}" = "domain:${PRODUCT}:production"
+            test "${COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES:-}" = "true"
+          fi
+
+      - name: Plan or reconcile domains
+        shell: bash
+        env:
+          PRODUCT: ${{ inputs.product }}
+          PHASE: ${{ inputs.phase }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+          VALIDATE_LIVE: ${{ inputs.validate_live }}
+        run: |
+          set -euo pipefail
+          args=(
+            --manifest "production/${PRODUCT}.json"
+            --phase "${PHASE}"
+            --server "${COOLIFY_SERVER_NAME}"
+            --destination-uuid "${COOLIFY_DESTINATION_UUID}"
+          )
+          if [ "${PHASE}" = "apply" ]; then
+            args+=(
+              --confirm-product "${PRODUCT}"
+              --confirm-environment production
+              --confirmation "${CONFIRMATION}"
+            )
+          fi
+          if [ "${VALIDATE_LIVE}" = "true" ]; then
+            args+=(--validate-live)
+          fi
+          python scripts/reconcile_domains.py "${args[@]}"
