@@ -43,7 +43,29 @@
       "domain": "https://api.inbrainwebpage.goodmorning.mx",
       "health_path": "/health",
       "auto_deploy": true,
-      "environment": [],
+      "environment": [
+        {
+          "key": "APP_NAME",
+          "source": "literal",
+          "value": "InBrain Neuromedical API"
+        },
+        {
+          "key": "APP_ENV",
+          "source": "literal",
+          "value": "production"
+        },
+        {
+          "key": "CORS_ORIGINS",
+          "source": "literal",
+          "value": "https://inbrainwebpage.goodmorning.mx"
+        },
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "resource": "postgres",
+          "driver": "psycopg"
+        }
+      ],
       "dependencies": []
     },
     {
