@@ -71,6 +71,16 @@ class CoolifyDouble:
 
 
 class ReconcileDomainsTests(unittest.TestCase):
+    def test_production_workflow_uses_established_destination_fallback(self):
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github"
+            / "workflows"
+            / "reconcile-production-domains.yml"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0'", workflow)
+
     def test_example_manifest_has_reviewable_production_domain_binding(self):
         root = Path(__file__).parents[1]
         manifest = contract.load_manifest(root / "production" / "inbrainwebpage.json")
