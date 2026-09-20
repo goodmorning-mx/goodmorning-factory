@@ -1,12 +1,49 @@
 {
-  "topology": "resources-v2",
+  "topology": "resources-v3",
   "product": "cv",
   "repository": "goodmorning-mx/cv",
   "branch": "dev",
   "development_domain": "dev.cv.goodmorning.mx",
   "coolify_github_app_name": "goodmorning-mx-coolify",
-  "backend_base_directory": "/backend",
-  "frontend_base_directory": "/frontend",
+  "applications": [
+    {
+      "name": "api",
+      "role": "api",
+      "base_directory": "/backend",
+      "dockerfile": "/Dockerfile",
+      "port": 8000,
+      "domain": "https://api.dev.cv.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {"key": "DATABASE_URL", "source": "database_url", "resource": "postgres", "driver": "psycopg"}
+      ]
+    },
+    {
+      "name": "frontend",
+      "role": "frontend",
+      "base_directory": "/frontend",
+      "dockerfile": "/Dockerfile",
+      "port": 80,
+      "domain": "https://dev.cv.goodmorning.mx",
+      "health_path": "/",
+      "auto_deploy": true,
+      "environment": [
+        {"key": "VITE_API_URL", "source": "literal", "value": "https://api.dev.cv.goodmorning.mx"}
+      ]
+    }
+  ],
+  "databases": [
+    {
+      "name": "postgres",
+      "engine": "postgresql",
+      "version": "16",
+      "image": "postgres:16-alpine",
+      "public": false,
+      "backup": true
+    }
+  ],
+  "redis": [],
   "backup": {
     "enabled": true,
     "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
