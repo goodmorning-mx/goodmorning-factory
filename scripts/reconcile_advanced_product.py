@@ -501,7 +501,7 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
     volume = app.get("persistent_volume")
     run_options = ""
     if volume:
-        run_options = f"--mount source={volume['name']},target={volume['mount_path']}"
+        run_options = f"--mount type=volume,source={volume['name']},target={volume['mount_path']}"
     domains = [app["domain"]] if app["domain"] else []
     domains.extend(app.get("custom_domains", []))
     return {
