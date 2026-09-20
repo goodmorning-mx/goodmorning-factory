@@ -35,7 +35,7 @@
   ],
   "development_domain": "hosting.goodmorning.mx",
   "confirm_production": true,
-  "promotion_policy": "manual",
+  "promotion_policy": "auto-on-main",
   "coolify_github_app_name": "goodmorning-mx-coolify",
   "applications": [
     {
