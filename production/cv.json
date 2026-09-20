@@ -20,6 +20,11 @@
           "source": "database_url",
           "resource": "postgres",
           "driver": "psycopg"
+        },
+        {
+          "key": "OPENAI_API_KEY",
+          "source": "managed_secret",
+          "binding": "goodmorning/openai-default"
         }
       ]
     },
