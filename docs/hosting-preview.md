@@ -12,8 +12,9 @@ The normal `products/` catalog and all production manifests remain untouched.
 
 The existing advanced-development workflow has an explicit Hosting preview
 job. Dispatch it on Factory `feature/hosting-mvp` with `hosting_preview_sha`.
-The job checks that the same SHA is the product feature HEAD, has an open PR
-against dev, and passes the three product CI checks. It validates the canonical
+The job checks that the same SHA is the product feature HEAD, has a successful product CI push run. The operator separately verifies the
+open PR against dev; the existing Factory App lacks pull-request read access.
+No credential permissions are broadened. It validates the canonical
 V3 manifest, resolves the existing backup storage from a runtime variable,
 and invokes the existing V3 reconciler with a narrowly scoped preview source.
 The source exception is restricted to Hosting, DEV and that one feature branch.

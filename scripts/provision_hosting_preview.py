@@ -25,13 +25,12 @@ def main():
     source=github(f'repos/{repository}/commits/feature/hosting-mvp')
     if source['sha'] != args.sha:
         raise ReconcileError('Requested source SHA does not match the feature branch.')
-    prs=github(f'repos/{repository}/pulls?state=open&base=dev&head=goodmorning-mx:feature/hosting-mvp')
-    if len(prs)!=1 or prs[0]['head']['sha'] != args.sha:
-        raise ReconcileError('An open PR against dev at this exact SHA is required.')
-    checks=github(f'repos/{repository}/commits/{args.sha}/check-runs')['check_runs']
-    expected={'Frontend checks','Backend checks','Docker build validation'}
-    if not expected.issubset({c['name'] for c in checks if c['conclusion']=='success'}):
-        raise ReconcileError('All product CI checks must pass on this SHA before preview.')
+    # Factory's existing App has contents/actions access, not pull_requests/checks.
+    # Verify the authoritative CI push run for the exact feature source instead
+    # of widening credentials. The operator verifies the open PR separately.
+    runs=github(f'repos/{repository}/actions/runs?branch=feature/hosting-mvp&event=push&head_sha={args.sha}')['workflow_runs']
+    if not any(r['name']=='CI' and r['head_sha']==args.sha and r['conclusion']=='success' for r in runs):
+        raise ReconcileError('A successful product CI push run is required on this exact SHA.')
     raw=json.loads(Path('previews/hosting.json').read_text())
     raw['backup']['storage_uuid']=os.environ.get('COOLIFY_BACKUP_STORAGE_UUID') or json.loads(Path('products/workspace.json').read_text())['backup']['storage_uuid']
     destination=os.environ.get('COOLIFY_DESTINATION_UUID')
