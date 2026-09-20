@@ -45,7 +45,11 @@
       "domain": "https://api.dev.hosting.goodmorning.mx",
       "custom_domains": [
         "https://environtx-preview.dev.hosting.goodmorning.mx",
-        "https://hipposburgers-preview.dev.hosting.goodmorning.mx"
+        "https://hipposburgers-preview.dev.hosting.goodmorning.mx",
+        "https://nysweety-preview.dev.hosting.goodmorning.mx",
+        "https://vitaliahemodialisis-preview.dev.hosting.goodmorning.mx",
+        "https://capitalqualitydemexico-preview.dev.hosting.goodmorning.mx",
+        "https://impulsemexico-preview.dev.hosting.goodmorning.mx"
       ],
       "health_path": "/health",
       "auto_deploy": true,
