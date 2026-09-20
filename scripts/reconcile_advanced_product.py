@@ -746,7 +746,13 @@ def _ensure_applications(
         # replacement container without creating/mounting the volume.
         volume = app.get("persistent_volume")
         if volume:
-            storages = _items(client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}/storages"))
+            storage_payload = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}/storages")
+            storages = []
+            if isinstance(storage_payload, dict):
+                for key in ("persistent_storages", "file_storages"):
+                    storages.extend(_items(storage_payload.get(key)))
+            else:
+                storages = _items(storage_payload)
             expected_name = f"{identifier}-{volume['name']}"
             has_storage = any(
                 str(_field(item, "name") or "") == expected_name
