@@ -43,6 +43,7 @@
       "dockerfile": "/Dockerfile",
       "port": 8000,
       "domain": "https://api.dev.hosting.goodmorning.mx",
+      "custom_domains": ["https://*.dev.hosting.goodmorning.mx"],
       "health_path": "/health",
       "auto_deploy": true,
       "environment": [
@@ -69,7 +70,7 @@
         {
           "key": "SITES_DOMAIN",
           "source": "literal",
-          "value": "sites.goodmorning.mx"
+          "value": "dev.hosting.goodmorning.mx"
         },
         {
           "key": "ADMIN_BOOTSTRAP_PASSWORD_HASH",
