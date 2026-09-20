@@ -740,6 +740,29 @@ def _ensure_applications(
                 }
             )
             continue
+        # Persistent site data must be represented by Coolify's native storage
+        # resource.  custom_docker_run_options alone is not sufficient for an
+        # existing application: Coolify will accept the option but can start a
+        # replacement container without creating/mounting the volume.
+        volume = app.get("persistent_volume")
+        if volume:
+            storages = _items(client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}/storages"))
+            expected_name = f"{identifier}-{volume['name']}"
+            has_storage = any(
+                str(_field(item, "name") or "") == expected_name
+                and str(_field(item, "mount_path") or "") == str(volume["mount_path"])
+                for item in storages
+            )
+            if not has_storage:
+                client.post(
+                    f"/applications/{urllib.parse.quote(identifier, safe='')}/storages",
+                    {
+                        "type": "persistent",
+                        "name": volume["name"],
+                        "mount_path": volume["mount_path"],
+                    },
+                )
+                actions.append({"resource": name, "kind": "storage", "action": "created"})
         current = {str(_field(item, "key")): item for item in _items(client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}/envs"))}
         desired = _environment_values(
             app,
