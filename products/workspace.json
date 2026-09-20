@@ -1,0 +1,131 @@
+{
+  "topology": "resources-v3",
+  "product": "workspace",
+  "repository": "goodmorning-mx/workspace",
+  "branch": "dev",
+  "modules": [
+    {
+      "name": "gm-pwa",
+      "version": "0.1.4",
+      "kind": "frontend",
+      "frontend_package": "@goodmorning/gm-pwa",
+      "deployment_modes": ["embedded"],
+      "default_deployment_mode": "embedded",
+      "deployment_mode": "embedded",
+      "resource_requirements": [],
+      "bindings": [],
+      "pwa": {"manifest_required": true, "service_worker_required": true, "update_mode": "prompt", "api_auth_cache": "network-only"},
+      "compatibility": {"node": ">=20", "factory_api": "^1.0", "products": ["workspace"]}
+    },
+    {
+      "name": "gm-auth",
+      "version": "0.1.4",
+      "kind": "full-stack",
+      "backend_package": "gm-auth",
+      "frontend_package": "@goodmorning/gm-auth",
+      "deployment_modes": ["embedded", "service"],
+      "default_deployment_mode": "embedded",
+      "deployment_mode": "embedded",
+      "resource_requirements": [{"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true}],
+      "bindings": [{"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "backend", "driver": "psycopg"}],
+      "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1},
+      "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["workspace"]}
+    },
+    {
+      "name": "gm-mcp",
+      "version": "0.3.1",
+      "kind": "backend",
+      "backend_package": "gm-mcp",
+      "deployment_modes": ["embedded", "gateway"],
+      "default_deployment_mode": "embedded",
+      "deployment_mode": "embedded",
+      "resource_requirements": [],
+      "bindings": [],
+      "dependencies": [],
+      "compatibility": {"python": ">=3.12", "factory_api": "^1.0", "products": ["workspace"]}
+    },
+    {
+      "name": "gm-billing",
+      "version": "0.1.0",
+      "kind": "full-stack",
+      "backend_package": "gm-billing",
+      "frontend_package": "@goodmorning/gm-billing",
+      "deployment_modes": ["embedded", "service"],
+      "default_deployment_mode": "embedded",
+      "deployment_mode": "embedded",
+      "resource_requirements": [],
+      "bindings": [],
+      "dependencies": [],
+      "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1},
+      "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["workspace"]}
+    },
+    {
+      "name": "gm-agent",
+      "version": "0.1.5",
+      "kind": "full-stack",
+      "backend_package": "gm-agent",
+      "frontend_package": "@goodmorning/gm-agent",
+      "deployment_modes": ["embedded", "service", "gateway"],
+      "default_deployment_mode": "embedded",
+      "deployment_mode": "embedded",
+      "resource_requirements": [],
+      "bindings": [],
+      "dependencies": ["gm-mcp", "gm-billing"],
+      "required_secrets": {"OPENAI_API_KEY": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/openai-default", "target": "backend"}},
+      "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["workspace"]}
+    }
+  ],
+  "development_domain": "dev.workspace.goodmorning.mx",
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "applications": [
+    {
+      "name": "api",
+      "role": "api",
+      "base_directory": "/backend",
+      "dockerfile": "/Dockerfile",
+      "port": 8000,
+      "domain": "https://api.dev.workspace.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": []
+    },
+    {
+      "name": "frontend",
+      "role": "frontend",
+      "base_directory": "/frontend",
+      "dockerfile": "/Dockerfile",
+      "port": 80,
+      "domain": "https://dev.workspace.goodmorning.mx",
+      "health_path": "/",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "VITE_API_URL",
+          "source": "literal",
+          "value": "https://api.dev.workspace.goodmorning.mx"
+        }
+      ]
+    }
+  ],
+  "databases": [
+    {
+      "name": "postgres",
+      "engine": "postgresql",
+      "version": "16",
+      "image": "postgres:16-alpine",
+      "public": false,
+      "backup": true
+    }
+  ],
+  "redis": [],
+  "backup": {
+    "enabled": true,
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
+    "frequency": "0 3 * * *",
+    "local_retention_count": 1,
+    "local_retention_days": 1,
+    "s3_retention_count": 7,
+    "s3_retention_days": 7,
+    "timeout_seconds": 1800
+  }
+}

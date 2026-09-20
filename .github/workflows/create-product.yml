@@ -1,6 +1,13 @@
 name: Create GoodMorning product repository
 
 on:
+  pull_request:
+    branches:
+      - dev
+    types:
+      - closed
+    paths:
+      - 'requests/*.json'
   workflow_dispatch:
     inputs:
       product_name:
@@ -19,19 +26,77 @@ on:
 
 permissions:
   contents: read
+  issues: write
+  actions: write
 
 concurrency:
-  group: create-product-${{ github.event.inputs.product_name }}
+  group: create-product-${{ github.event.inputs.product_name || github.sha }}
   cancel-in-progress: false
 
 jobs:
   create-product:
+    if: ${{ github.event_name != 'pull_request' || github.event.pull_request.merged == true }}
     name: Provision product repository
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 60
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'localhost' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0' }}
+      COOLIFY_GITHUB_APP_NAME: ${{ vars.COOLIFY_GITHUB_APP_NAME || 'goodmorning-mx-coolify' }}
+      COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
+      OCI_S3_ACCESS_KEY: ${{ secrets.OCI_S3_ACCESS_KEY }}
+      OCI_S3_SECRET_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+      OCI_S3_BUCKET: ${{ vars.OCI_S3_BUCKET }}
+      OCI_S3_REGION: ${{ vars.OCI_S3_REGION }}
+      OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
     steps:
+      - name: Check out factory dev
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Resolve product request
+        id: request
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
+            product_name="${{ github.event.inputs.product_name }}"
+            description="${{ github.event.inputs.description }}"
+            confirm_provision="${{ github.event.inputs.confirm_provision }}"
+          elif [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
+            mapfile -t requests < <(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.merge_commit_sha }}" -- 'requests/*.json')
+            if [ "${#requests[@]}" -ne 1 ] || [ ! -f "${requests[0]}" ]; then
+              echo "A merged product request PR must add or change exactly one requests/<product>.json file."
+              exit 1
+            fi
+            product_name="$(jq -er '.product_name' "${requests[0]}")"
+            description="$(jq -er '.description' "${requests[0]}")"
+            confirm_provision="$(jq -r '.confirm_provision // false' "${requests[0]}")"
+          else
+            mapfile -t requests < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- 'requests/*.json')
+            if [ "${#requests[@]}" -ne 1 ] || [ ! -f "${requests[0]}" ]; then
+              echo "A product request push must add or change exactly one requests/<product>.json file."
+              exit 1
+            fi
+            product_name="$(jq -er '.product_name' "${requests[0]}")"
+            description="$(jq -er '.description' "${requests[0]}")"
+            confirm_provision="$(jq -r '.confirm_provision // false' "${requests[0]}")"
+          fi
+          {
+            echo "product_name=${product_name}"
+            echo "confirm_provision=${confirm_provision}"
+            echo "description<<GOODMORNING_DESCRIPTION"
+            echo "${description}"
+            echo "GOODMORNING_DESCRIPTION"
+          } >> "${GITHUB_OUTPUT}"
+
       - name: Refuse unconfirmed provisioning
-        if: ${{ github.event.inputs.confirm_provision != 'true' }}
+        if: ${{ steps.request.outputs.confirm_provision != 'true' }}
         run: |
           echo "confirm_provision must be true before provisioning." >&2
           exit 1
@@ -41,15 +106,12 @@ jobs:
           python3 - <<'PY'
           import re
           import sys
-          name = "${{ github.event.inputs.product_name }}"
+          name = "${{ steps.request.outputs.product_name }}"
           reserved = {"goodmorning-factory", "goodmorning-mvp-template"}
-          if not name or len(name) > 100 or name in reserved or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", name):
-              print("Invalid product_name. Use lowercase letters, numbers, and hyphens; start/end with a letter or number; avoid reserved names; max 100 characters.", file=sys.stderr)
+          if not name or len(name) > 63 or name in reserved or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", name):
+              print("Invalid product_name. Use lowercase letters, numbers, and hyphens; start/end with a letter or number; avoid reserved names; max 63 characters.", file=sys.stderr)
               sys.exit(1)
           PY
-
-      - name: Check out factory repository
-        uses: actions/checkout@v4
 
       - name: Create GitHub App installation token
         id: app-token
@@ -66,8 +128,8 @@ jobs:
         run: |
           set -euo pipefail
           if python3 scripts/create_product.py \
-            --name "${{ github.event.inputs.product_name }}" \
-            --description "${{ github.event.inputs.description }}" \
+            --name "${{ steps.request.outputs.product_name }}" \
+            --description "${{ steps.request.outputs.description }}" \
             --owner goodmorning-mx \
             --template-owner goodmorning-mx \
             --template-repo goodmorning-mvp-template \
@@ -79,15 +141,135 @@ jobs:
             exit 1
           fi
 
+      - name: Register repository-first product manifest
+        id: catalog
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BACKUP_STORAGE_UUID: ${{ vars.COOLIFY_BACKUP_STORAGE_UUID || 'c1rrntk8wv4cf3tl3wqviwp3' }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${GH_TOKEN}"
+          python3 scripts/register_product_manifest.py \
+            --product "${{ steps.request.outputs.product_name }}" \
+            --backup-storage-uuid "${BACKUP_STORAGE_UUID}" \
+            --factory-branch dev \
+            > catalog-result.json
+          cat catalog-result.json
+          manifest_path="$(jq -er '.manifest_path' catalog-result.json)"
+          mkdir -p "$(dirname "${manifest_path}")"
+          gh api \
+            -H "Accept: application/vnd.github.raw+json" \
+            "/repos/goodmorning-mx/goodmorning-factory/contents/${manifest_path}?ref=dev" \
+            > "${manifest_path}"
+          jq -e \
+            --arg product "${{ steps.request.outputs.product_name }}" \
+            '.topology == "resources-v3" and .product == $product' \
+            "${manifest_path}" > /dev/null
+          echo "manifest_path=${manifest_path}" >> "${GITHUB_OUTPUT}"
+
+      - name: Register automatic production manifest
+        id: production-catalog
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          BACKUP_STORAGE_UUID: ${{ vars.COOLIFY_BACKUP_STORAGE_UUID || 'c1rrntk8wv4cf3tl3wqviwp3' }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${GH_TOKEN}"
+          python3 -m scripts.register_production_manifest \
+            --product "${{ steps.request.outputs.product_name }}" \
+            --backup-storage-uuid "${BACKUP_STORAGE_UUID}" \
+            --factory-branch dev \
+            > production-catalog-result.json
+          cat production-catalog-result.json
+
+      - name: Create deployment verification sentinel
+        id: sentinel
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          product="${{ steps.request.outputs.product_name }}"
+          title="[automation] Verify repository-first product ${product}"
+          issue_number="$(gh issue list --state open --search "\"${title}\" in:title" --json number,title --jq ".[] | select(.title == \"${title}\") | .number" | head -n 1)"
+          if [ -z "${issue_number}" ]; then
+            issue_url="$(gh issue create \
+              --title "${title}" \
+              --body "Verification sentinel for repository-first product \`${product}\`. This issue closes only after frontend, API, private PostgreSQL, and Oracle backup verification succeed.")"
+            issue_number="${issue_url##*/}"
+          fi
+          if ! [[ "${issue_number}" =~ ^[0-9]+$ ]]; then
+            echo "Unable to create or parse the deployment verification issue number."
+            exit 1
+          fi
+          echo "issue_number=${issue_number}" >> "${GITHUB_OUTPUT}"
+
+      - name: Reconcile and verify targeted Coolify product
+        env:
+          COOLIFY_ALLOW_RESOURCE_WRITES: 'true'
+          COOLIFY_ALLOW_DATABASE_START: 'true'
+          COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES: 'true'
+          COOLIFY_ALLOW_BACKEND_ENV_WRITES: 'true'
+          COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES: 'true'
+          COOLIFY_ALLOW_FRONTEND_ENV_WRITES: 'true'
+          COOLIFY_ALLOW_DEPLOYMENTS: 'true'
+          COOLIFY_ALLOW_BACKEND_DEPLOYMENT: 'true'
+          COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: 'true'
+          COOLIFY_ALLOW_ADVANCED_WRITES: 'true'
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+          manifest="${{ steps.catalog.outputs.manifest_path }}"
+          converged=false
+          for attempt in $(seq 1 6); do
+            set +e
+            python -m scripts.reconcile_resources \
+              --manifest "${manifest}" \
+              --phase apply \
+              --operation deploy-full \
+              --server "${COOLIFY_SERVER_NAME}" \
+              --github-app "${COOLIFY_GITHUB_APP_NAME}" \
+              --destination-uuid "${COOLIFY_DESTINATION_UUID}"
+            code=$?
+            set -e
+            if [ "${code}" -eq 0 ]; then
+              converged=true
+              break
+            fi
+            [ "${attempt}" -eq 6 ] || sleep $((20 * attempt))
+          done
+          if [ "${converged}" != "true" ]; then
+            echo "Targeted Coolify reconciliation did not converge."
+            exit 1
+          fi
+
+      - name: Verify Oracle database backup
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${OCI_S3_ACCESS_KEY}"
+          echo "::add-mask::${OCI_S3_SECRET_KEY}"
+          python scripts/reconcile_database_backups.py \
+            --manifest "${{ steps.catalog.outputs.manifest_path }}" \
+            --backup-now true
+
+      - name: Close verified deployment sentinel
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ steps.sentinel.outputs.issue_number }}
+        run: |
+          gh issue close "${ISSUE_NUMBER}" --reason completed \
+            --comment "Repository, frontend, API, PostgreSQL and Oracle backup verified by ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+
       - name: Publish provisioning summary
         if: always()
         run: |
           {
             echo "## GoodMorning product provisioning"
             echo
-            echo "- Product: \`${{ github.event.inputs.product_name }}\`"
+            echo "- Product: \`${{ steps.request.outputs.product_name }}\`"
             echo "- Template: \`goodmorning-mx/goodmorning-mvp-template\`"
             echo "- Owner: \`goodmorning-mx\`"
+            echo "- Frontend: https://dev.${{ steps.request.outputs.product_name }}.goodmorning.mx"
+            echo "- API: https://api.dev.${{ steps.request.outputs.product_name }}.goodmorning.mx/health"
             echo
             if [ -f provisioning-result.json ]; then
               echo "### Result"

@@ -1,0 +1,158 @@
+name: Product development operations
+
+on:
+  workflow_dispatch:
+    inputs:
+      product:
+        required: true
+        type: string
+      operation:
+        required: true
+        type: choice
+        options:
+          - plan
+          - provision
+          - deploy-backend
+          - deploy-full
+      confirmation:
+        required: false
+        type: string
+      server:
+        required: true
+        type: string
+        default: localhost
+      github_app:
+        required: true
+        type: string
+        default: goodmorning-mx-coolify
+      destination_uuid:
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: goodmorning-factory-dev-${{ inputs.product }}
+  cancel-in-progress: false
+
+jobs:
+  product-development:
+    name: Controlled dev operation
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 60
+    steps:
+      - name: Guard factory dev branch
+        if: ${{ github.ref != 'refs/heads/dev' }}
+        run: |
+          echo "This workflow may only run from the factory dev branch." >&2
+          exit 1
+
+      - name: Check out factory
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Run Stage 9 plan
+        env:
+          INPUT_PRODUCT: ${{ inputs.product }}
+          INPUT_OPERATION: ${{ inputs.operation }}
+          INPUT_SERVER: ${{ inputs.server }}
+          INPUT_GITHUB_APP: ${{ inputs.github_app }}
+          INPUT_DESTINATION_UUID: ${{ inputs.destination_uuid }}
+          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          COOLIFY_ALLOW_RESOURCE_WRITES: "false"
+          COOLIFY_ALLOW_DATABASE_START: "false"
+          COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES: "false"
+          COOLIFY_ALLOW_BACKEND_ENV_WRITES: "false"
+          COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES: "false"
+          COOLIFY_ALLOW_FRONTEND_ENV_WRITES: "false"
+          COOLIFY_ALLOW_DEPLOYMENTS: "false"
+          COOLIFY_ALLOW_BACKEND_DEPLOYMENT: "false"
+          COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: "false"
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from scripts.orchestrate_product_development import main
+          argv = [
+              "--operation", os.environ["INPUT_OPERATION"],
+              "--phase", "plan",
+              "--product", os.environ["INPUT_PRODUCT"],
+              "--server", os.environ["INPUT_SERVER"],
+              "--github-app", os.environ["INPUT_GITHUB_APP"],
+          ]
+          argv.extend(["--destination-uuid", os.environ["INPUT_DESTINATION_UUID"]])
+          raise SystemExit(main(argv))
+          PY
+
+      - name: Run Stage 9 apply
+        if: ${{ inputs.operation != 'plan' }}
+        env:
+          INPUT_PRODUCT: ${{ inputs.product }}
+          INPUT_OPERATION: ${{ inputs.operation }}
+          INPUT_CONFIRMATION: ${{ inputs.confirmation }}
+          INPUT_SERVER: ${{ inputs.server }}
+          INPUT_GITHUB_APP: ${{ inputs.github_app }}
+          INPUT_DESTINATION_UUID: ${{ inputs.destination_uuid }}
+          COOLIFY_BASE_URL: ${{ secrets.COOLIFY_BASE_URL }}
+          COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+          COOLIFY_ALLOW_RESOURCE_WRITES: "true"
+          COOLIFY_ALLOW_DATABASE_START: "true"
+          COOLIFY_ALLOW_BACKEND_APPLICATION_WRITES: "true"
+          COOLIFY_ALLOW_BACKEND_ENV_WRITES: "true"
+          COOLIFY_ALLOW_FRONTEND_APPLICATION_WRITES: "true"
+          COOLIFY_ALLOW_FRONTEND_ENV_WRITES: "true"
+          COOLIFY_ALLOW_DEPLOYMENTS: ${{ inputs.operation == 'deploy-backend' || inputs.operation == 'deploy-full' }}
+          COOLIFY_ALLOW_BACKEND_DEPLOYMENT: ${{ inputs.operation == 'deploy-backend' || inputs.operation == 'deploy-full' }}
+          COOLIFY_ALLOW_FRONTEND_DEPLOYMENT: ${{ inputs.operation == 'deploy-full' }}
+        run: |
+          python - <<'PY'
+          import os
+          import sys
+          from scripts.orchestrate_product_development import main
+          argv = [
+              "--operation", os.environ["INPUT_OPERATION"],
+              "--phase", "apply",
+              "--product", os.environ["INPUT_PRODUCT"],
+              "--server", os.environ["INPUT_SERVER"],
+              "--github-app", os.environ["INPUT_GITHUB_APP"],
+              "--confirmation", os.environ.get("INPUT_CONFIRMATION", ""),
+          ]
+          argv.extend(["--destination-uuid", os.environ["INPUT_DESTINATION_UUID"]])
+          raise SystemExit(main(argv))
+          PY
+
+      - name: Write safe operation summary
+        if: ${{ always() }}
+        env:
+          INPUT_PRODUCT: ${{ inputs.product }}
+          INPUT_OPERATION: ${{ inputs.operation }}
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          python - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+          operations = {"plan", "provision", "deploy-backend", "deploy-full"}
+          product_raw = os.environ.get("INPUT_PRODUCT", "")
+          operation_raw = os.environ.get("INPUT_OPERATION", "")
+          product = product_raw if re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", product_raw) else "<invalid>"
+          operation = operation_raw if operation_raw in operations else "<invalid>"
+          summary = Path(os.environ["GITHUB_STEP_SUMMARY"])
+          lines = [
+              "## Product development operation",
+              f"- product: `{product}`",
+              f"- operation: `{operation}`",
+              "- phase: `plan` before `apply` for mutating operations",
+              f"- status: `{os.environ.get('JOB_STATUS', '')}`",
+              "- plan_safe: see orchestrator JSON log",
+              "- deployment statuses: see redacted orchestrator JSON log",
+              "- runtime/smoke booleans: see redacted orchestrator JSON log",
+              "- next_action: follow runbook guidance",
+          ]
+          summary.write_text("\n".join(lines) + "\n")
+          PY

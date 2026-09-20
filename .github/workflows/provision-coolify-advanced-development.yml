@@ -1,0 +1,289 @@
+name: Provision Coolify advanced development products
+
+on:
+  repository_dispatch:
+    types:
+      - reconcile-advanced-product
+  push:
+    branches: [dev]
+    paths:
+      - "products/*.json"
+      - "scripts/advanced_product_contract.py"
+      - "scripts/reconcile_advanced_product.py"
+      - "scripts/resources_v3_migration.py"
+      - "scripts/register_product_manifest.py"
+      - "scripts/reconcile_database_backups.py"
+      - ".github/workflows/provision-coolify-advanced-development.yml"
+  workflow_dispatch:
+    inputs:
+      hosting_preview_sha:
+        description: Optional exact Hosting feature/hosting-mvp SHA; DEV preview only, no catalog writes.
+        required: false
+        type: string
+      manifest_path:
+        description: Optional single resources-v3 manifest.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: goodmorning-factory-resources-v3-dev
+  cancel-in-progress: false
+
+jobs:
+  reconcile:
+    if: ${{ inputs.hosting_preview_sha == '' }}
+    name: Reconcile resources-v3
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'localhost' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0' }}
+      COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
+      GOODMORNING_MANAGED_OPENAI_API_KEY: ${{ secrets.GOODMORNING_MANAGED_OPENAI_API_KEY }}
+      ROAMGO_KEY_ID: ${{ secrets.ROAMGO_KEY_ID }}
+      ROAMGO_SECRET: ${{ secrets.ROAMGO_SECRET }}
+      CATALOG_SYNC_TOKEN: ${{ secrets.CATALOG_SYNC_TOKEN }}
+      OCI_S3_ACCESS_KEY: ${{ secrets.OCI_S3_ACCESS_KEY }}
+      OCI_S3_SECRET_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+      OCI_S3_BUCKET: ${{ vars.OCI_S3_BUCKET }}
+      OCI_S3_REGION: ${{ vars.OCI_S3_REGION }}
+      OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          fetch-depth: 2
+
+      - name: Create source verification token
+        if: github.event_name == 'repository_dispatch'
+        id: source-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
+          private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
+          owner: goodmorning-mx
+          repositories: ${{ github.event.client_payload.product }}
+
+      - name: Validate verified source release
+        if: github.event_name == 'repository_dispatch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.source-token.outputs.token }}
+          EVENT_PRODUCT: ${{ github.event.client_payload.product }}
+          EVENT_REPOSITORY: ${{ github.event.client_payload.repository }}
+          EVENT_SOURCE_BRANCH: ${{ github.event.client_payload.source_branch }}
+          EVENT_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          EVENT_SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id }}
+          EVENT_MANIFEST_PATH: ${{ github.event.client_payload.manifest_path }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${GH_TOKEN}"
+          [[ "${EVENT_PRODUCT}" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          test "${EVENT_REPOSITORY}" = "goodmorning-mx/${EVENT_PRODUCT}"
+          test "${EVENT_SOURCE_BRANCH}" = "dev"
+          [[ "${EVENT_SOURCE_SHA}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${EVENT_SOURCE_RUN_ID}" =~ ^[0-9]+$ ]]
+          test "${EVENT_MANIFEST_PATH}" = "products/${EVENT_PRODUCT}.json"
+          test -f "${EVENT_MANIFEST_PATH}"
+          test "$(jq -er '.topology' "${EVENT_MANIFEST_PATH}")" = "resources-v3"
+          test "$(jq -er '.product' "${EVENT_MANIFEST_PATH}")" = "${EVENT_PRODUCT}"
+          test "$(jq -er '.repository' "${EVENT_MANIFEST_PATH}")" = "${EVENT_REPOSITORY}"
+          test "$(jq -er '.branch' "${EVENT_MANIFEST_PATH}")" = "${EVENT_SOURCE_BRANCH}"
+
+          current_sha="$(gh api "/repos/${EVENT_REPOSITORY}/branches/${EVENT_SOURCE_BRANCH}" --jq '.commit.sha')"
+          test "${current_sha}" = "${EVENT_SOURCE_SHA}"
+          run_json="$(gh api "/repos/${EVENT_REPOSITORY}/actions/runs/${EVENT_SOURCE_RUN_ID}")"
+          test "$(jq -r '.name' <<<"${run_json}")" = "CI"
+          test "$(jq -r '.event' <<<"${run_json}")" = "push"
+          test "$(jq -r '.conclusion' <<<"${run_json}")" = "success"
+          test "$(jq -r '.head_branch' <<<"${run_json}")" = "${EVENT_SOURCE_BRANCH}"
+          test "$(jq -r '.head_sha' <<<"${run_json}")" = "${EVENT_SOURCE_SHA}"
+
+      - name: Validate authorization
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_REF}" = "refs/heads/dev"
+          test -n "${COOLIFY_BASE_URL:-}"
+          test -n "${COOLIFY_API_TOKEN:-}"
+          test "${COOLIFY_ALLOW_REAL_DEPLOYMENT:-}" = "true"
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+
+      - name: Select resources-v3 manifests
+        id: select
+        shell: bash
+        run: |
+          set -euo pipefail
+          selection="${RUNNER_TEMP}/resources-v3-manifests.txt"
+          apply_selection="${RUNNER_TEMP}/resources-v3-apply-manifests.txt"
+          : > "${selection}"
+          : > "${apply_selection}"
+          requested="${{ inputs.manifest_path }}"
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            requested="${{ github.event.client_payload.manifest_path }}"
+            test -n "${requested}"
+          fi
+          if { [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ] || [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; } && [ -n "${requested}" ]; then
+            [[ "${requested}" =~ ^products/[a-z0-9][a-z0-9-]*\.json$ ]]
+            test -f "${requested}"
+            test "$(jq -r '.topology // empty' "${requested}")" = "resources-v3"
+            printf '%s\n' "${requested}" >> "${selection}"
+            printf '%s\n' "${requested}" >> "${apply_selection}"
+          elif [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            while IFS= read -r manifest; do
+              if [ -f "${manifest}" ] && [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v3" ]; then
+                printf '%s\n' "${manifest}" >> "${selection}"
+                printf '%s\n' "${manifest}" >> "${apply_selection}"
+              fi
+            done < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- "products/*.json")
+            if [ ! -s "${selection}" ] && ! git diff --quiet "${{ github.event.before }}" "${GITHUB_SHA}" -- \
+              scripts/advanced_product_contract.py \
+              scripts/reconcile_advanced_product.py \
+              scripts/reconcile_database_backups.py \
+              .github/workflows/provision-coolify-advanced-development.yml; then
+              echo "Control-plane implementation changed; selecting the full resources-v3 catalog."
+              for manifest in products/*.json; do
+                if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v3" ]; then
+                  printf '%s\n' "${manifest}" >> "${selection}"
+                fi
+              done
+            fi
+          else
+            for manifest in products/*.json; do
+              if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v3" ]; then
+                printf '%s\n' "${manifest}" >> "${selection}"
+                printf '%s\n' "${manifest}" >> "${apply_selection}"
+              fi
+            done
+          fi
+          sort -u -o "${selection}" "${selection}"
+          sort -u -o "${apply_selection}" "${apply_selection}"
+          if [ ! -s "${selection}" ]; then
+            echo "No resources-v3 manifests selected."
+            echo "selected=false" >> "${GITHUB_OUTPUT}"
+            echo "apply_selected=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          echo "ADVANCED_PLAN_MANIFESTS=${selection}" >> "${GITHUB_ENV}"
+          echo "selected=true" >> "${GITHUB_OUTPUT}"
+          if [ -s "${apply_selection}" ]; then
+            echo "ADVANCED_APPLY_MANIFESTS=${apply_selection}" >> "${GITHUB_ENV}"
+            echo "apply_selected=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "apply_selected=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Plan selected products
+        if: steps.select.outputs.selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          while IFS= read -r manifest; do
+            python scripts/reconcile_advanced_product.py \
+              --manifest "${manifest}" \
+              --phase plan \
+              --server "${COOLIFY_SERVER_NAME}" \
+              --destination-uuid "${COOLIFY_DESTINATION_UUID}"
+          done < "${ADVANCED_PLAN_MANIFESTS}"
+
+      - name: Apply and deploy selected products
+        if: steps.select.outputs.apply_selected == 'true'
+        shell: bash
+        env:
+          COOLIFY_ALLOW_ADVANCED_WRITES: "true"
+        run: |
+          set -euo pipefail
+          while IFS= read -r manifest; do
+            product="$(jq -er '.product' "${manifest}")"
+            python scripts/reconcile_advanced_product.py \
+              --manifest "${manifest}" \
+              --phase apply \
+              --server "${COOLIFY_SERVER_NAME}" \
+              --destination-uuid "${COOLIFY_DESTINATION_UUID}" \
+              --confirm-product "${product}" \
+              --confirm-environment dev \
+              --deploy
+          done < "${ADVANCED_APPLY_MANIFESTS}"
+
+      - name: Reconcile external database backups
+        if: steps.select.outputs.apply_selected == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${OCI_S3_ACCESS_KEY}"
+          echo "::add-mask::${OCI_S3_SECRET_KEY}"
+          while IFS= read -r manifest; do
+            python scripts/reconcile_database_backups.py \
+              --manifest "${manifest}" \
+              --backup-now true
+          done < "${ADVANCED_APPLY_MANIFESTS}"
+
+      - name: Close resolved resources-v3 failure
+        if: steps.select.outputs.apply_selected == 'true' && success()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title="[automation] Coolify resources-v3 development reconciliation failed"
+          existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue close "${existing}" \
+              --reason completed \
+              --comment "Resolved automatically by successful development reconciliation: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          fi
+
+      - name: Report failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="[automation] Coolify resources-v3 development reconciliation failed"
+          body="Resources-v3 development reconciliation failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then
+            gh issue comment "${existing}" --body "${body}"
+          else
+            gh issue create --title "${title}" --body "${body}"
+          fi
+
+  hosting-preview:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.hosting_preview_sha != '' && github.ref == 'refs/heads/feature/hosting-mvp' }}
+    name: Hosting DEV preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'localhost' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID }}
+      COOLIFY_BACKUP_STORAGE_UUID: ${{ vars.COOLIFY_BACKUP_STORAGE_UUID }}
+      COOLIFY_ALLOW_ADVANCED_WRITES: 'true'
+      PREVIEW_SHA: ${{ inputs.hosting_preview_sha }}
+      HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH: ${{ secrets.HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/create-github-app-token@v2
+        id: preview-token
+        with:
+          app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
+          private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
+          owner: goodmorning-mx
+          repositories: hosting
+      - name: Validate and plan exact preview
+        env:
+          GH_TOKEN: ${{ steps.preview-token.outputs.token }}
+        run: python3 -m scripts.provision_hosting_preview --sha "$PREVIEW_SHA"
+      - name: Provision and verify exact DEV preview
+        env:
+          GH_TOKEN: ${{ steps.preview-token.outputs.token }}
+        run: python3 -m scripts.provision_hosting_preview --sha "$PREVIEW_SHA" --apply

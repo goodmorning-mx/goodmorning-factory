@@ -1,0 +1,22 @@
+{
+  "topology": "resources-v2-production",
+  "product": "mockupcodex",
+  "repository": "goodmorning-mx/mockupcodex",
+  "branch": "main",
+  "production_domain": "mockupcodex.goodmorning.mx",
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "backend_base_directory": "/backend",
+  "frontend_base_directory": "/frontend",
+  "confirm_production": true,
+  "promotion_policy": "auto-on-main",
+  "backup": {
+    "enabled": true,
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
+    "frequency": "0 2 * * *",
+    "local_retention_count": 2,
+    "local_retention_days": 2,
+    "s3_retention_count": 30,
+    "s3_retention_days": 30,
+    "timeout_seconds": 1800
+  }
+}

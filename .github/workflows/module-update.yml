@@ -1,0 +1,234 @@
+name: GoodMorning module update
+
+on:
+  workflow_dispatch:
+    inputs:
+      module:
+        description: Registered module name, for example gm-pwa
+        required: true
+        type: string
+      product:
+        description: Consumer product slug
+        required: true
+        type: string
+      target:
+        description: Target semver; blank discovers the newest GitHub tag
+        required: false
+        type: string
+      apply:
+        description: Create the consumer branch and PR
+        required: true
+        default: false
+        type: boolean
+      auto_merge:
+        description: Merge only after the consumer PR checks pass
+        required: true
+        default: false
+        type: boolean
+      deploy_dev:
+        description: Deploy the recorded update through the controlled DEV workflow
+        required: true
+        default: false
+        type: boolean
+      destination_uuid:
+        description: Coolify DEV destination UUID required for deploy_dev
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  module-update:
+    name: Plan and optionally apply module update
+    runs-on: ubuntu-latest
+    environment: dev
+    timeout-minutes: 90
+    env:
+      MODULE_UPDATE_TOKEN: ${{ secrets.GOODMORNING_FACTORY_MODULE_UPDATE_TOKEN }}
+    steps:
+      - name: Check out Factory
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          persist-credentials: false
+
+      - name: Resolve release and policy
+        id: plan
+        env:
+          INPUT_MODULE: ${{ inputs.module }}
+          INPUT_PRODUCT: ${{ inputs.product }}
+          INPUT_TARGET: ${{ inputs.target }}
+        run: |
+          set -euo pipefail
+          target_json='{}'
+          if [ -n "${INPUT_TARGET}" ]; then
+            target_json="{\"${INPUT_MODULE}\":\"${INPUT_TARGET}\"}"
+          fi
+          python scripts/module_updates.py --module "${INPUT_MODULE}" --releases "${target_json}" > "${RUNNER_TEMP}/module-plan.json"
+          python - <<'PY'
+          import json, os
+          plan=json.load(open(os.environ["RUNNER_TEMP"]+"/module-plan.json"))
+          wanted=[p for p in plan["plans"] if p["module"]==os.environ["INPUT_MODULE"] and p["product"]==os.environ["INPUT_PRODUCT"]]
+          if len(wanted)!=1:
+              raise SystemExit("Selected module/product has no unique eligible update plan.")
+          item=wanted[0]
+          print(f"target={item['available']}")
+          print(f"action={item['action']}")
+          print(f"change={item['change']}")
+          print(f"requires_reconcile={str(item.get('infrastructure', {}).get('requires_reconcile', False)).lower()}")
+          with open(os.environ["GITHUB_OUTPUT"],"a") as out:
+              values = {"available": item["available"], "action": item["action"], "change": item["change"], "requires_reconcile": str(item.get("infrastructure", {}).get("requires_reconcile", False)).lower()}
+              for key, value in values.items():
+                  out.write(f"{key}={value}\n")
+          PY
+          cat "${RUNNER_TEMP}/module-plan.json" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Create GitHub App token
+        if: ${{ inputs.apply && env.MODULE_UPDATE_TOKEN == '' }}
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
+          private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
+          owner: goodmorning-mx
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Apply update and create consumer PR
+        if: ${{ inputs.apply }}
+        id: consumer
+        env:
+          GH_TOKEN: ${{ env.MODULE_UPDATE_TOKEN || steps.app-token.outputs.token }}
+          MODULE: ${{ inputs.module }}
+          PRODUCT: ${{ inputs.product }}
+          TARGET: ${{ steps.plan.outputs.available }}
+        run: |
+          set -euo pipefail
+          repo="$(python -c 'import json; print(json.load(open("products/'"${PRODUCT}"'.json"))["repository"])')"
+          branch="factory/module-${MODULE}-${TARGET}"
+          root="${RUNNER_TEMP}/product"
+          gh repo clone "${repo}" "${root}" -- --branch dev --depth 1
+          gh auth setup-git
+          if git -C "${root}" ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1; then
+            git -C "${root}" fetch origin "${branch}:refs/remotes/origin/${branch}"
+            git -C "${root}" switch -c "${branch}" FETCH_HEAD
+          else
+            git -C "${root}" switch -c "${branch}"
+          fi
+          python scripts/module_updates.py --module "${MODULE}" --product "${PRODUCT}" --target "${TARGET}" --product-root "${root}" --apply
+          if [ -f "${root}/frontend/package.json" ]; then
+            npm --prefix "${root}/frontend" ci
+            npm --prefix "${root}/frontend" run build
+          fi
+          if [ -d "${root}/backend" ]; then
+            python -m compileall -q "${root}/backend"
+          fi
+          git -C "${root}" config user.name "goodmorning-factory[bot]"
+          git -C "${root}" config user.email "goodmorning-factory[bot]@users.noreply.github.com"
+          git -C "${root}" add -A
+          if ! git -C "${root}" diff --cached --quiet; then
+            git -C "${root}" commit -m "chore: update ${MODULE} to v${TARGET}"
+          fi
+          git -C "${root}" push origin "HEAD:${branch}"
+          consumer_already_merged="false"
+          pr_url="$(gh pr list --repo "${repo}" --head "${branch}" --state merged --json url --jq '.[0].url')"
+          if [ -n "${pr_url}" ]; then
+            consumer_already_merged="true"
+          fi
+          if [ -z "${pr_url}" ]; then
+            pr_url="$(gh pr list --repo "${repo}" --head "${branch}" --state open --json url --jq '.[0].url')"
+          fi
+          if [ -z "${pr_url}" ]; then
+            pr_url="$(gh pr create --repo "${repo}" --base dev --head "${branch}" --title "chore: update ${MODULE} to v${TARGET}" --body "Automated GoodMorning Factory module update.\n\n- module: ${MODULE}\n- target: v${TARGET}\n- policy: patch auto-update\n- validation: frontend build and backend compile\n\nFactory will record and deploy this update only after the PR is merged.")"
+          fi
+          echo "url=${pr_url}" >> "${GITHUB_OUTPUT}"
+          echo "Consumer PR: ${pr_url}" >> "${GITHUB_STEP_SUMMARY}"
+          if [ "${{ inputs.auto_merge }}" = true ] && [ "${consumer_already_merged}" != true ]; then
+            gh pr checks "${pr_url}" --repo "${repo}" --watch --fail-fast
+            gh pr merge "${pr_url}" --repo "${repo}" --squash
+            for _ in $(seq 1 60); do
+              state="$(gh pr view "${pr_url}" --repo "${repo}" --json state --jq .state)"
+              [ "${state}" = MERGED ] && break
+              [ "${state}" = CLOSED ] && { echo "Consumer PR closed without merge" >&2; exit 1; }
+              sleep 10
+            done
+            [ "$(gh pr view "${pr_url}" --repo "${repo}" --json state --jq .state)" = MERGED ]
+          fi
+
+      - name: Record installed version and create Factory catalog PR
+        if: ${{ inputs.apply && inputs.auto_merge }}
+        env:
+          GH_TOKEN: ${{ env.MODULE_UPDATE_TOKEN || steps.app-token.outputs.token }}
+          MODULE: ${{ inputs.module }}
+          PRODUCT: ${{ inputs.product }}
+          TARGET: ${{ steps.plan.outputs.available }}
+        run: |
+          set -euo pipefail
+          branch="factory/record-${MODULE}-${TARGET}"
+          if git ls-remote --exit-code origin "refs/heads/${branch}" >/dev/null 2>&1; then
+            git fetch origin "${branch}:refs/remotes/origin/${branch}"
+            git switch -c "${branch}" FETCH_HEAD
+          else
+            git switch -c "${branch}"
+          fi
+          python - <<'PY'
+          import json, os
+          from scripts.module_updates import load_products, load_registry, update_factory_manifest
+          product=next(p for p in load_products("products") if p["product"]==os.environ["PRODUCT"])
+          registry=load_registry("modules/registry.json")
+          path=update_factory_manifest(product, os.environ["MODULE"], os.environ["TARGET"], registry[os.environ["MODULE"]])
+          print(f"Recorded {path} at v{os.environ['TARGET']}")
+          PY
+          git add "products/${PRODUCT}.json"
+          git config user.name "goodmorning-factory[bot]"
+          git config user.email "goodmorning-factory[bot]@users.noreply.github.com"
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: record ${MODULE} v${TARGET} for ${PRODUCT}"
+          fi
+          git push origin "HEAD:${branch}"
+          factory_pr="$(gh pr list --repo goodmorning-mx/goodmorning-factory --head "${branch}" --state open --json url --jq '.[0].url')"
+          if [ -z "${factory_pr}" ]; then
+            factory_pr="$(gh pr create --repo goodmorning-mx/goodmorning-factory --base dev --head "${branch}" --title "chore: record ${MODULE} v${TARGET} for ${PRODUCT}" --body "Records the installed module version after the consumer update PR passed validation and merged.")"
+          fi
+          check_count="$(gh pr checks "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --json state --jq 'length')"
+          if [ "${check_count}" -gt 0 ]; then
+            gh pr checks "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --watch --fail-fast
+          fi
+          gh pr merge "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --squash
+          for _ in $(seq 1 60); do
+            state="$(gh pr view "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --json state --jq .state)"
+            [ "${state}" = MERGED ] && break
+            [ "${state}" = CLOSED ] && { echo "Factory catalog PR closed without merge" >&2; exit 1; }
+            sleep 10
+          done
+          test "$(gh pr view "${factory_pr}" --repo goodmorning-mx/goodmorning-factory --json state --jq .state)" = MERGED
+          echo "Factory catalog PR: ${factory_pr}" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Reconcile module Resources V3 before deployment
+        if: ${{ inputs.apply && inputs.auto_merge && steps.plan.outputs.requires_reconcile == 'true' }}
+        env:
+          GH_TOKEN: ${{ env.MODULE_UPDATE_TOKEN || steps.app-token.outputs.token }}
+          PRODUCT: ${{ inputs.product }}
+        run: |
+          set -euo pipefail
+          gh workflow run provision-coolify-advanced-development.yml --repo goodmorning-mx/goodmorning-factory --ref dev \
+            -f manifest_path="products/${PRODUCT}.json"
+          sleep 5
+          run_id="$(gh run list --repo goodmorning-mx/goodmorning-factory --workflow provision-coolify-advanced-development.yml --branch dev --limit 10 --json databaseId,event,createdAt --jq 'map(select(.event == "workflow_dispatch"))[0].databaseId')"
+          test -n "${run_id}" && test "${run_id}" != "null"
+          gh run watch "${run_id}" --repo goodmorning-mx/goodmorning-factory --exit-status
+          echo "Module resource reconciliation completed before deployment." >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Deploy DEV through controlled workflow
+        if: ${{ inputs.apply && inputs.auto_merge && inputs.deploy_dev }}
+        env:
+          GH_TOKEN: ${{ env.MODULE_UPDATE_TOKEN || steps.app-token.outputs.token }}
+          DESTINATION: ${{ inputs.destination_uuid }}
+        run: |
+          set -euo pipefail
+          test -n "${DESTINATION}" || { echo "destination_uuid is required for deploy_dev" >&2; exit 2; }
+          gh workflow run product-development.yml --repo goodmorning-mx/goodmorning-factory \
+            -f product="${{ inputs.product }}" -f operation=deploy-full \
+            -f confirmation="deploy-full:${{ inputs.product }}:dev" -f destination_uuid="${DESTINATION}"
+          echo "DEV deployment dispatched; verify its run and health checks before declaring success." >> "${GITHUB_STEP_SUMMARY}"

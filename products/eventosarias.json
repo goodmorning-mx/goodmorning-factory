@@ -1,0 +1,197 @@
+{
+  "topology": "resources-v3",
+  "product": "eventosarias",
+  "repository": "goodmorning-mx/eventosarias",
+  "branch": "dev",
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "modules": [
+    {
+      "name": "gm-mcp",
+      "version": "0.1.0",
+      "kind": "backend",
+      "backend_package": "gm-mcp",
+      "deployment_modes": ["embedded", "gateway"],
+      "default_deployment_mode": "embedded",
+      "deployment_mode": "gateway",
+      "resource_requirements": [
+        {
+          "name": "mcp-gateway",
+          "kind": "gateway",
+          "resource_name": "mcp",
+          "shared": true,
+          "deployment_modes": ["gateway"],
+          "base_directory": "/backend",
+          "dockerfile": "/Dockerfile.mcp",
+          "port": 8001,
+          "public": true,
+          "health_path": "/health"
+        }
+      ],
+      "bindings": []
+    }
+  ],
+  "applications": [
+    {
+      "name": "api",
+      "role": "api",
+      "base_directory": "/backend",
+      "dockerfile": "/Dockerfile",
+      "port": 8000,
+      "domain": "https://api.dev.eventosarias.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": []
+    },
+    {
+      "name": "frontend",
+      "role": "frontend",
+      "base_directory": "/frontend",
+      "dockerfile": "/Dockerfile",
+      "port": 80,
+      "domain": "https://dev.eventosarias.goodmorning.mx",
+      "health_path": "/",
+      "auto_deploy": true,
+      "environment": []
+    },
+    {
+      "name": "mcp",
+      "role": "gateway",
+      "base_directory": "/backend",
+      "dockerfile": "/Dockerfile.mcp",
+      "port": 8001,
+      "domain": "https://mcp.dev.eventosarias.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "APP_ENV",
+          "source": "literal",
+          "value": "dev"
+        },
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "resource": "postgres",
+          "driver": "psycopg"
+        },
+        {
+          "key": "MCP_SERVER_NAME",
+          "source": "literal",
+          "value": "Eventos Arias Read Only"
+        },
+        {
+          "key": "MCP_PUBLIC_URL",
+          "source": "literal",
+          "value": "https://mcp.dev.eventosarias.goodmorning.mx/mcp"
+        },
+        {
+          "key": "MCP_AUTH_TOKEN",
+          "source": "generated_secret"
+        },
+        {
+          "key": "MCP_ALLOWED_HOSTS",
+          "source": "literal",
+          "value": "mcp.dev.eventosarias.goodmorning.mx,mcp.dev.eventosarias.goodmorning.mx:*,127.0.0.1,127.0.0.1:*,[::1],[::1]:*"
+        },
+        {
+          "key": "MCP_ALLOWED_ORIGINS",
+          "source": "literal",
+          "value": ""
+        },
+        {
+          "key": "MCP_STATEMENT_TIMEOUT_MS",
+          "source": "literal",
+          "value": "10000"
+        }
+      ]
+    },
+    {
+      "name": "mcp-write",
+      "role": "gateway",
+      "base_directory": "/backend",
+      "dockerfile": "/Dockerfile.mcp-write",
+      "port": 8002,
+      "domain": "https://mcp-write.dev.eventosarias.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "APP_ENV",
+          "source": "literal",
+          "value": "dev"
+        },
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "resource": "postgres",
+          "driver": "psycopg"
+        },
+        {
+          "key": "MCP_WRITE_SERVER_NAME",
+          "source": "literal",
+          "value": "Eventos Arias Operaciones"
+        },
+        {
+          "key": "MCP_WRITE_PUBLIC_URL",
+          "source": "literal",
+          "value": "https://mcp-write.dev.eventosarias.goodmorning.mx/mcp"
+        },
+        {
+          "key": "MCP_WRITE_OAUTH_SECRET",
+          "source": "generated_secret"
+        },
+        {
+          "key": "MCP_WRITE_ALLOWED_HOSTS",
+          "source": "literal",
+          "value": "mcp-write.dev.eventosarias.goodmorning.mx,mcp-write.dev.eventosarias.goodmorning.mx:*,127.0.0.1,127.0.0.1:*,[::1],[::1]:*"
+        },
+        {
+          "key": "MCP_WRITE_ALLOWED_ORIGINS",
+          "source": "literal",
+          "value": ""
+        },
+        {
+          "key": "MCP_WRITE_OAUTH_ALLOWED_ROLES",
+          "source": "literal",
+          "value": "super_admin,admin,dispatcher"
+        },
+        {
+          "key": "MCP_WRITE_INTENT_TTL_SECONDS",
+          "source": "literal",
+          "value": "600"
+        },
+        {
+          "key": "MCP_WRITE_INVITATION_TTL_SECONDS",
+          "source": "literal",
+          "value": "86400"
+        },
+        {
+          "key": "MCP_WRITE_INVITATION_BASE_URL",
+          "source": "literal",
+          "value": "https://api.dev.eventosarias.goodmorning.mx/api/v1/invitations"
+        }
+      ]
+    }
+  ],
+  "databases": [
+    {
+      "name": "postgres",
+      "engine": "postgresql",
+      "version": "16",
+      "image": "postgres:16-alpine",
+      "public": false,
+      "backup": true
+    }
+  ],
+  "redis": [],
+  "backup": {
+    "enabled": true,
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
+    "frequency": "0 3 * * *",
+    "local_retention_count": 1,
+    "local_retention_days": 1,
+    "s3_retention_count": 7,
+    "s3_retention_days": 7,
+    "timeout_seconds": 1800
+  }
+}

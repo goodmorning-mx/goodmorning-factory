@@ -5,6 +5,7 @@ Coolify is the default hosting control plane for GoodMorning development and pro
 ## Branch deployment contract
 
 - `dev` deploys to development or staging environments.
+- Development applications must use `instant_deploy=true` and `is_auto_deploy_enabled=true`; every push or merge to `dev` is eligible for an automatic Coolify deployment.
 - `main` deploys to production environments.
 - Production deployments must come from the release pull request flow from `dev` to `main`.
 

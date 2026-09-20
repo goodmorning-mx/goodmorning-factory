@@ -1,0 +1,263 @@
+name: Promote one advanced GoodMorning product to production
+
+on:
+  repository_dispatch:
+    types:
+      - promote-advanced-product
+  workflow_dispatch:
+    inputs:
+      manifest_path:
+        description: Exact production/<product>.json resources-v3-production manifest.
+        required: true
+        type: string
+      confirmation:
+        description: Type deploy:<product>:production exactly.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: goodmorning-factory-advanced-production-${{ github.event.client_payload.product || inputs.manifest_path }}
+  cancel-in-progress: false
+
+jobs:
+  reconcile-production:
+    name: Reconcile one advanced production product
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    environment: production
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'localhost' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0' }}
+      COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
+      GOODMORNING_MANAGED_OPENAI_API_KEY: ${{ secrets.GOODMORNING_MANAGED_OPENAI_API_KEY }}
+      OCI_S3_ACCESS_KEY: ${{ secrets.OCI_S3_ACCESS_KEY }}
+      OCI_S3_SECRET_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+      OCI_S3_BUCKET: ${{ vars.OCI_S3_BUCKET }}
+      OCI_S3_REGION: ${{ vars.OCI_S3_REGION }}
+      OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
+    steps:
+      - name: Check out reviewed Factory dev
+        uses: actions/checkout@v4
+        with:
+          ref: dev
+          persist-credentials: false
+
+      - name: Resolve production product repository scope
+        id: scope
+        shell: bash
+        env:
+          REQUESTED_MANIFEST: ${{ inputs.manifest_path }}
+          EVENT_PRODUCT: ${{ github.event.client_payload.product }}
+          EVENT_MANIFEST_PATH: ${{ github.event.client_payload.manifest_path }}
+        run: |
+          set -euo pipefail
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            product="${EVENT_PRODUCT}"
+            manifest="${EVENT_MANIFEST_PATH}"
+          else
+            manifest="${REQUESTED_MANIFEST}"
+            [[ "${manifest}" =~ ^production/[a-z0-9][a-z0-9-]*\.json$ ]]
+            product="$(jq -er '.product' "${manifest}")"
+          fi
+          [[ "${product}" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          test "${manifest}" = "production/${product}.json"
+          test -f "${manifest}"
+          test "$(jq -er '.product' "${manifest}")" = "${product}"
+          test "$(jq -er '.repository' "${manifest}")" = "goodmorning-mx/${product}"
+          echo "product=${product}" >> "${GITHUB_OUTPUT}"
+
+      - name: Create source verification token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
+          private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
+          owner: goodmorning-mx
+          repositories: goodmorning-factory,${{ steps.scope.outputs.product }}
+          permission-actions: read
+          permission-contents: read
+
+      - name: Validate production release authorization
+        id: authorize
+        shell: bash
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REQUESTED_MANIFEST: ${{ inputs.manifest_path }}
+          REQUESTED_CONFIRMATION: ${{ inputs.confirmation }}
+          EVENT_PRODUCT: ${{ github.event.client_payload.product }}
+          EVENT_REPOSITORY: ${{ github.event.client_payload.repository }}
+          EVENT_SOURCE_BRANCH: ${{ github.event.client_payload.source_branch }}
+          EVENT_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
+          EVENT_SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id }}
+          EVENT_MANIFEST_PATH: ${{ github.event.client_payload.manifest_path }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${GH_TOKEN}"
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            product="${EVENT_PRODUCT}"
+            repository="${EVENT_REPOSITORY}"
+            source_branch="${EVENT_SOURCE_BRANCH}"
+            source_sha="${EVENT_SOURCE_SHA}"
+            source_run_id="${EVENT_SOURCE_RUN_ID}"
+            manifest="${EVENT_MANIFEST_PATH}"
+            test "${manifest}" = "production/${product}.json"
+            [[ "${source_run_id}" =~ ^[0-9]+$ ]]
+          else
+            manifest="${REQUESTED_MANIFEST}"
+            [[ "${manifest}" =~ ^production/[a-z0-9][a-z0-9-]*\.json$ ]]
+            product="$(jq -er '.product' "${manifest}")"
+            repository="$(jq -er '.repository' "${manifest}")"
+            source_branch="main"
+            source_sha="$(gh api "/repos/${repository}/branches/main" --jq '.commit.sha')"
+            source_run_id=""
+            test "${REQUESTED_CONFIRMATION}" = "deploy:${product}:production"
+          fi
+          [[ "${product}" =~ ^[a-z0-9][a-z0-9-]*$ ]]
+          test "${repository}" = "goodmorning-mx/${product}"
+          test "${source_branch}" = "main"
+          [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
+          test -f "${manifest}"
+          test "$(jq -er '.topology' "${manifest}")" = "resources-v3-production"
+          test "$(jq -er '.product' "${manifest}")" = "${product}"
+          test "$(jq -er '.repository' "${manifest}")" = "${repository}"
+          test "$(jq -er '.branch' "${manifest}")" = "main"
+          test "$(jq -r '.confirm_production // false' "${manifest}")" = "true"
+          current_sha="$(gh api "/repos/${repository}/branches/main" --jq '.commit.sha')"
+          test "${current_sha}" = "${source_sha}"
+          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+            test "$(jq -r '.promotion_policy // empty' "${manifest}")" = "auto-on-main"
+            run_json="$(gh api "/repos/${repository}/actions/runs/${source_run_id}")"
+            test "$(jq -r '.name' <<<"${run_json}")" = "CI"
+            test "$(jq -r '.event' <<<"${run_json}")" = "push"
+            test "$(jq -r '.conclusion' <<<"${run_json}")" = "success"
+            test "$(jq -r '.head_branch' <<<"${run_json}")" = "main"
+            test "$(jq -r '.head_sha' <<<"${run_json}")" = "${source_sha}"
+          fi
+          test -n "${COOLIFY_BASE_URL:-}"
+          test -n "${COOLIFY_API_TOKEN:-}"
+          test "${COOLIFY_ALLOW_REAL_DEPLOYMENT:-}" = "true"
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+          {
+            echo "manifest=${manifest}"
+            echo "product=${product}"
+            echo "source_sha=${source_sha}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Plan production changes read-only
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          plan_file="${RUNNER_TEMP}/production-plan.json"
+          python scripts/reconcile_advanced_product.py \
+            --manifest "${{ steps.authorize.outputs.manifest }}" \
+            --phase plan \
+            --server "${COOLIFY_SERVER_NAME}" \
+            --destination-uuid "${COOLIFY_DESTINATION_UUID}" | tee "${plan_file}"
+          if jq -e '.actions[] | select(.kind == "database" and .action == "would_create")' "${plan_file}" >/dev/null; then
+            echo "needs_bootstrap=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "needs_bootstrap=false" >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Bootstrap missing production resources without deployment
+        if: steps.plan.outputs.needs_bootstrap == 'true'
+        shell: bash
+        env:
+          COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES: "true"
+        run: |
+          python scripts/reconcile_advanced_product.py \
+            --manifest "${{ steps.authorize.outputs.manifest }}" \
+            --phase apply \
+            --server "${COOLIFY_SERVER_NAME}" \
+            --destination-uuid "${COOLIFY_DESTINATION_UUID}" \
+            --confirm-product "${{ steps.authorize.outputs.product }}" \
+            --confirm-environment production
+
+      - name: Verify pre-deployment production backup
+        shell: bash
+        run: |
+          echo "::add-mask::${OCI_S3_ACCESS_KEY}"
+          echo "::add-mask::${OCI_S3_SECRET_KEY}"
+          python scripts/reconcile_database_backups.py \
+            --manifest "${{ steps.authorize.outputs.manifest }}" \
+            --backup-now true
+
+      - name: Apply and deploy exact advanced production topology
+        shell: bash
+        env:
+          COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES: "true"
+        run: |
+          python scripts/reconcile_advanced_product.py \
+            --manifest "${{ steps.authorize.outputs.manifest }}" \
+            --phase apply \
+            --server "${COOLIFY_SERVER_NAME}" \
+            --destination-uuid "${COOLIFY_DESTINATION_UUID}" \
+            --confirm-product "${{ steps.authorize.outputs.product }}" \
+            --confirm-environment production \
+            --deploy
+
+      - name: Smoke every public production application
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="${{ steps.authorize.outputs.manifest }}"
+          while IFS=$'\t' read -r domain health_path; do
+            target="${domain}${health_path}"
+            curl --fail --silent --show-error \
+              --retry 30 --retry-delay 10 --retry-all-errors \
+              --max-time 20 "${target}" >/dev/null
+          done < <(jq -r '.applications[] | select(.domain != null) | [.domain, .health_path] | @tsv' "${manifest}")
+
+      - name: Verify product database migration through the API
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest="${{ steps.authorize.outputs.manifest }}"
+          api_domain="$(jq -er '.applications[] | select(.role == "api") | .domain' "${manifest}")"
+          probe="${api_domain}/api/v1/invitations/factory-migration-probe-${{ steps.authorize.outputs.source_sha }}"
+          status=""
+          for attempt in $(seq 1 30); do
+            status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 20 "${probe}" || true)"
+            if [ "${status}" = "404" ]; then break; fi
+            sleep 10
+          done
+          test "${status}" = "404"
+
+      - name: Verify post-deployment production backup
+        shell: bash
+        run: |
+          python scripts/reconcile_database_backups.py \
+            --manifest "${{ steps.authorize.outputs.manifest }}" \
+            --backup-now true
+
+      - name: Publish production summary
+        if: success()
+        shell: bash
+        run: |
+          {
+            echo "## Advanced production promotion verified"
+            echo
+            echo "- Product: \`${{ steps.authorize.outputs.product }}\`"
+            echo "- Source: \`${{ steps.authorize.outputs.source_sha }}\`"
+            echo "- Every public health contract passed"
+            echo "- MCP security migration was exercised through the production API"
+            echo "- Pre/post deployment backups verified"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Report sanitized production failure
+        if: failure()
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="[automation] GoodMorning advanced production reconciliation failed"
+          body="Advanced production reconciliation failed: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          existing="$(gh issue list --state open --search "${title} in:title" --json number --jq '.[0].number // empty')"
+          if [ -n "${existing}" ]; then gh issue comment "${existing}" --body "${body}"; else gh issue create --title "${title}" --body "${body}"; fi

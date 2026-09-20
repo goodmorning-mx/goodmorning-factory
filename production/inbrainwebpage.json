@@ -1,0 +1,118 @@
+{
+  "topology": "resources-v3-production",
+  "product": "inbrainwebpage",
+  "repository": "goodmorning-mx/inbrainwebpage",
+  "branch": "main",
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "legacy": null,
+  "migration": {
+    "from_topology": "resources-v2-production",
+    "mode": "adopt-in-place",
+    "retain": true,
+    "resource_names": {
+      "applications": [
+        "inbrainwebpage-api-prod",
+        "inbrainwebpage-frontend-prod"
+      ],
+      "databases": [
+        "inbrainwebpage-postgres-prod"
+      ],
+      "redis": []
+    },
+    "preserve": [
+      "resources",
+      "uuids",
+      "databases",
+      "volumes",
+      "domains",
+      "secrets",
+      "configuration"
+    ]
+  },
+  "connections": [],
+  "domain_bindings": [
+    {
+      "apex": "inbrainmedical.com",
+      "aliases": [
+        "www.inbrainmedical.com"
+      ],
+      "application": "frontend",
+      "environment": "production",
+      "desired_state": "active"
+    }
+  ],
+  "modules": [],
+  "module_dependency_order": [],
+  "resource_ownership": [],
+  "applications": [
+    {
+      "name": "api",
+      "role": "api",
+      "base_directory": "/backend",
+      "dockerfile": "/Dockerfile",
+      "port": 8000,
+      "domain": "https://api.inbrainwebpage.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "APP_NAME",
+          "source": "literal",
+          "value": "InBrain Neuromedical API"
+        },
+        {
+          "key": "APP_ENV",
+          "source": "literal",
+          "value": "production"
+        },
+        {
+          "key": "CORS_ORIGINS",
+          "source": "literal",
+          "value": "https://inbrainwebpage.goodmorning.mx"
+        },
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "resource": "postgres",
+          "driver": "psycopg"
+        }
+      ],
+      "dependencies": []
+    },
+    {
+      "name": "frontend",
+      "role": "frontend",
+      "base_directory": "/frontend",
+      "dockerfile": "/Dockerfile",
+      "port": 80,
+      "domain": "https://inbrainwebpage.goodmorning.mx",
+      "health_path": "/",
+      "auto_deploy": true,
+      "environment": [],
+      "dependencies": []
+    }
+  ],
+  "databases": [
+    {
+      "name": "postgres",
+      "engine": "postgresql",
+      "version": "16",
+      "image": "postgres:16-alpine",
+      "public": false,
+      "backup": true
+    }
+  ],
+  "redis": [],
+  "backup": {
+    "enabled": true,
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
+    "frequency": "0 2 * * *",
+    "local_retention_count": 2,
+    "local_retention_days": 2,
+    "s3_retention_count": 30,
+    "s3_retention_days": 30,
+    "timeout_seconds": 1800
+  },
+  "confirm_production": true,
+  "promotion_policy": "auto-on-main"
+}
