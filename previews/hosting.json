@@ -44,8 +44,8 @@
       "port": 8000,
       "domain": "https://api.dev.hosting.goodmorning.mx",
       "custom_domains": [
-        "https://environtx-com.dev.hosting.goodmorning.mx",
-        "https://hipposburgers-com.dev.hosting.goodmorning.mx"
+        "https://environtx-preview.dev.hosting.goodmorning.mx",
+        "https://hipposburgers-preview.dev.hosting.goodmorning.mx"
       ],
       "health_path": "/health",
       "auto_deploy": true,
