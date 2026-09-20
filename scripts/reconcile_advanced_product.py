@@ -12,6 +12,7 @@ import argparse
 import base64
 import json
 import os
+import re
 import secrets
 import sys
 import time
@@ -491,7 +492,7 @@ def _legacy_environment(client: Coolify, manifest: dict[str, Any]) -> dict[str, 
     return values
 
 
-def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context: dict[str, str | None]) -> dict[str, Any]:
+def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context: dict[str, str | None], preview_source: dict[str, str] | None = None) -> dict[str, Any]:
     product = manifest["product"]
     environment_name = _environment(manifest)
     suffix = _suffix(manifest)
@@ -511,7 +512,8 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         "destination_uuid": context["destination_uuid"],
         "github_app_uuid": context["github_app_uuid"],
         "git_repository": manifest["repository"],
-        "git_branch": manifest["branch"],
+        "git_branch": preview_source["branch"] if preview_source else manifest["branch"],
+        **({"git_commit_sha": preview_source["sha"]} if preview_source else {}),
         "build_pack": "dockerfile",
         "base_directory": app["base_directory"],
         "dockerfile_location": app["dockerfile"],
@@ -522,8 +524,8 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         "domains": ",".join(domains),
         # Native Coolify auto-deploy is part of the v3 desired state.  The
         # initial create may still be followed by an explicit deploy request.
-        "instant_deploy": True,
-        "is_auto_deploy_enabled": True,
+        "instant_deploy": False if preview_source else True,
+        "is_auto_deploy_enabled": False if preview_source else True,
         "autogenerate_domain": False,
         "connect_to_docker_network": True,
         "health_check_enabled": role != "worker",
@@ -539,6 +541,7 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
 def _application_mutable_changes(found: dict[str, Any], expected: dict[str, Any], app: dict[str, Any]) -> dict[str, Any]:
     mutable_fields = (
         "domains",
+        *( ("git_commit_sha",) if "git_commit_sha" in expected else () ),
         "instant_deploy",
         "is_auto_deploy_enabled",
         "autogenerate_domain",
@@ -640,6 +643,7 @@ def _ensure_applications(
     legacy_values: dict[str, str],
     actions: list[dict[str, Any]],
     deploy: bool,
+    preview_source: dict[str, str] | None = None,
 ) -> None:
     deployment_ids: list[str] = []
     product = manifest["product"]
@@ -688,18 +692,18 @@ def _ensure_applications(
                         "resource": name,
                         "kind": "application",
                         "action": "would_create",
-                        "payload": _redacted(_application_payload(manifest, app, context)),
+                        "payload": _redacted(_application_payload(manifest, app, context, preview_source)),
                     }
                 )
                 continue
-            created = client.post("/applications/private-github-app", _application_payload(manifest, app, context))
+            created = client.post("/applications/private-github-app", _application_payload(manifest, app, context, preview_source))
             identifier = _uuid(created, "application")
             found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
             actions.append({"resource": name, "kind": "application", "action": "created"})
         else:
             identifier = _uuid(found, "application")
             found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
-            expected = _application_payload(manifest, app, context)
+            expected = _application_payload(manifest, app, context, preview_source)
             for key in ("git_repository", "git_branch", "build_pack", "base_directory", "dockerfile_location", "ports_exposes"):
                 actual = str(_field(found, key) or "")
                 if key == "git_repository":
@@ -787,9 +791,19 @@ def reconcile(
     confirm_product: str | None,
     confirm_environment: str | None = None,
     deploy: bool = False,
+    preview_source: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     product = manifest["product"]
     environment_name = _environment(manifest)
+    if preview_source is not None:
+        # Explicit, narrow DEV exception for the unmerged Hosting MVP. The
+        # caller verifies the source SHA and PR in GitHub before any write.
+        if (product != "hosting" or manifest["repository"] != "goodmorning-mx/hosting"
+                or environment_name != "dev" or manifest["branch"] != "dev"
+                or set(preview_source) != {"branch", "sha"}
+                or preview_source["branch"] != "feature/hosting-mvp"
+                or not re.fullmatch(r"[0-9a-f]{40}", preview_source["sha"])):
+            raise ReconcileError("Preview source is restricted to the pinned Hosting DEV MVP.")
     if client.apply:
         switch = (
             "COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES"
@@ -826,6 +840,7 @@ def reconcile(
         legacy_values,
         actions,
         deploy,
+        preview_source,
     )
     return {
         "status": "applied" if client.apply else "planned",
