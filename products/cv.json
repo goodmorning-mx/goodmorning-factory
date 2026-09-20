@@ -3,7 +3,7 @@
   "repository": "goodmorning-mx/cv",
   "branch": "dev",
   "compose": "/compose.yaml",
-  "development_domain": "legacy.cv.goodmorning.mx",
+  "development_domain": "dev.legacy.cv.goodmorning.mx",
   "coolify_github_app_name": "goodmorning-mx-coolify",
   "reconcile_revision": 2
 }
