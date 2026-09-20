@@ -70,6 +70,16 @@
           "key": "SITES_DOMAIN",
           "source": "literal",
           "value": "sites.goodmorning.mx"
+        },
+        {
+          "key": "ADMIN_BOOTSTRAP_PASSWORD_HASH",
+          "source": "managed_secret",
+          "binding": "HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH"
+        },
+        {
+          "key": "ADMIN_BOOTSTRAP_EMAIL",
+          "source": "literal",
+          "value": "mastertreck@goodmorning.mx"
         }
       ],
       "persistent_volume": {

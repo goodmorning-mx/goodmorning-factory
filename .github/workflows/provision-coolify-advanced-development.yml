@@ -267,6 +267,7 @@ jobs:
       COOLIFY_BACKUP_STORAGE_UUID: ${{ vars.COOLIFY_BACKUP_STORAGE_UUID }}
       COOLIFY_ALLOW_ADVANCED_WRITES: 'true'
       PREVIEW_SHA: ${{ inputs.hosting_preview_sha }}
+      HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH: ${{ secrets.HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH }}
     steps:
       - uses: actions/checkout@v4
         with:
