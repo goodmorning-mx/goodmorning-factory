@@ -16,6 +16,10 @@ on:
       - ".github/workflows/provision-coolify-advanced-development.yml"
   workflow_dispatch:
     inputs:
+      hosting_preview_sha:
+        description: Optional exact Hosting feature/hosting-mvp SHA; DEV preview only, no catalog writes.
+        required: false
+        type: string
       manifest_path:
         description: Optional single resources-v3 manifest.
         required: false
@@ -31,6 +35,7 @@ concurrency:
 
 jobs:
   reconcile:
+    if: ${{ inputs.hosting_preview_sha == '' }}
     name: Reconcile resources-v3
     runs-on: ubuntu-latest
     timeout-minutes: 75
@@ -248,3 +253,37 @@ jobs:
           else
             gh issue create --title "${title}" --body "${body}"
           fi
+
+  hosting-preview:
+    if: ${{ github.event_name == 'workflow_dispatch' && inputs.hosting_preview_sha != '' && github.ref == 'refs/heads/feature/hosting-mvp' }}
+    name: Hosting DEV preview
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_SERVER_NAME: ${{ vars.COOLIFY_SERVER_NAME || 'localhost' }}
+      COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID }}
+      COOLIFY_BACKUP_STORAGE_UUID: ${{ vars.COOLIFY_BACKUP_STORAGE_UUID }}
+      COOLIFY_ALLOW_ADVANCED_WRITES: 'true'
+      PREVIEW_SHA: ${{ inputs.hosting_preview_sha }}
+      HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH: ${{ secrets.HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/create-github-app-token@v2
+        id: preview-token
+        with:
+          app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
+          private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
+          owner: goodmorning-mx
+          repositories: hosting
+      - name: Validate and plan exact preview
+        env:
+          GH_TOKEN: ${{ steps.preview-token.outputs.token }}
+        run: python3 -m scripts.provision_hosting_preview --sha "$PREVIEW_SHA"
+      - name: Provision and verify exact DEV preview
+        env:
+          GH_TOKEN: ${{ steps.preview-token.outputs.token }}
+        run: python3 -m scripts.provision_hosting_preview --sha "$PREVIEW_SHA" --apply
