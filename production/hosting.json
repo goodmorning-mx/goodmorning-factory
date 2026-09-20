@@ -51,8 +51,10 @@
         "https://nysweety.hosting.goodmorning.mx",
         "https://vitaliahemodialisis.hosting.goodmorning.mx",
         "https://capitalqualitydemexico.hosting.goodmorning.mx",
-        "https://impulsemexico.hosting.goodmorning.mx"
-        ,"https://inbrainwebpage.hosting.goodmorning.mx"
+        "https://impulsemexico.hosting.goodmorning.mx",
+        "https://inbrainwebpage.hosting.goodmorning.mx",
+        "https://inbrainwebpage.goodmorning.mx",
+        "https://vitaliahemodialisis.com"
       ],
       "health_path": "/health",
       "auto_deploy": true,
