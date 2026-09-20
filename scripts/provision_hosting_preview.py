@@ -5,6 +5,7 @@ No catalog writes, Git ref updates, merges, production or foreign resources.
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 from scripts.advanced_product_contract import validate_manifest
@@ -32,11 +33,19 @@ def main():
     if not expected.issubset({c['name'] for c in checks if c['conclusion']=='success'}):
         raise ReconcileError('All product CI checks must pass on this SHA before preview.')
     raw=json.loads(Path('previews/hosting.json').read_text())
-    raw['backup']['storage_uuid']=os.environ['COOLIFY_BACKUP_STORAGE_UUID']
+    raw['backup']['storage_uuid']=os.environ.get('COOLIFY_BACKUP_STORAGE_UUID') or json.loads(Path('products/workspace.json').read_text())['backup']['storage_uuid']
+    destination=os.environ.get('COOLIFY_DESTINATION_UUID')
+    if not destination:
+        # Reuse the already reviewed Factory-wide default; never invent an ID.
+        workflow=Path('.github/workflows/create-product.yml').read_text()
+        match=re.search(r"vars\.COOLIFY_RESOURCES_DESTINATION_UUID \|\| '([a-z0-9]+)'",workflow)
+        if not match:
+            raise ReconcileError('No reviewed Factory destination is configured.')
+        destination=match.group(1)
     manifest=validate_manifest(raw)
     client=Coolify(os.environ['COOLIFY_BASE_URL'],os.environ['COOLIFY_API_TOKEN'],apply=args.apply)
     result=reconcile(manifest,client=client,server_name=os.environ.get('COOLIFY_SERVER_NAME','localhost'),
-        destination_uuid=os.environ['COOLIFY_DESTINATION_UUID'],confirm_product='hosting',confirm_environment='dev',
+        destination_uuid=destination,confirm_product='hosting',confirm_environment='dev',
         deploy=args.apply,preview_source={'branch':'feature/hosting-mvp','sha':args.sha})
     # Report only public names/actions; no infrastructure identifiers.
     print(json.dumps({'status':result['status'],'product':'hosting','source_sha':args.sha,
