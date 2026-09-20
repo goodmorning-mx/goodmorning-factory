@@ -308,7 +308,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         allowed_app = {
             "name", "role", "dockerfile", "port", "domain", "health_path",
             "environment", "persistent_volume", "auto_deploy", "base_directory",
-            "dependencies",
+            "dependencies", "custom_domains",
         }
         _require(set(item) <= allowed_app, "Unknown application field.")
         name = item.get("name")
@@ -362,7 +362,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
                 **item,
                 "base_directory": base_directory,
                 "domain": domain,
-                "custom_domains": [],
+                "custom_domains": list(item.get("custom_domains", [])),
                 "environment": environment,
                 "dependencies": dependencies,
             }

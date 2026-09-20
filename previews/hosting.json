@@ -43,6 +43,7 @@
       "dockerfile": "/Dockerfile",
       "port": 8000,
       "domain": "https://api.dev.hosting.goodmorning.mx",
+      "custom_domains": ["https://*.dev.hosting.goodmorning.mx"],
       "health_path": "/health",
       "auto_deploy": true,
       "environment": [
