@@ -298,15 +298,21 @@ def _verify_adopted_uuid(manifest: dict[str, Any], kind: str, resource_name: str
         )
 
 
+def _coolify_project_name(product: str) -> str:
+    """Keep short product slugs while satisfying Coolify's project-name minimum."""
+    return product if len(product) >= 3 else f"{product}-app"
+
+
 def _discover_context(client: Coolify, manifest: dict[str, Any], server_name: str, github_app_name: str, destination_uuid: str) -> dict[str, str | None]:
     product = manifest["product"]
+    project_name = _coolify_project_name(product)
     environment_name = _environment(manifest)
     servers = _items(client.get("/servers"))
     server = _unique(servers, server_name, "server")
     if not server:
         raise ReconcileError(f"Coolify server {server_name!r} was not found.")
     projects = _items(client.get("/projects"))
-    project = _unique(projects, product, "project")
+    project = _unique(projects, project_name, "project")
     environment = None
     if project:
         project_uuid = _uuid(project, "project")
@@ -332,7 +338,7 @@ def _ensure_project_environment(client: Coolify, manifest: dict[str, Any], conte
         if not client.apply:
             actions.append({"resource": product, "kind": "project", "action": "would_create"})
             return
-        created = client.post("/projects", {"name": product, "description": f"GoodMorning {product} resources-v3 project."})
+        created = client.post("/projects", {"name": _coolify_project_name(product), "description": f"GoodMorning {product} resources-v3 project."})
         context["project_uuid"] = _uuid(created, "project")
         actions.append({"resource": product, "kind": "project", "action": "created"})
     else:
