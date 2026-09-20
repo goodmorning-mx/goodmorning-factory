@@ -31,7 +31,7 @@ class HostingPreviewTests(unittest.TestCase):
         self.assertFalse(result['instant_deploy'])
         self.assertFalse(result['is_auto_deploy_enabled'])
         self.assertEqual(result['environment_name'],'dev')
-        self.assertEqual(result['custom_docker_run_options'],'--mount source=hosting-backend-data,target=/app/data')
+        self.assertEqual(result['custom_docker_run_options'],'--mount type=volume,source=hosting-backend-data,target=/app/data')
         normal=_application_payload(base(),app,context)
         self.assertEqual(normal['git_branch'],'dev')
         self.assertTrue(normal['is_auto_deploy_enabled'])
