@@ -133,7 +133,7 @@
   "redis": [],
   "backup": {
     "enabled": true,
-    "storage_uuid": "RUNTIME_BACKUP_STORAGE_UUID",
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
     "frequency": "0 3 * * *",
     "local_retention_count": 1,
     "local_retention_days": 1,
