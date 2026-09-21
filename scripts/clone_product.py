@@ -59,6 +59,13 @@ def token() -> str:
     return value
 
 
+def git_token() -> str:
+    value = os.environ.get("GIT_TOKEN") or os.environ.get("GH_TOKEN")
+    if not value:
+        raise CloneError("GIT_TOKEN or GH_TOKEN is required and must not be passed as a command-line argument.")
+    return value
+
+
 def github(method: str, path: str, body: dict[str, Any] | None = None) -> Any:
     raw = None if body is None else json.dumps(body).encode()
     request = urllib.request.Request(
@@ -208,7 +215,7 @@ def derive_manifest(source: str, destination: str, source_manifest: dict[str, An
 def run(command: list[str], cwd: Path | None = None) -> None:
     environment = os.environ.copy()
     environment["GIT_TERMINAL_PROMPT"] = "0"
-    token_value = token()
+    token_value = git_token()
     basic = base64.b64encode(f"x-access-token:{token_value}".encode()).decode()
     header = f"AUTHORIZATION: basic {basic}"
     command = ["git", "-c", f"http.extraHeader={header}", *command]
