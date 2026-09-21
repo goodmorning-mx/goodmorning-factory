@@ -82,7 +82,7 @@ jobs:
           jq -e --arg slug "${DESTINATION_SLUG}" '.product == $slug and .repository == ("goodmorning-mx/" + $slug) and (.legacy == null) and (.migration == null)' "products/${DESTINATION_SLUG}.json"
       - name: Open Factory manifest PR
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
           DESTINATION_SLUG: ${{ inputs.destination_slug }}
           SOURCE_PRODUCT: ${{ inputs.source_product }}
         run: |
@@ -97,4 +97,4 @@ jobs:
           git -c "http.extraHeader=AUTHORIZATION: basic ${git_auth}" push origin "${branch}"
           gh pr create --base dev --head "${branch}" \
             --title "factory: clone ${DESTINATION_SLUG} from ${SOURCE_PRODUCT}" \
-            --body "Automated DEV clone. Source: `${SOURCE_PRODUCT}`. The repository contains source code only; the manifest provisions an independent empty database and DEV resources."
+            --body "Automated DEV clone. Source: ${SOURCE_PRODUCT}. The repository contains source code only; the manifest provisions an independent empty database and DEV resources."
