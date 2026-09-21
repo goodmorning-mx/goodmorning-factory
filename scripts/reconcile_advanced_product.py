@@ -44,6 +44,8 @@ SUCCESS_DEPLOYMENT = {"finished"}
 SENSITIVE_NAME = ("PASSWORD", "SECRET", "TOKEN", "KEY", "DATABASE_URL", "REDIS_URL")
 MANAGED_SECRET_BINDINGS = {
     "goodmorning/openai-default": "GOODMORNING_MANAGED_OPENAI_API_KEY",
+    "goodmorning/stripe-secret-key": "GOODMORNING_MANAGED_STRIPE_SECRET_KEY",
+    "goodmorning/stripe-webhook-secret": "GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET",
     "hosting/admin-bootstrap-password-hash": "HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH",
 }
 

@@ -44,7 +44,11 @@ POST_FRONTEND_APPLICATION_CREATE = "/applications/private-github-app"
 FRONTEND_ENV_KEYS = {"VITE_API_URL"}
 BACKEND_ENV_KEYS = {"DATABASE_URL", "APP_ENV", "CORS_ORIGINS"}
 BACKEND_CORE_ENV_KEYS = BACKEND_ENV_KEYS
-MANAGED_SECRET_BINDINGS = {"goodmorning/openai-default": "GOODMORNING_MANAGED_OPENAI_API_KEY"}
+MANAGED_SECRET_BINDINGS = {
+    "goodmorning/openai-default": "GOODMORNING_MANAGED_OPENAI_API_KEY",
+    "goodmorning/stripe-secret-key": "GOODMORNING_MANAGED_STRIPE_SECRET_KEY",
+    "goodmorning/stripe-webhook-secret": "GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET",
+}
 APPROVED_BACKEND_APPLICATION_FIELDS = {"name", "project_uuid", "environment_uuid", "environment_name", "server_uuid", "destination_uuid", "github_app_uuid", "git_repository", "git_branch", "build_pack", "base_directory", "dockerfile_location", "ports_exposes", "domains", "instant_deploy", "is_auto_deploy_enabled", "autogenerate_domain", "health_check_enabled", "health_check_path", "health_check_port", "health_check_method", "health_check_scheme", "health_check_return_code"}
 APPROVED_BACKEND_ENV_FIELDS = {"key", "value", "is_runtime", "is_buildtime", "is_preview", "is_literal", "is_multiline", "is_shown_once"}
 APPROVED_FRONTEND_APPLICATION_FIELDS = APPROVED_BACKEND_APPLICATION_FIELDS
