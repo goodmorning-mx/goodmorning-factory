@@ -158,7 +158,10 @@ def coolify_preflight(destination: str, manifest: dict[str, Any]) -> None:
             for item in manifest.get(kind, [])
         }
         expected_names.update(f"{destination}-{item['name']}-dev" for item in manifest.get("applications", []))
-        for endpoint in ("/applications", "/databases", "/redis"):
+        endpoints = ["/applications", "/databases"]
+        if manifest.get("redis"):
+            endpoints.append("/redis")
+        for endpoint in endpoints:
             for item in _items(client.get(endpoint)):
                 if str(item.get("name") or "") in expected_names:
                     raise CloneError(f"Coolify resource {item['name']!r} already exists.")
