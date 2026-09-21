@@ -505,6 +505,7 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
     product = manifest["product"]
     environment_name = _environment(manifest)
     suffix = _suffix(manifest)
+    resource_name = f"{product}-{app['name']}-{suffix}"
     role = app["role"]
     volume = app.get("persistent_volume")
     run_options = ""
@@ -513,7 +514,7 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
     domains = [app["domain"]] if app["domain"] else []
     domains.extend(app.get("custom_domains", []))
     return {
-        "name": f"{product}-{app['name']}-{suffix}",
+        "name": resource_name,
         "project_uuid": context["project_uuid"],
         "environment_uuid": context["environment_uuid"],
         "environment_name": environment_name,
@@ -544,12 +545,17 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         "health_check_scheme": "http",
         "health_check_return_code": 200,
         "custom_docker_run_options": run_options,
+        # Coolify's shared Docker network uses generated container names by
+        # default. Declare the stable Resources V3 name as an alias so
+        # gateway/service bindings can resolve private application upstreams.
+        "custom_network_aliases": resource_name,
     }
 
 
 def _application_mutable_changes(found: dict[str, Any], expected: dict[str, Any], app: dict[str, Any]) -> dict[str, Any]:
     mutable_fields = (
         "domains",
+        "custom_network_aliases",
         *( ("git_commit_sha",) if "git_commit_sha" in expected else () ),
         "instant_deploy",
         "is_auto_deploy_enabled",
