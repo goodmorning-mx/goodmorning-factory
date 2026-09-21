@@ -93,7 +93,8 @@ jobs:
           git switch --create "${branch}"
           git add "products/${DESTINATION_SLUG}.json"
           git commit -m "factory: register clone ${DESTINATION_SLUG} from ${SOURCE_PRODUCT}"
-          git -c "http.extraHeader=AUTHORIZATION: bearer ${GH_TOKEN}" push origin "${branch}"
+          git_auth="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${git_auth}" push origin "${branch}"
           gh pr create --base dev --head "${branch}" \
             --title "factory: clone ${DESTINATION_SLUG} from ${SOURCE_PRODUCT}" \
             --body "Automated DEV clone. Source: `${SOURCE_PRODUCT}`. The repository contains source code only; the manifest provisions an independent empty database and DEV resources."
