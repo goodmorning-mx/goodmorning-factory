@@ -20,7 +20,10 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from scripts.advanced_product_contract import ContractError, validate_manifest
+try:
+    from scripts.advanced_product_contract import ContractError, validate_manifest
+except ModuleNotFoundError:  # Direct execution from the scripts directory.
+    from advanced_product_contract import ContractError, validate_manifest
 
 API = "https://api.github.com"
 ORG = "goodmorning-mx"
@@ -139,7 +142,10 @@ def coolify_preflight(destination: str, manifest: dict[str, Any]) -> None:
     if not base_url or not coolify_token:
         raise CloneError("COOLIFY_BASE_URL and COOLIFY_API_TOKEN are required for destination preflight.")
     try:
-        from scripts.reconcile_advanced_product import Coolify, _items, _coolify_project_name
+        try:
+            from scripts.reconcile_advanced_product import Coolify, _items, _coolify_project_name
+        except ModuleNotFoundError:
+            from reconcile_advanced_product import Coolify, _items, _coolify_project_name
 
         client = Coolify(base_url, coolify_token, apply=False)
         project_name = _coolify_project_name(destination)
