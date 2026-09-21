@@ -128,8 +128,14 @@ def load_source_manifest(source: str, path: Path) -> dict[str, Any]:
         raise CloneError(f"Invalid source manifest {path}: {exc}") from exc
     if manifest.get("product") != source or manifest.get("repository") != f"{ORG}/{source}":
         raise CloneError("Source manifest identity does not match source product.")
-    if manifest.get("legacy") or manifest.get("migration"):
-        raise CloneError("Cloning a legacy or migration manifest is refused; use a clean resources-v3 product.")
+    if manifest.get("legacy"):
+        raise CloneError("Cloning a legacy manifest is refused; use a resources-v3 product.")
+    # A resources-v3 product may retain migration metadata describing the
+    # previous resources-v2 adoption.  It is safe to clone the v3 contract as
+    # long as the derived manifest drops that historical metadata (including
+    # its resource UUIDs); legacy environment bindings remain prohibited.
+    if manifest.get("migration") and manifest.get("topology") != "resources-v3":
+        raise CloneError("Cloning a non-resources-v3 migration manifest is refused.")
     if any(
         item.get("source") == "legacy_env"
         for application in manifest.get("applications", [])

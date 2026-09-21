@@ -29,8 +29,30 @@ class CloneProductTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "source.json"
             path.write_text(json.dumps(source))
-            with self.assertRaisesRegex(clone.CloneError, "legacy or migration"):
+            with self.assertRaisesRegex(clone.CloneError, "legacy|non-resources-v3 migration"):
                 clone.load_source_manifest("helloworldv2", path)
+
+    def test_resources_v3_migration_metadata_is_allowed_and_removed_from_derived_manifest(self):
+        source = json.loads(Path("products/helloworld.json").read_text())
+        source["migration"] = {
+            "from_topology": "resources-v2",
+            "mode": "adopt-in-place",
+            "retain": True,
+            "resource_names": {
+                "applications": ["helloworld-api-dev", "helloworld-frontend-dev"],
+                "databases": ["helloworld-postgres-dev"],
+                "redis": [],
+            },
+            "resource_uuids": {"api": "must-not-be-copied"},
+            "preserve": ["resources", "uuids"],
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "source.json"
+            path.write_text(json.dumps(source))
+            loaded = clone.load_source_manifest("helloworld", path)
+        result = clone.derive_manifest("helloworld", "hello-copy", loaded, "storageuuid1234567890")
+        self.assertNotIn("migration", result)
+        self.assertNotIn("resource_uuids", result)
 
     def test_data_paths_are_refused(self):
         with tempfile.TemporaryDirectory() as directory:
