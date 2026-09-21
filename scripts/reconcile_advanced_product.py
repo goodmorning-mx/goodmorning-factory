@@ -676,11 +676,13 @@ def _ensure_applications(
             actions.append({"resource": f"{product}-{app['name']}-{suffix}", "kind": "application", "action": "planned_after_environment"})
         return
     existing = _items(client.get("/applications"))
-    # Public applications use their canonical HTTPS domain. Private
-    # applications are still addressable by declared resource name so gateway
-    # SERVICE_URL bindings stay internal to the Coolify network.
+    # Application-to-application bindings must stay on Coolify's shared
+    # network. Using a public HTTPS domain from inside the gateway re-enters
+    # the proxy with the gateway Host header and can route to the wrong app.
+    # The stable network aliases declared in the payload are the internal
+    # contract for every service URL binding.
     application_urls = {
-        item["name"]: item.get("domain") or f"http://{product}-{item['name']}-{suffix}:{item['port']}"
+        item["name"]: f"http://{product}-{item['name']}-{suffix}:{item['port']}"
         for item in manifest["applications"]
     }
     applications_by_name = {app["name"]: app for app in manifest["applications"]}
