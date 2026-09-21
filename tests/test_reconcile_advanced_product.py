@@ -226,6 +226,26 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual(payload["custom_network_aliases"], "helloworldv2-mobile-dev")
         self.assertTrue(payload["is_auto_deploy_enabled"])
 
+    def test_private_application_clears_stale_proxy_labels(self):
+        value = contract.validate_manifest(manifest())
+        private_frontend = next(
+            item for item in value["applications"] if item["role"] == "worker"
+        )
+        payload = advanced._application_payload(
+            value,
+            private_frontend,
+            {
+                "project_uuid": "project",
+                "environment_uuid": "environment",
+                "server_uuid": "server",
+                "destination_uuid": "destination",
+                "github_app_uuid": "github",
+            },
+        )
+
+        self.assertEqual(payload["domains"], "")
+        self.assertEqual(payload["custom_labels"], "")
+
     def test_production_payload_is_pinned_to_main_and_production(self):
         value = contract.validate_manifest(production_manifest())
         mobile = next(item for item in value["applications"] if item["role"] == "mobile")

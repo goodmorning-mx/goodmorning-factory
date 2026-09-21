@@ -513,7 +513,7 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         run_options = f"--mount type=volume,source={volume['name']},target={volume['mount_path']}"
     domains = [app["domain"]] if app["domain"] else []
     domains.extend(app.get("custom_domains", []))
-    return {
+    payload = {
         "name": resource_name,
         "project_uuid": context["project_uuid"],
         "environment_uuid": context["environment_uuid"],
@@ -550,12 +550,21 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         # gateway/service bindings can resolve private application upstreams.
         "custom_network_aliases": resource_name,
     }
+    # Coolify persists generated proxy labels on the application.  When a
+    # resource changes from public to private, clearing only ``domains`` leaves
+    # the old Host rule on the next container and can steal the gateway host.
+    # Manage the label field only for private applications; public resources
+    # keep Coolify's generated routing labels for their declared domain.
+    if not domains:
+        payload["custom_labels"] = ""
+    return payload
 
 
 def _application_mutable_changes(found: dict[str, Any], expected: dict[str, Any], app: dict[str, Any]) -> dict[str, Any]:
     mutable_fields = (
         "domains",
         "custom_network_aliases",
+        *( ("custom_labels",) if "custom_labels" in expected else () ),
         *( ("git_commit_sha",) if "git_commit_sha" in expected else () ),
         "instant_deploy",
         "is_auto_deploy_enabled",
