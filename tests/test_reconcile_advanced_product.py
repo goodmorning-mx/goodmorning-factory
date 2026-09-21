@@ -374,6 +374,21 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual(values[0]["value"], "secret-value")
         self.assertTrue(values[0]["is_shown_once"])
 
+    def test_stripe_managed_secret_bindings_resolve_from_factory_environment(self):
+        app = {
+            "environment": [
+                {"key": "STRIPE_SECRET_KEY", "source": "managed_secret", "binding": "goodmorning/stripe-secret-key"},
+                {"key": "STRIPE_WEBHOOK_SECRET", "source": "managed_secret", "binding": "goodmorning/stripe-webhook-secret"},
+            ]
+        }
+        with patch.dict(os.environ, {
+            "GOODMORNING_MANAGED_STRIPE_SECRET_KEY": "test-only-stripe-key",
+            "GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET": "test-only-webhook-secret",
+        }, clear=True):
+            values = advanced._environment_values(app, {}, {}, {})
+        self.assertEqual([item["key"] for item in values], ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"])
+        self.assertTrue(all(item["is_shown_once"] for item in values))
+
     def test_adoption_does_not_clear_undeclared_existing_volume_options(self):
         value = contract.validate_manifest(manifest())
         value["migration"] = {
