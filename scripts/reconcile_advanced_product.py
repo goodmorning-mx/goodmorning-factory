@@ -741,8 +741,13 @@ def _ensure_applications(
             if changes and client.apply:
                 client.patch(f"/applications/{urllib.parse.quote(identifier, safe='')}", changes)
                 found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
-                if _normalized_domain_list(_application_domains(found)) != _normalized_domain_list(expected["domains"]):
-                    raise ReconcileError(f"Coolify did not verify the requested domains for application {name!r}.")
+                actual_domains = _normalized_domain_list(_application_domains(found))
+                expected_domains = _normalized_domain_list(expected["domains"])
+                if actual_domains != expected_domains:
+                    raise ReconcileError(
+                        f"Coolify did not verify the requested domains for application {name!r}: "
+                        f"found {actual_domains!r}, expected {expected_domains!r}."
+                    )
                 actions.append({"resource": name, "kind": "application", "action": "reconciled", "fields": sorted(changes)})
             elif changes:
                 actions.append({"resource": name, "kind": "application", "action": "would_update", "fields": sorted(changes)})
