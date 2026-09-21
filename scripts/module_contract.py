@@ -424,7 +424,10 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
             _require(existing.get("base_directory") == ("/seo" if next_app else "/frontend"), f"Frontend profile application {name!r} has an incompatible base directory.")
             _require(existing.get("port") == (3000 if next_app else 80), f"Frontend profile application {name!r} has an incompatible port.")
             _require(existing.get("health_path") == ("/health" if next_app else "/"), f"Frontend profile application {name!r} has an incompatible health path.")
-            _require((existing.get("domain") is not None) == public, f"Frontend profile application {name!r} has an incompatible public-domain setting.")
+            if public:
+                _require(existing.get("domain") is not None, f"Frontend profile application {name!r} must have a public domain.")
+            else:
+                existing["domain"] = None
             return
         application = {
             "name": name,
@@ -457,17 +460,53 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
     elif frontend_profile == "hybrid":
         applications = [item for item in applications if item.get("role") != "frontend" or item.get("name") in {"frontend", "seo"}]
         app_by_name = {item.get("name"): item for item in applications}
-        ensure_frontend_application("frontend", next_app=False, public=True)
+        ensure_frontend_application("frontend", next_app=False, public=False)
         ensure_frontend_application("seo", next_app=True, public=False)
+        gateway = {
+            "name": "frontend-gateway",
+            "role": "gateway",
+            "base_directory": "/gateway",
+            "dockerfile": "/Dockerfile",
+            "port": 80,
+            "domain": f"https://{public_host}",
+            "health_path": "/health",
+            "auto_deploy": True,
+            "environment": [],
+            "dependencies": [
+                {"type": "application", "name": "frontend"},
+                {"type": "application", "name": "seo"},
+                {"type": "application", "name": "api"},
+            ],
+        }
+        existing_gateway = app_by_name.get("frontend-gateway")
+        if existing_gateway is None:
+            applications.append(gateway)
+            app_by_name["frontend-gateway"] = gateway
+        else:
+            _require(existing_gateway.get("role") == "gateway", "Hybrid gateway must use the gateway role.")
+            _require(existing_gateway.get("base_directory") == "/gateway", "Hybrid gateway has an incompatible base directory.")
+            _require(existing_gateway.get("port") == 80, "Hybrid gateway has an incompatible port.")
+            _require(existing_gateway.get("domain") == f"https://{public_host}", "Hybrid gateway must own the canonical public domain.")
+            _require(existing_gateway.get("health_path") == "/health", "Hybrid gateway has an incompatible health path.")
+            _require(existing_gateway.get("dependencies") == gateway["dependencies"], "Hybrid gateway dependencies are incompatible.")
+        for key, source in (
+            ("REACT_UPSTREAM", "frontend"),
+            ("NEXT_UPSTREAM", "seo"),
+            ("API_UPSTREAM", "api"),
+        ):
+            if not any(item.get("target") == "frontend-gateway" and item.get("key") == key for item in connections):
+                connections.append({"target": "frontend-gateway", "key": key, "source": {"type": "application", "resource": source}})
         result["routing"] = {
             "mode": "hybrid",
             "host": f"https://{public_host}",
             "gateway": {
                 "required": True,
-                "public_application": "frontend",
+                "public_application": "frontend-gateway",
                 "routes": [
-                    {"path": "/", "application": "frontend"},
+                    {"path": "/", "application": "seo"},
                     {"path": "/seo", "application": "seo"},
+                    {"path": "/app", "application": "frontend"},
+                    {"path": "/api", "application": "api"},
                 ],
             },
         }

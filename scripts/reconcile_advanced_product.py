@@ -660,10 +660,12 @@ def _ensure_applications(
             actions.append({"resource": f"{product}-{app['name']}-{suffix}", "kind": "application", "action": "planned_after_environment"})
         return
     existing = _items(client.get("/applications"))
+    # Public applications use their canonical HTTPS domain. Private
+    # applications are still addressable by declared resource name so gateway
+    # SERVICE_URL bindings stay internal to the Coolify network.
     application_urls = {
-        item["name"]: item["domain"]
+        item["name"]: item.get("domain") or f"http://{product}-{item['name']}-{suffix}:{item['port']}"
         for item in manifest["applications"]
-        if item.get("domain")
     }
     applications_by_name = {app["name"]: app for app in manifest["applications"]}
     ordered: list[dict[str, Any]] = []

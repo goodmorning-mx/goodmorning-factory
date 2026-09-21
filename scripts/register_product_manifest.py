@@ -100,9 +100,10 @@ def build_manifest(product: str, storage_uuid: str, frontend_profile: str = "rea
         applications.append({
             "name": "frontend", "role": "frontend", "base_directory": "/frontend",
             "dockerfile": "/Dockerfile", "port": 80,
-            "domain": f"https://dev.{product}.goodmorning.mx",
+            "domain": f"https://dev.{product}.goodmorning.mx" if frontend_profile == "react" else None,
             "health_path": "/", "auto_deploy": True, "environment": [
-                {"key": "VITE_API_URL", "source": "literal", "value": f"https://api.dev.{product}.goodmorning.mx"},
+                {"key": "VITE_API_URL", "source": "literal", "value": f"https://api.dev.{product}.goodmorning.mx" if frontend_profile == "react" else "/api"},
+                *([{"key": "VITE_BASE_PATH", "source": "literal", "value": "/app/"}] if frontend_profile == "hybrid" else []),
             ],
         })
     if frontend_profile in {"next", "hybrid"}:
@@ -111,7 +112,7 @@ def build_manifest(product: str, storage_uuid: str, frontend_profile: str = "rea
             "dockerfile": "/Dockerfile", "port": 3000,
             "domain": f"https://dev.{product}.goodmorning.mx" if frontend_profile == "next" else None,
             "health_path": "/health", "auto_deploy": True, "environment": [
-                {"key": "NEXT_PUBLIC_API_URL", "source": "literal", "value": f"https://api.dev.{product}.goodmorning.mx"},
+                {"key": "NEXT_PUBLIC_API_URL", "source": "literal", "value": f"https://api.dev.{product}.goodmorning.mx" if frontend_profile == "next" else "/api"},
             ],
         })
     manifest = {
@@ -142,11 +143,29 @@ def build_manifest(product: str, storage_uuid: str, frontend_profile: str = "rea
     if frontend_profile == "next":
         manifest["routing"] = {"mode": "next", "host": f"https://dev.{product}.goodmorning.mx", "application": "seo"}
     elif frontend_profile == "hybrid":
+        manifest["applications"].append({
+            "name": "frontend-gateway", "role": "gateway", "base_directory": "/gateway",
+            "dockerfile": "/Dockerfile", "port": 80,
+            "domain": f"https://dev.{product}.goodmorning.mx",
+            "health_path": "/health", "auto_deploy": True, "environment": [],
+            "dependencies": [
+                {"type": "application", "name": "frontend"},
+                {"type": "application", "name": "seo"},
+                {"type": "application", "name": "api"},
+            ],
+        })
+        manifest["connections"] = [
+            {"target": "frontend-gateway", "key": "REACT_UPSTREAM", "source": {"type": "application", "resource": "frontend"}},
+            {"target": "frontend-gateway", "key": "NEXT_UPSTREAM", "source": {"type": "application", "resource": "seo"}},
+            {"target": "frontend-gateway", "key": "API_UPSTREAM", "source": {"type": "application", "resource": "api"}},
+        ]
         manifest["routing"] = {
             "mode": "hybrid", "host": f"https://dev.{product}.goodmorning.mx",
-            "gateway": {"required": True, "public_application": "frontend", "routes": [
-                {"path": "/", "application": "frontend"},
+            "gateway": {"required": True, "public_application": "frontend-gateway", "routes": [
+                {"path": "/", "application": "seo"},
                 {"path": "/seo", "application": "seo"},
+                {"path": "/app", "application": "frontend"},
+                {"path": "/api", "application": "api"},
             ]},
         }
     return manifest

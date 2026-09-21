@@ -228,14 +228,16 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
                 routing == {
                     "mode": "hybrid",
                     "host": f"https://{public_host}",
-                    "gateway": {
-                        "required": True,
-                        "public_application": "frontend",
-                        "routes": [
-                            {"path": "/", "application": "frontend"},
-                            {"path": "/seo", "application": "seo"},
-                        ],
-                    },
+                        "gateway": {
+                            "required": True,
+                            "public_application": "frontend-gateway",
+                            "routes": [
+                                {"path": "/", "application": "seo"},
+                                {"path": "/seo", "application": "seo"},
+                                {"path": "/app", "application": "frontend"},
+                                {"path": "/api", "application": "api"},
+                            ],
+                        },
                 },
                 "Hybrid routing metadata is invalid.",
             )
@@ -359,7 +361,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         domain = item.get("domain")
         if role == "worker":
             _require(domain is None and port == 8000, "Workers must remain private and use the reviewed placeholder port.")
-        elif domain is None and frontend_profile == "hybrid" and role == "frontend" and name == "seo":
+        elif domain is None and frontend_profile == "hybrid" and role == "frontend" and name in {"frontend", "seo"}:
             pass
         else:
             domain = _clean_https_domain(domain, product=product, production=production)
@@ -400,6 +402,15 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
     _require(isinstance(domain_bindings_raw, list), "domain_bindings must be a list.")
     _require(not domain_bindings_raw or production, "Custom domain bindings are supported only by production manifests.")
     applications_by_name = {item["name"]: item for item in applications}
+    if frontend_profile == "hybrid":
+        _require(
+            applications_by_name.get("frontend", {}).get("domain") is None
+            and applications_by_name.get("seo", {}).get("domain") is None,
+            "Hybrid React and Next applications must remain private.",
+        )
+        gateway = applications_by_name.get("frontend-gateway")
+        _require(gateway is not None and gateway.get("role") == "gateway", "Hybrid profile requires a frontend-gateway application.")
+        _require(gateway.get("domain") == f"https://{product}.goodmorning.mx" if production else gateway.get("domain") == f"https://dev.{product}.goodmorning.mx", "Hybrid gateway must own the canonical public domain.")
     bound_hosts: set[str] = set(public_domains)
     domain_bindings: list[dict[str, Any]] = []
     for binding in domain_bindings_raw:
@@ -494,8 +505,6 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         _require(pair not in connection_keys, "Duplicate application connection.")
         connection_keys.add(pair)
         _require(key not in {entry["key"] for entry in apps_by_name[target]["environment"]}, f"Connection {target!r}/{key!r} duplicates an environment entry.")
-        if source_type == "application":
-            _require(apps_by_name[resource].get("domain") is not None, "Service URL connections require a source application with a public domain.")
         connections.append({"target": target, "key": key, "source": dict(source)})
         apps_by_name[target]["environment"].append({
             "key": key,

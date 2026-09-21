@@ -67,13 +67,22 @@ class FrontendProfileTests(unittest.TestCase):
                     })
                 else:
                     value["applications"].extend([
-                        {"name": "frontend", "role": "frontend", "base_directory": "/frontend", "dockerfile": "/Dockerfile", "port": 80, "domain": "https://dev.profile-test.goodmorning.mx", "health_path": "/", "auto_deploy": True, "environment": []},
+                        {"name": "frontend", "role": "frontend", "base_directory": "/frontend", "dockerfile": "/Dockerfile", "port": 80, "domain": None, "health_path": "/", "auto_deploy": True, "environment": []},
                         {"name": "seo", "role": "frontend", "base_directory": "/seo", "dockerfile": "/Dockerfile", "port": 3000, "domain": None, "health_path": "/health", "auto_deploy": True, "environment": []},
+                        {"name": "frontend-gateway", "role": "gateway", "base_directory": "/gateway", "dockerfile": "/Dockerfile", "port": 80, "domain": "https://dev.profile-test.goodmorning.mx", "health_path": "/health", "auto_deploy": True, "environment": [], "dependencies": [
+                            {"type": "application", "name": "frontend"}, {"type": "application", "name": "seo"}, {"type": "application", "name": "api"},
+                        ]},
                     ])
+                    value["connections"] = [
+                        {"target": "frontend-gateway", "key": "REACT_UPSTREAM", "source": {"type": "application", "resource": "frontend"}},
+                        {"target": "frontend-gateway", "key": "NEXT_UPSTREAM", "source": {"type": "application", "resource": "seo"}},
+                        {"target": "frontend-gateway", "key": "API_UPSTREAM", "source": {"type": "application", "resource": "api"}},
+                    ]
                     value["routing"] = {
                         "mode": "hybrid", "host": "https://dev.profile-test.goodmorning.mx",
-                        "gateway": {"required": True, "public_application": "frontend", "routes": [
-                            {"path": "/", "application": "frontend"}, {"path": "/seo", "application": "seo"},
+                        "gateway": {"required": True, "public_application": "frontend-gateway", "routes": [
+                            {"path": "/", "application": "seo"}, {"path": "/seo", "application": "seo"},
+                            {"path": "/app", "application": "frontend"}, {"path": "/api", "application": "api"},
                         ]},
                     }
                 self.assertEqual(validate_manifest(value)["frontend_profile"], profile)
@@ -122,6 +131,8 @@ class FrontendProfileTests(unittest.TestCase):
 
         value["frontend_profile"] = "hybrid"
         hybrid_result = compose_resources_v3(value)
-        self.assertEqual({item["name"] for item in hybrid_result["applications"]}, {"api", "frontend", "seo"})
+        self.assertEqual({item["name"] for item in hybrid_result["applications"]}, {"api", "frontend", "seo", "frontend-gateway"})
         self.assertTrue(hybrid_result["routing"]["gateway"]["required"])
-        self.assertEqual(hybrid_result["routing"]["gateway"]["routes"][-1], {"path": "/seo", "application": "seo"})
+        self.assertEqual(hybrid_result["routing"]["gateway"]["public_application"], "frontend-gateway")
+        self.assertEqual(hybrid_result["routing"]["gateway"]["routes"][0], {"path": "/", "application": "seo"})
+        self.assertEqual({item["key"] for item in hybrid_result["connections"]}, {"REACT_UPSTREAM", "NEXT_UPSTREAM", "API_UPSTREAM"})
