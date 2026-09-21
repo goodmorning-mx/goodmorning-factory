@@ -7,6 +7,7 @@ volume, uploaded file, secret value, Coolify UUID, or production domain.
 from __future__ import annotations
 
 import argparse
+import base64
 import copy
 import json
 import os
@@ -206,7 +207,8 @@ def run(command: list[str], cwd: Path | None = None) -> None:
     environment = os.environ.copy()
     environment["GIT_TERMINAL_PROMPT"] = "0"
     token_value = token()
-    header = f"AUTHORIZATION: bearer {token_value}"
+    basic = base64.b64encode(f"x-access-token:{token_value}".encode()).decode()
+    header = f"AUTHORIZATION: basic {basic}"
     command = ["git", "-c", f"http.extraHeader={header}", *command]
     result = subprocess.run(command, cwd=cwd, env=environment, text=True, capture_output=True)
     if result.returncode:
