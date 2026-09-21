@@ -54,6 +54,14 @@ class CloneProductTests(unittest.TestCase):
         with mock.patch.object(clone, "github", side_effect=[{"size": 0}, []]):
             self.assertEqual(clone.require_destination_absent("hello-copy", recover_empty=True), {"size": 0})
 
+    def test_pushed_partial_destination_recovery_requires_exact_marker(self):
+        repo = {"size": 10, "private": True, "description": "clone", "default_branch": "main"}
+        with mock.patch.object(clone, "github", side_effect=[repo, [{"name": "main"}, {"name": "dev"}]]):
+            self.assertEqual(
+                clone.require_destination_absent("hello-copy", recover_empty=True, description="clone"),
+                repo,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
