@@ -62,6 +62,14 @@ class CloneProductTests(unittest.TestCase):
                 repo,
             )
 
+    def test_completed_destination_recovery_allows_dev_default(self):
+        repo = {"size": 10, "private": True, "description": "clone", "default_branch": "dev"}
+        with mock.patch.object(clone, "github", side_effect=[repo, [{"name": "main"}, {"name": "dev"}]]):
+            self.assertEqual(
+                clone.require_destination_absent("hello-copy", recover_empty=True, description="clone"),
+                repo,
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

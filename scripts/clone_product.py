@@ -112,7 +112,7 @@ def require_destination_absent(destination: str, *, recover_empty: bool = False,
         pushed_partial = (
             repo.get("private") is True
             and repo.get("description") == description
-            and repo.get("default_branch") == "main"
+            and repo.get("default_branch") in {"main", "dev"}
             and branch_names == {"main", "dev"}
         )
         if empty_partial or pushed_partial:
@@ -274,6 +274,17 @@ def clone(source: str, destination: str, source_manifest_path: Path, storage_uui
     bindings = required_secret_bindings(manifest)
     derived = derive_manifest(source, destination, manifest, storage_uuid)
     coolify_preflight(destination, derived)
+
+    if existing_destination and existing_destination.get("default_branch") == "dev":
+        return {
+            "status": "recovered",
+            "source": source,
+            "destination": destination,
+            "repository": f"{ORG}/{destination}",
+            "manifest": derived,
+            "managed_secret_bindings": sorted(bindings),
+            "data_copied": False,
+        }
 
     with tempfile.TemporaryDirectory(prefix=f"gm-clone-{destination}-") as temporary:
         workspace = Path(temporary) / "repo"
