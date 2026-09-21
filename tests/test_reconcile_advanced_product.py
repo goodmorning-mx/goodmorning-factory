@@ -426,6 +426,11 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
             advanced._scope_conflicts({"project_uuid": "another-project"}, context)
         )
 
+    def test_explicitly_cleared_domains_do_not_fall_through_to_legacy_fqdn(self):
+        response = {"domains": "", "fqdn": "https://legacy.example"}
+        self.assertEqual(advanced._application_domains(response), "")
+        self.assertEqual(advanced._normalized_domain_list(advanced._application_domains(response)), [])
+
 
 if __name__ == "__main__":
     unittest.main()

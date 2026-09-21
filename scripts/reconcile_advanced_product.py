@@ -581,6 +581,14 @@ def _normalized_domain_list(value: Any) -> list[str]:
     return [str(item).strip().rstrip("/") for item in values if str(item).strip()]
 
 
+def _application_domains(value: dict[str, Any]) -> Any:
+    """Prefer Coolify's explicit domain field, including an explicit clear."""
+    for name in ("domains", "domain", "fqdn"):
+        if name in value:
+            return value[name]
+    return None
+
+
 def _environment_values(
     app: dict[str, Any],
     database_urls: dict[str, str],
@@ -733,7 +741,7 @@ def _ensure_applications(
             if changes and client.apply:
                 client.patch(f"/applications/{urllib.parse.quote(identifier, safe='')}", changes)
                 found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
-                if _normalized_domain_list(_field(found, "domains", "domain", "fqdn")) != _normalized_domain_list(expected["domains"]):
+                if _normalized_domain_list(_application_domains(found)) != _normalized_domain_list(expected["domains"]):
                     raise ReconcileError(f"Coolify did not verify the requested domains for application {name!r}.")
                 actions.append({"resource": name, "kind": "application", "action": "reconciled", "fields": sorted(changes)})
             elif changes:
