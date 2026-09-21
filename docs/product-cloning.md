@@ -26,10 +26,9 @@ new DEV URL.
 
 Required Factory configuration is the existing GitHub App ID/private key,
 `COOLIFY_BACKUP_STORAGE_UUID`, and the managed secret names used by the source
-manifest. The clone uses the existing `GOODMORNING_FACTORY_MODULE_UPDATE_TOKEN`
-only for Git HTTPS transfer when the App installation token lacks the GitHub
-`workflows` scope; the App token remains responsible for repository API
-operations. Values are supplied through GitHub Actions secrets/variables only.
+manifest. The GitHub App installation must grant repository `Contents: write`
+and `Workflows: write`; the workflow requests both explicitly for its short-
+lived token. Values are supplied through GitHub Actions secrets/variables only.
 
 For safe cleanup, close the clone PR if it is no longer wanted, then remove
 only the clone's DEV Coolify project/resources and archive the clone repository
