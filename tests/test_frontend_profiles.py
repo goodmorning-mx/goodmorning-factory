@@ -115,6 +115,11 @@ class FrontendProfileTests(unittest.TestCase):
         self.assertEqual(next_result["applications"][1]["environment"], [{"key": "NEXT_PUBLIC_API_URL", "source": "literal", "value": "https://api.dev.profile-test.goodmorning.mx"}])
         self.assertEqual(next_result["routing"]["application"], "seo")
 
+        value["frontend_profile"] = "react"
+        react_result = compose_resources_v3(value)
+        self.assertEqual({item["name"] for item in react_result["applications"]}, {"api", "frontend"})
+        self.assertEqual(react_result["applications"][1]["port"], 80)
+
         value["frontend_profile"] = "hybrid"
         hybrid_result = compose_resources_v3(value)
         self.assertEqual({item["name"] for item in hybrid_result["applications"]}, {"api", "frontend", "seo"})
