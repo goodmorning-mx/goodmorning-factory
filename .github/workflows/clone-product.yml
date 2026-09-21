@@ -56,6 +56,8 @@ jobs:
           private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
           owner: goodmorning-mx
           permission-contents: write
+          permission-administration: write
+          permission-metadata: read
           permission-workflows: write
       - name: Clone source repository
         env:

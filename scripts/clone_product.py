@@ -98,15 +98,25 @@ def require_source(source: str) -> dict[str, Any]:
     return repo
 
 
-def require_destination_absent(destination: str, *, recover_empty: bool = False) -> dict[str, Any] | None:
+def require_destination_absent(destination: str, *, recover_empty: bool = False, description: str = "") -> dict[str, Any] | None:
     try:
         repo = github("GET", f"/repos/{ORG}/{destination}")
     except CloneError as exc:
         if "GitHub API 404" in str(exc):
             return None
         raise
-    if recover_empty and isinstance(repo, dict) and repo.get("size") == 0 and not github("GET", f"/repos/{ORG}/{destination}/branches"):
-        return repo
+    if recover_empty and isinstance(repo, dict):
+        branches = github("GET", f"/repos/{ORG}/{destination}/branches")
+        branch_names = {item.get("name") for item in branches if isinstance(item, dict)} if isinstance(branches, list) else set()
+        empty_partial = repo.get("size") == 0 and not branch_names
+        pushed_partial = (
+            repo.get("private") is True
+            and repo.get("description") == description
+            and repo.get("default_branch") == "main"
+            and branch_names == {"main", "dev"}
+        )
+        if empty_partial or pushed_partial:
+            return repo
     raise CloneError(f"Destination repository {ORG}/{destination} already exists.")
 
 
@@ -259,7 +269,7 @@ def clone(source: str, destination: str, source_manifest_path: Path, storage_uui
     if source == destination:
         raise CloneError("Source and destination products must be different.")
     require_source(source)
-    existing_destination = require_destination_absent(destination, recover_empty=recover_empty)
+    existing_destination = require_destination_absent(destination, recover_empty=recover_empty, description=description)
     manifest = load_source_manifest(source, source_manifest_path)
     bindings = required_secret_bindings(manifest)
     derived = derive_manifest(source, destination, manifest, storage_uuid)
