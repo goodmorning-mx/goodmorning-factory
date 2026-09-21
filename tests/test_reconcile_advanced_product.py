@@ -244,7 +244,7 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         )
 
         self.assertEqual(payload["domains"], "")
-        self.assertEqual(payload["custom_labels"], "")
+        self.assertEqual(payload["custom_labels"], "dHJhZWZpay5lbmFibGU9ZmFsc2U=")
 
     def test_production_payload_is_pinned_to_main_and_production(self):
         value = contract.validate_manifest(production_manifest())

@@ -556,7 +556,11 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
     # Manage the label field only for private applications; public resources
     # keep Coolify's generated routing labels for their declared domain.
     if not domains:
-        payload["custom_labels"] = ""
+        # Coolify persists generated proxy labels as base64 and its API does
+        # not regenerate them when ``domains`` is cleared. Keep the private
+        # application explicitly out of Traefik while preserving the public
+        # gateway/API labels managed by Coolify.
+        payload["custom_labels"] = base64.b64encode(b"traefik.enable=false").decode("ascii")
     return payload
 
 
