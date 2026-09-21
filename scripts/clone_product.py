@@ -91,13 +91,15 @@ def require_source(source: str) -> dict[str, Any]:
     return repo
 
 
-def require_destination_absent(destination: str) -> None:
+def require_destination_absent(destination: str, *, recover_empty: bool = False) -> dict[str, Any] | None:
     try:
-        github("GET", f"/repos/{ORG}/{destination}")
+        repo = github("GET", f"/repos/{ORG}/{destination}")
     except CloneError as exc:
         if "GitHub API 404" in str(exc):
-            return
+            return None
         raise
+    if recover_empty and isinstance(repo, dict) and repo.get("size") == 0 and not github("GET", f"/repos/{ORG}/{destination}/branches"):
+        return repo
     raise CloneError(f"Destination repository {ORG}/{destination} already exists.")
 
 
@@ -244,13 +246,13 @@ def rewrite_source_identity(repo: Path, source: str, destination: str) -> None:
         run(["push", "origin", branch], cwd=repo)
 
 
-def clone(source: str, destination: str, source_manifest_path: Path, storage_uuid: str, description: str) -> dict[str, Any]:
+def clone(source: str, destination: str, source_manifest_path: Path, storage_uuid: str, description: str, recover_empty: bool = False) -> dict[str, Any]:
     validate_slug(source)
     validate_slug(destination)
     if source == destination:
         raise CloneError("Source and destination products must be different.")
     require_source(source)
-    require_destination_absent(destination)
+    existing_destination = require_destination_absent(destination, recover_empty=recover_empty)
     manifest = load_source_manifest(source, source_manifest_path)
     bindings = required_secret_bindings(manifest)
     derived = derive_manifest(source, destination, manifest, storage_uuid)
@@ -262,12 +264,13 @@ def clone(source: str, destination: str, source_manifest_path: Path, storage_uui
         run(["clone", "--branch", "dev", source_url, str(workspace)])
         run(["branch", "main", "origin/main"], cwd=workspace)
         reject_data_paths(workspace)
-        created = github("POST", f"/orgs/{ORG}/repos", {"name": destination, "description": description, "private": True, "has_issues": True})
-        if not isinstance(created, dict):
-            raise CloneError("GitHub did not confirm destination repository creation.")
-        github("PATCH", f"/repos/{ORG}/{destination}", {"default_branch": "dev"})
+        if existing_destination is None:
+            created = github("POST", f"/orgs/{ORG}/repos", {"name": destination, "description": description, "private": True, "has_issues": True})
+            if not isinstance(created, dict):
+                raise CloneError("GitHub did not confirm destination repository creation.")
         run(["remote", "set-url", "origin", f"https://github.com/{ORG}/{destination}.git"], cwd=workspace)
         run(["push", "origin", "main", "dev"], cwd=workspace)
+        github("PATCH", f"/repos/{ORG}/{destination}", {"default_branch": "dev"})
         rewrite_source_identity(workspace, source, destination)
         github("PUT", f"/repos/{ORG}/{destination}/topics", {"names": ["goodmorning", "goodmorning-product", "managed-by-goodmorning-factory"]})
 
@@ -289,13 +292,14 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--source-manifest", required=True, type=Path)
     value.add_argument("--backup-storage-uuid", default=os.environ.get("COOLIFY_BACKUP_STORAGE_UUID", ""))
     value.add_argument("--description", default="GoodMorning product clone")
+    value.add_argument("--recover-empty-destination", action="store_true", help="Recover only a known empty repository from a failed prior run.")
     return value
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        print(json.dumps(clone(args.source_product, args.destination_slug, args.source_manifest, args.backup_storage_uuid, args.description), sort_keys=True))
+        print(json.dumps(clone(args.source_product, args.destination_slug, args.source_manifest, args.backup_storage_uuid, args.description, args.recover_empty_destination), sort_keys=True))
         return 0
     except CloneError as exc:
         print(json.dumps({"status": "error", "error": str(exc)}, sort_keys=True), file=sys.stderr)
