@@ -35,6 +35,7 @@ ALLOWED_ENV_SOURCES = {
     "legacy_env",
     "generated_secret",
 }
+ALLOWED_FRONTEND_PROFILES = {"react", "next", "hybrid"}
 SENSITIVE_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL)", re.I)
 
 
@@ -175,7 +176,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "topology", "product", "repository", "branch", "development_domain", "coolify_github_app_name",
         "legacy", "migration", "connections", "applications", "databases", "redis", "backup",
         "modules", "module_dependency_order", "resource_ownership",
-        "module_update_policy", "domain_bindings",
+        "module_update_policy", "domain_bindings", "frontend_profile", "routing",
         "confirm_production", "promotion_policy",
     }
     _require(set(raw) <= allowed, "Advanced product manifest contains unknown top-level fields.")
@@ -213,6 +214,31 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
             _require(raw.get("development_domain") == f"dev.{product}.goodmorning.mx", "development_domain must match the product DEV namespace.")
     github_app = raw.get("coolify_github_app_name")
     _require(isinstance(github_app, str) and github_app == "goodmorning-mx-coolify", "Unexpected Coolify GitHub App.")
+    frontend_profile = raw.get("frontend_profile", "react")
+    _require(frontend_profile in ALLOWED_FRONTEND_PROFILES, "frontend_profile must be one of react, next, or hybrid.")
+    routing = raw.get("routing")
+    if routing is not None:
+        _require(frontend_profile == "hybrid" or frontend_profile == "next", "routing metadata requires a next or hybrid frontend profile.")
+        _require(isinstance(routing, dict), "routing must be an object.")
+        public_host = f"{product}.goodmorning.mx" if production else f"dev.{product}.goodmorning.mx"
+        if frontend_profile == "next":
+            _require(routing == {"mode": "next", "host": f"https://{public_host}", "application": "seo"}, "Next routing metadata is invalid.")
+        else:
+            _require(
+                routing == {
+                    "mode": "hybrid",
+                    "host": f"https://{public_host}",
+                    "gateway": {
+                        "required": True,
+                        "public_application": "frontend",
+                        "routes": [
+                            {"path": "/", "application": "frontend"},
+                            {"path": "/seo", "application": "seo"},
+                        ],
+                    },
+                },
+                "Hybrid routing metadata is invalid.",
+            )
 
     legacy_raw = raw.get("legacy")
     legacy: dict[str, Any] | None = None
@@ -333,6 +359,8 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         domain = item.get("domain")
         if role == "worker":
             _require(domain is None and port == 8000, "Workers must remain private and use the reviewed placeholder port.")
+        elif domain is None and frontend_profile == "hybrid" and role == "frontend" and name == "seo":
+            pass
         else:
             domain = _clean_https_domain(domain, product=product, production=production)
             _require(domain not in public_domains, "Duplicate public domain.")
@@ -546,6 +574,8 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "branch": expected_branch,
         **({"development_domain": raw["development_domain"]} if raw.get("development_domain") is not None else {}),
         "coolify_github_app_name": github_app,
+        "frontend_profile": frontend_profile,
+        **({"routing": dict(routing)} if routing is not None else {}),
         "legacy": legacy,
         "migration": migration,
         "connections": connections,
