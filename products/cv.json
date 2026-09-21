@@ -1,5 +1,6 @@
 {
   "topology": "resources-v3",
+  "frontend_profile": "hybrid",
   "product": "cv",
   "repository": "goodmorning-mx/cv",
   "branch": "dev",
@@ -39,6 +40,9 @@
       "auto_deploy": true,
       "environment": [
         {"key": "DATABASE_URL", "source": "database_url", "resource": "postgres", "driver": "psycopg"},
+        {"key": "CORS_ORIGINS", "source": "literal", "value": "https://dev.cv.goodmorning.mx"},
+        {"key": "PAYMENT_SUCCESS_URL", "source": "literal", "value": "https://dev.cv.goodmorning.mx/app/?payment=success"},
+        {"key": "PAYMENT_CANCEL_URL", "source": "literal", "value": "https://dev.cv.goodmorning.mx/app/?payment=cancel"},
         {"key": "OPENAI_API_KEY", "source": "managed_secret", "binding": "goodmorning/openai-default"},
         {"key": "PAYMENT_PROVIDER", "source": "literal", "value": "stripe"},
         {"key": "STRIPE_SECRET_KEY", "source": "managed_secret", "binding": "goodmorning/stripe-secret-key"},
@@ -51,14 +55,67 @@
       "base_directory": "/frontend",
       "dockerfile": "/Dockerfile",
       "port": 80,
-      "domain": "https://dev.cv.goodmorning.mx",
+      "domain": null,
       "health_path": "/",
       "auto_deploy": true,
       "environment": [
-        {"key": "VITE_API_URL", "source": "literal", "value": "https://api.dev.cv.goodmorning.mx"}
+        {"key": "VITE_API_URL", "source": "literal", "value": "/api"},
+        {"key": "VITE_BASE_PATH", "source": "literal", "value": "/app/"}
+      ]
+    },
+    {
+      "name": "seo",
+      "role": "frontend",
+      "base_directory": "/seo",
+      "dockerfile": "/Dockerfile",
+      "port": 3000,
+      "domain": null,
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {"key": "NEXT_PUBLIC_API_URL", "source": "literal", "value": "/api"},
+        {"key": "NEXT_PUBLIC_SITE_URL", "source": "literal", "value": "https://dev.cv.goodmorning.mx"},
+        {"key": "NEXT_PUBLIC_SITE_NAME", "source": "literal", "value": "CV · Tu próximo paso"},
+        {"key": "NEXT_PUBLIC_SITE_DESCRIPTION", "source": "literal", "value": "Crea un CV claro, auténtico y listo para tu próximo paso con ayuda de IA."}
+      ],
+      "dependencies": []
+    },
+    {
+      "name": "frontend-gateway",
+      "role": "gateway",
+      "base_directory": "/gateway",
+      "dockerfile": "/Dockerfile",
+      "port": 80,
+      "domain": "https://dev.cv.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [],
+      "dependencies": [
+        {"type": "application", "name": "frontend"},
+        {"type": "application", "name": "seo"},
+        {"type": "application", "name": "api"}
       ]
     }
   ],
+  "connections": [
+    {"target": "frontend-gateway", "key": "REACT_UPSTREAM", "source": {"type": "application", "resource": "frontend"}},
+    {"target": "frontend-gateway", "key": "NEXT_UPSTREAM", "source": {"type": "application", "resource": "seo"}},
+    {"target": "frontend-gateway", "key": "API_UPSTREAM", "source": {"type": "application", "resource": "api"}}
+  ],
+  "routing": {
+    "mode": "hybrid",
+    "host": "https://dev.cv.goodmorning.mx",
+    "gateway": {
+      "required": true,
+      "public_application": "frontend-gateway",
+      "routes": [
+        {"path": "/", "application": "seo"},
+        {"path": "/seo", "application": "seo"},
+        {"path": "/app", "application": "frontend"},
+        {"path": "/api", "application": "api"}
+      ]
+    }
+  },
   "databases": [
     {"name": "postgres", "engine": "postgresql", "version": "16", "image": "postgres:16-alpine", "public": false, "backup": true}
   ],
