@@ -20,6 +20,11 @@ on:
         required: true
         type: boolean
         default: false
+      recover_empty_destination:
+        description: Recover an empty repository left by a failed clone run.
+        required: true
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -56,6 +61,7 @@ jobs:
           SOURCE_PRODUCT: ${{ inputs.source_product }}
           DESTINATION_SLUG: ${{ inputs.destination_slug }}
           DESCRIPTION: ${{ inputs.description }}
+          RECOVER_EMPTY_DESTINATION: ${{ inputs.recover_empty_destination }}
         run: |
           set -euo pipefail
           echo "::add-mask::${GH_TOKEN}"
@@ -63,6 +69,7 @@ jobs:
             --source-product "${SOURCE_PRODUCT}" \
             --destination-slug "${DESTINATION_SLUG}" \
             --description "${DESCRIPTION}" \
+            $([ "${RECOVER_EMPTY_DESTINATION}" = "true" ] && echo --recover-empty-destination) \
             --source-manifest "products/${SOURCE_PRODUCT}.json" \
             > clone-result.json
           jq 'del(.manifest)' clone-result.json

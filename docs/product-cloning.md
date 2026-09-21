@@ -8,6 +8,9 @@ The operation is source-code-only. It creates a new private GitHub repository,
 copies the `main` and `dev` Git branches, rewrites product identity/domain
 references, and creates a derived `resources-v3` manifest in a Factory branch.
 The workflow opens a PR against `dev`; it does not change `main` or production.
+The optional `recover_empty_destination=true` input is only for recovering an
+empty repository left by an interrupted clone; normal clones refuse every
+pre-existing destination repository.
 
 The derived manifest preserves the source frontend profile, modules, versions,
 dependencies, and managed-secret binding names. It replaces the product slug,

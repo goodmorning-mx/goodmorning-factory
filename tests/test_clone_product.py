@@ -45,6 +45,15 @@ class CloneProductTests(unittest.TestCase):
             with self.assertRaisesRegex(clone.CloneError, "COOLIFY_BASE_URL"):
                 clone.coolify_preflight("hello-copy", {"applications": [], "databases": [], "redis": []})
 
+    def test_existing_destination_is_not_reused_without_explicit_empty_recovery(self):
+        with mock.patch.object(clone, "github", return_value={"size": 0}):
+            with self.assertRaisesRegex(clone.CloneError, "already exists"):
+                clone.require_destination_absent("hello-copy")
+
+    def test_empty_destination_recovery_requires_no_branches(self):
+        with mock.patch.object(clone, "github", side_effect=[{"size": 0}, []]):
+            self.assertEqual(clone.require_destination_absent("hello-copy", recover_empty=True), {"size": 0})
+
 
 if __name__ == "__main__":
     unittest.main()
