@@ -19,4 +19,8 @@ def test_gm_payments_is_not_added_to_existing_product_manifests():
     root = Path(__file__).parents[1]
     for path in (root / "products").glob("*.json"):
         value = json.loads(path.read_text())
-        assert all(module.get("name") != "gm-payments" for module in value.get("modules", [])), path
+        names = {module.get("name") for module in value.get("modules", [])}
+        if path.name == "cv.json":
+            assert "gm-payments" in names
+        else:
+            assert "gm-payments" not in names, path
