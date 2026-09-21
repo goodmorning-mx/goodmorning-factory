@@ -84,6 +84,7 @@ def _render_context(manifest: dict[str, Any]) -> str:
     repository = _value(manifest.get("repository"), f"goodmorning-mx/{product}")
     development_domain = _value(manifest.get("development_domain"))
     production_domain = _value(manifest.get("production_domain"), f"https://{product}.goodmorning.mx")
+    frontend_profile = _value(manifest.get("frontend_profile"), "react")
 
     lines = [
         f"## Contexto administrado · contrato v{TEMPLATE_VERSION}",
@@ -96,6 +97,7 @@ def _render_context(manifest: dict[str, Any]) -> str:
         f"- Rama de desarrollo integrada: `{branch}`",
         f"- DEV frontend: `{development_domain}`",
         f"- PROD esperado: `{production_domain}`",
+        f"- Perfil frontend: `{frontend_profile}` (react por defecto; next/hybrid son explícitos)",
         "",
         "### Cómo trabajar",
         "",
@@ -122,6 +124,10 @@ def _render_context(manifest: dict[str, Any]) -> str:
     if applications:
         lines.append("#### Aplicaciones")
         lines.append("")
+
+    routing = manifest.get("routing")
+    if isinstance(routing, dict):
+        lines.extend(["#### Routing frontend", "", f"- Perfil `{frontend_profile}` · metadata de routing `{_value(routing.get('mode'))}` · host `{_value(routing.get('host'))}`", "- Esta metadata no autoriza por sí sola un cambio de gateway; cualquier aplicación del routing requiere revisión de Factory.", ""])
         for app in applications:
             if not isinstance(app, dict):
                 continue

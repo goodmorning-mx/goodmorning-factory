@@ -51,6 +51,20 @@ Applications may declare typed `dependencies` on another application, database,
 or Redis resource. Factory validates the graph and reconciles application
 resources in dependency order; cycles and undeclared references fail closed.
 
+## Frontend profiles
+
+`frontend_profile` is independent from `gm-*` modules and defaults to
+`react` when omitted. `react` composes `/frontend` on port 80, `next`
+composes only `/seo` on port 3000, and `hybrid` composes both applications
+plus declarative routing metadata. The API remains
+`api.{slug}.goodmorning.mx`; the primary frontend remains
+`{slug}.goodmorning.mx`; no `app` subdomain is generated.
+
+The hybrid routing metadata identifies the React application as the public
+entrypoint and the Next application as the `/seo` route target. It is reviewed
+desired state for a future gateway and does not perform a routing write in this
+goal.
+
 ## Environment sources
 
 Application variables support only:

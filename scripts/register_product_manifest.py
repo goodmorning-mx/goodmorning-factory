@@ -23,6 +23,7 @@ ORG = "goodmorning-mx"
 FACTORY_REPO = "goodmorning-factory"
 FACTORY_BRANCH = "dev"
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+FRONTEND_PROFILES = {"react", "next", "hybrid"}
 UUID_RE = re.compile(r"^[a-zA-Z0-9]{8,64}$")
 TIMEOUT_SECONDS = 20
 
@@ -75,41 +76,53 @@ def request(method: str, path: str, *, body: dict[str, Any] | None = None) -> tu
         raise CatalogError(f"GitHub API request failed for {method} {path}: {exc}") from exc
 
 
-def validate(product: str, storage_uuid: str, branch: str) -> None:
+def validate(product: str, storage_uuid: str, branch: str, frontend_profile: str = "react") -> None:
     if not PRODUCT_RE.fullmatch(product):
         raise CatalogError("product must be a lowercase DNS-safe slug of at most 63 characters.")
     if not UUID_RE.fullmatch(storage_uuid):
         raise CatalogError("backup storage UUID is invalid.")
     if branch != FACTORY_BRANCH:
         raise CatalogError("factory catalog writes are restricted to branch 'dev'.")
+    if frontend_profile not in FRONTEND_PROFILES:
+        raise CatalogError("frontend profile must be one of react, next, or hybrid.")
 
 
-def build_manifest(product: str, storage_uuid: str) -> dict[str, Any]:
-    return {
+def build_manifest(product: str, storage_uuid: str, frontend_profile: str = "react") -> dict[str, Any]:
+    applications = [{
+        "name": "api", "role": "api", "base_directory": "/backend",
+        "dockerfile": "/Dockerfile", "port": 8000,
+        "domain": f"https://api.dev.{product}.goodmorning.mx",
+        "health_path": "/health", "auto_deploy": True, "environment": [
+            {"key": "DATABASE_URL", "source": "database_url", "resource": "postgres", "driver": "psycopg"},
+        ],
+    }]
+    if frontend_profile in {"react", "hybrid"}:
+        applications.append({
+            "name": "frontend", "role": "frontend", "base_directory": "/frontend",
+            "dockerfile": "/Dockerfile", "port": 80,
+            "domain": f"https://dev.{product}.goodmorning.mx",
+            "health_path": "/", "auto_deploy": True, "environment": [
+                {"key": "VITE_API_URL", "source": "literal", "value": f"https://api.dev.{product}.goodmorning.mx"},
+            ],
+        })
+    if frontend_profile in {"next", "hybrid"}:
+        applications.append({
+            "name": "seo", "role": "frontend", "base_directory": "/seo",
+            "dockerfile": "/Dockerfile", "port": 3000,
+            "domain": f"https://dev.{product}.goodmorning.mx" if frontend_profile == "next" else None,
+            "health_path": "/health", "auto_deploy": True, "environment": [
+                {"key": "NEXT_PUBLIC_API_URL", "source": "literal", "value": f"https://api.dev.{product}.goodmorning.mx"},
+            ],
+        })
+    manifest = {
+        "frontend_profile": frontend_profile,
         "topology": "resources-v3",
         "product": product,
         "repository": f"{ORG}/{product}",
         "branch": "dev",
         "development_domain": f"dev.{product}.goodmorning.mx",
         "coolify_github_app_name": "goodmorning-mx-coolify",
-        "applications": [
-            {
-                "name": "api", "role": "api", "base_directory": "/backend",
-                "dockerfile": "/Dockerfile", "port": 8000,
-                "domain": f"https://api.dev.{product}.goodmorning.mx",
-                "health_path": "/health", "auto_deploy": True, "environment": [
-                    {"key": "DATABASE_URL", "source": "database_url", "resource": "postgres", "driver": "psycopg"},
-                ],
-            },
-            {
-                "name": "frontend", "role": "frontend", "base_directory": "/frontend",
-                "dockerfile": "/Dockerfile", "port": 80,
-                "domain": f"https://dev.{product}.goodmorning.mx",
-                "health_path": "/", "auto_deploy": True, "environment": [
-                    {"key": "VITE_API_URL", "source": "literal", "value": f"https://api.dev.{product}.goodmorning.mx"},
-                ],
-            },
-        ],
+        "applications": applications,
         "databases": [{
             "name": "postgres", "engine": "postgresql", "version": "16",
             "image": "postgres:16-alpine", "public": False, "backup": True,
@@ -126,6 +139,17 @@ def build_manifest(product: str, storage_uuid: str) -> dict[str, Any]:
             "timeout_seconds": 1800,
         },
     }
+    if frontend_profile == "next":
+        manifest["routing"] = {"mode": "next", "host": f"https://dev.{product}.goodmorning.mx", "application": "seo"}
+    elif frontend_profile == "hybrid":
+        manifest["routing"] = {
+            "mode": "hybrid", "host": f"https://dev.{product}.goodmorning.mx",
+            "gateway": {"required": True, "public_application": "frontend", "routes": [
+                {"path": "/", "application": "frontend"},
+                {"path": "/seo", "application": "seo"},
+            ]},
+        }
+    return manifest
 
 
 def require_product_repository(product: str) -> None:
@@ -140,10 +164,10 @@ def require_product_repository(product: str) -> None:
             raise CatalogError(f"Product repository {ORG}/{product} is missing branch {branch!r}.")
 
 
-def register(product: str, storage_uuid: str, branch: str = FACTORY_BRANCH) -> dict[str, Any]:
-    validate(product, storage_uuid, branch)
+def register(product: str, storage_uuid: str, branch: str = FACTORY_BRANCH, frontend_profile: str = "react") -> dict[str, Any]:
+    validate(product, storage_uuid, branch, frontend_profile)
     require_product_repository(product)
-    manifest = build_manifest(product, storage_uuid)
+    manifest = build_manifest(product, storage_uuid, frontend_profile)
     manifest_path = f"products/{product}.json"
     encoded_path = urllib.parse.quote(manifest_path, safe="/")
     contents_path = f"/repos/{ORG}/{FACTORY_REPO}/contents/{encoded_path}?ref={branch}"
@@ -197,13 +221,14 @@ def parser() -> argparse.ArgumentParser:
     value.add_argument("--product", required=True)
     value.add_argument("--backup-storage-uuid", required=True)
     value.add_argument("--factory-branch", default=FACTORY_BRANCH)
+    value.add_argument("--frontend-profile", choices=sorted(FRONTEND_PROFILES), default="react")
     return value
 
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     try:
-        result = register(args.product, args.backup_storage_uuid, args.factory_branch)
+        result = register(args.product, args.backup_storage_uuid, args.factory_branch, args.frontend_profile)
         print(json.dumps(result, sort_keys=True))
         return 0
     except CatalogError as exc:
