@@ -472,6 +472,8 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
             },
         }
     else:
+        if "frontend" not in app_by_name:
+            ensure_frontend_application("frontend", next_app=False, public=True)
         result.pop("routing", None)
 
     for module_name in result["module_dependency_order"]:
