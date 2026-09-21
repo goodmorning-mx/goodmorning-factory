@@ -11,14 +11,14 @@ frontend_profile accepts three values:
   /frontend, served by Nginx on port 80.
 - next: creates only the Next.js SEO/SSR application from /seo, served by
   Node on port 3000.
-- hybrid: creates both /frontend and /seo. The React application remains the
-  primary public application and Factory emits routing metadata for a gateway
-  to forward /seo paths to the Next.js application.
+- hybrid: creates private /frontend and /seo applications plus the public
+  /gateway application. The gateway owns the canonical product domain and
+  forwards / and /seo to Next, /app to React, and /api to the API.
 
-All profiles keep the API at api.{slug}.goodmorning.mx and keep the primary
-frontend at {slug}.goodmorning.mx (or the dev. equivalent). Factory never
-creates an app subdomain. The hybrid routing object is declarative metadata;
-this goal does not implement the gateway runtime.
+All profiles keep the API at api.{slug}.goodmorning.mx and keep the canonical
+frontend domain at {slug}.goodmorning.mx (or the dev. equivalent). Factory
+never creates an app subdomain. Hybrid gateway upstreams are internal
+SERVICE_URL bindings; only the gateway receives the public domain.
 
 If a manifest omits frontend_profile, Factory normalizes it to react. This
 keeps Ballet, HelloWorld, CV, and every other existing product on the current

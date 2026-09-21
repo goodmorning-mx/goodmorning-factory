@@ -127,7 +127,7 @@ def _render_context(manifest: dict[str, Any]) -> str:
 
     routing = manifest.get("routing")
     if isinstance(routing, dict):
-        lines.extend(["#### Routing frontend", "", f"- Perfil `{frontend_profile}` · metadata de routing `{_value(routing.get('mode'))}` · host `{_value(routing.get('host'))}`", "- Esta metadata no autoriza por sí sola un cambio de gateway; cualquier aplicación del routing requiere revisión de Factory.", ""])
+        lines.extend(["#### Routing frontend", "", f"- Perfil `{frontend_profile}` · metadata de routing `{_value(routing.get('mode'))}` · host `{_value(routing.get('host'))}`", "- En hybrid, Factory compone el gateway público y mantiene React/Next como upstreams internos; no se crea un subdominio `app`.", ""])
         for app in applications:
             if not isinstance(app, dict):
                 continue
