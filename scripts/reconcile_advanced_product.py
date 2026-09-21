@@ -744,9 +744,10 @@ def _ensure_applications(
                 actual_domains = _normalized_domain_list(_application_domains(found))
                 expected_domains = _normalized_domain_list(expected["domains"])
                 if actual_domains != expected_domains:
+                    application_uuid = _uuid(found, "application")
                     raise ReconcileError(
                         f"Coolify did not verify the requested domains for application {name!r}: "
-                        f"found {actual_domains!r}, expected {expected_domains!r}."
+                        f"uuid {application_uuid!r}, found {actual_domains!r}, expected {expected_domains!r}."
                     )
                 actions.append({"resource": name, "kind": "application", "action": "reconciled", "fields": sorted(changes)})
             elif changes:
