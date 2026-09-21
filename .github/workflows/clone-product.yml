@@ -58,6 +58,7 @@ jobs:
       - name: Clone source repository
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GIT_TOKEN: ${{ secrets.GOODMORNING_FACTORY_MODULE_UPDATE_TOKEN }}
           SOURCE_PRODUCT: ${{ inputs.source_product }}
           DESTINATION_SLUG: ${{ inputs.destination_slug }}
           DESCRIPTION: ${{ inputs.description }}
@@ -65,6 +66,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "::add-mask::${GH_TOKEN}"
+          echo "::add-mask::${GIT_TOKEN}"
           python3 scripts/clone_product.py \
             --source-product "${SOURCE_PRODUCT}" \
             --destination-slug "${DESTINATION_SLUG}" \
