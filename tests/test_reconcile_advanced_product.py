@@ -223,6 +223,7 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual(payload["dockerfile_location"], "/mobile/Dockerfile")
         self.assertEqual(payload["ports_exposes"], "8060")
         self.assertEqual(payload["custom_docker_run_options"], "")
+        self.assertEqual(payload["custom_network_aliases"], "helloworldv2-mobile-dev")
         self.assertTrue(payload["is_auto_deploy_enabled"])
 
     def test_production_payload_is_pinned_to_main_and_production(self):
