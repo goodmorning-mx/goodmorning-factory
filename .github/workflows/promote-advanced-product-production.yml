@@ -134,7 +134,8 @@ jobs:
           test "$(jq -er '.branch' "${manifest}")" = "main"
           test "$(jq -r '.confirm_production // false' "${manifest}")" = "true"
           if [ "${product}" = "cv" ]; then
-            python scripts/validate_cv_production_secrets.py
+            payment_mode="$(jq -er '.modules[] | select(.name == "gm-payments") | .env[] | select(.key == "PAYMENT_MODE") | .default' "${manifest}")"
+            python scripts/validate_cv_production_secrets.py --mode "${payment_mode}"
           fi
           current_sha="$(gh api "/repos/${repository}/branches/main" --jq '.commit.sha')"
           test "${current_sha}" = "${source_sha}"
