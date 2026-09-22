@@ -293,6 +293,44 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
 
         self.assertEqual(advanced._coolify_application_patch_payload(changes), changes)
 
+    def test_stale_legacy_fqdn_forces_domain_clear_even_when_domains_alias_is_empty(self):
+        value = contract.validate_manifest(manifest())
+        private_frontend = next(
+            item for item in value["applications"] if item["role"] == "worker"
+        )
+        expected = advanced._application_payload(
+            value,
+            private_frontend,
+            {
+                "project_uuid": "project",
+                "environment_uuid": "environment",
+                "server_uuid": "server",
+                "destination_uuid": "destination",
+                "github_app_uuid": "github",
+            },
+        )
+        found = {
+            **expected,
+            "domains": "",
+            "fqdn": "https://cv.goodmorning.mx",
+        }
+
+        changes = advanced._application_mutable_changes(found, expected, private_frontend)
+
+        self.assertEqual(changes["domains"], "")
+        self.assertEqual(
+            advanced._coolify_application_patch_payload(changes)["domains"],
+            ",",
+        )
+        self.assertFalse(
+            advanced._application_domain_state_matches(found, expected["domains"])
+        )
+
+    def test_cleared_domain_aliases_are_consistent_and_do_not_repatch(self):
+        found = {"domains": "", "fqdn": None}
+
+        self.assertTrue(advanced._application_domain_state_matches(found, ""))
+
     def test_public_gateway_resets_only_a_stale_disabled_proxy_label(self):
         found = {"custom_labels": "dHJhZWZpay5lbmFibGU9ZmFsc2U="}
         expected = {"domains": "https://dev.example.goodmorning.mx"}

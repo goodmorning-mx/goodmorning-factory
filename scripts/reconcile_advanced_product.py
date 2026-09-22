@@ -608,11 +608,14 @@ def _application_mutable_changes(found: dict[str, Any], expected: dict[str, Any]
     # a v3 volume declaration is required to manage it.
     if app.get("persistent_volume") is not None:
         mutable_fields = (*mutable_fields, "custom_docker_run_options")
-    return {
-        key: expected[key]
-        for key in mutable_fields
-        if str(_field(found, key) or "") != str(expected[key] or "")
-    }
+    changes = {}
+    for key in mutable_fields:
+        if key == "domains":
+            if not _application_domain_state_matches(found, expected[key]):
+                changes[key] = expected[key]
+        elif str(_field(found, key) or "") != str(expected[key] or ""):
+            changes[key] = expected[key]
+    return changes
 
 
 def _normalized_domain_list(value: Any) -> list[str]:
@@ -621,6 +624,23 @@ def _normalized_domain_list(value: Any) -> list[str]:
     else:
         values = str(value or "").split(",")
     return [str(item).strip().rstrip("/") for item in values if str(item).strip()]
+
+
+def _application_domain_fields(value: dict[str, Any]) -> dict[str, list[str]]:
+    """Normalize all Coolify domain aliases, not just its preferred API field."""
+    return {
+        name: _normalized_domain_list(value[name])
+        for name in ("domains", "domain", "fqdn")
+        if name in value
+    }
+
+
+def _application_domain_state_matches(value: dict[str, Any], expected: Any) -> bool:
+    expected_domains = _normalized_domain_list(expected)
+    observed = _application_domain_fields(value)
+    if not observed:
+        return not expected_domains
+    return all(domains == expected_domains for domains in observed.values())
 
 
 def _coolify_application_patch_payload(changes: dict[str, Any]) -> dict[str, Any]:
@@ -827,12 +847,11 @@ def _ensure_applications(
                 patch_payload = _coolify_application_patch_payload(changes)
                 client.patch(f"/applications/{urllib.parse.quote(identifier, safe='')}", patch_payload)
                 found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
-                actual_domains = _normalized_domain_list(_application_domains(found))
                 expected_domains = _normalized_domain_list(expected["domains"])
-                if actual_domains != expected_domains:
+                if not _application_domain_state_matches(found, expected["domains"]):
                     raise ReconcileError(
                         f"Coolify did not verify the requested domains for application {name!r}: "
-                        f"found {actual_domains!r}, expected {expected_domains!r}."
+                        f"observed {_application_domain_fields(found)!r}, expected {expected_domains!r}."
                     )
                 if reset_disabled_gateway and "traefik.enable=false" in {
                     line.strip() for line in _decoded_custom_labels(found).splitlines() if line.strip()
