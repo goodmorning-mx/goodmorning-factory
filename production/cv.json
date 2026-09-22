@@ -44,6 +44,18 @@
           "resource": "postgres",
           "driver": "psycopg"
         },
+        {"key": "APP_NAME", "source": "literal", "value": "CV API"},
+        {"key": "APP_ENV", "source": "literal", "value": "prod"},
+        {"key": "ORGANIZATION_ID", "source": "literal", "value": "cv"},
+        {"key": "AUTH_SECRET", "source": "generated_secret"},
+        {"key": "MCP_OAUTH_SECRET", "source": "generated_secret"},
+        {"key": "MCP_ISSUER_URL", "source": "literal", "value": "https://api.cv.goodmorning.mx"},
+        {"key": "MCP_RESOURCE_URL", "source": "literal", "value": "https://api.cv.goodmorning.mx/mcp"},
+        {"key": "AGENT_MODEL", "source": "literal", "value": "gpt-4o-mini"},
+        {"key": "BILLING_INPUT_PER_MILLION", "source": "literal", "value": "0.15"},
+        {"key": "BILLING_OUTPUT_PER_MILLION", "source": "literal", "value": "0.60"},
+        {"key": "BILLING_CACHED_PER_MILLION", "source": "literal", "value": "0.075"},
+        {"key": "BILLING_MARKUP", "source": "literal", "value": "1.20"},
         {"key": "CORS_ORIGINS", "source": "literal", "value": "https://cv.goodmorning.mx"},
         {"key": "PAYMENT_SUCCESS_URL", "source": "literal", "value": "https://cv.goodmorning.mx/app/?payment=success"},
         {"key": "PAYMENT_CANCEL_URL", "source": "literal", "value": "https://cv.goodmorning.mx/app/?payment=cancel"},
@@ -53,6 +65,7 @@
           "binding": "goodmorning/openai-default"
         },
         {"key": "PAYMENT_PROVIDER", "source": "literal", "value": "stripe"},
+        {"key": "CV_PRICE_MXN", "source": "literal", "value": "19900"},
         {"key": "STRIPE_SECRET_KEY", "source": "managed_secret", "binding": "goodmorning/stripe-secret-key"},
         {"key": "STRIPE_WEBHOOK_SECRET", "source": "managed_secret", "binding": "goodmorning/stripe-webhook-secret"}
       ]
@@ -89,10 +102,10 @@
       "health_path": "/health",
       "auto_deploy": true,
       "environment": [
-        {"key": "NEXT_PUBLIC_API_URL", "source": "literal", "value": "/api"},
-        {"key": "NEXT_PUBLIC_SITE_URL", "source": "literal", "value": "https://cv.goodmorning.mx"},
-        {"key": "NEXT_PUBLIC_SITE_NAME", "source": "literal", "value": "CV · Tu próximo paso"},
-        {"key": "NEXT_PUBLIC_SITE_DESCRIPTION", "source": "literal", "value": "Crea un CV claro, auténtico y listo para tu próximo paso con ayuda de IA."}
+        {"key": "SITE_URL", "source": "literal", "value": "https://cv.goodmorning.mx"},
+        {"key": "SITE_NAME", "source": "literal", "value": "CV · Tu próximo paso"},
+        {"key": "SITE_DESCRIPTION", "source": "literal", "value": "Crea un CV claro, auténtico y listo para tu próximo paso con ayuda de IA."},
+        {"key": "SITE_INDEXABLE", "source": "literal", "value": "true"}
       ],
       "dependencies": []
     },
