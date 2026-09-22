@@ -259,7 +259,7 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         gateway = {"role": "gateway", "domain": "https://dev.example.goodmorning.mx"}
 
         self.assertTrue(advanced._reset_disabled_labels_for_public_gateway(found, expected, gateway))
-        self.assertEqual(expected["custom_labels"], "")
+        self.assertIsNone(expected["custom_labels"])
 
         normal_labels = {"custom_labels": "dHJhZWZpay5lbmFibGU9dHJ1ZQ=="}
         unchanged = {"domains": "https://dev.example.goodmorning.mx"}
