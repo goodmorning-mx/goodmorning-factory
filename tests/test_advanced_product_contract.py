@@ -145,6 +145,22 @@ class AdvancedProductContractTests(unittest.TestCase):
             ],
         )
 
+    def test_production_manifest_accepts_auto_deploy_disabled(self):
+        value = production_manifest()
+        for application in value["applications"]:
+            application["auto_deploy"] = False
+
+        result = contract.validate_manifest(value)
+
+        self.assertTrue(all(application["auto_deploy"] is False for application in result["applications"]))
+
+    def test_development_manifest_requires_native_auto_deploy(self):
+        value = manifest()
+        value["applications"][0]["auto_deploy"] = False
+
+        with self.assertRaisesRegex(contract.ContractError, "development applications must enable native auto-deploy"):
+            contract.validate_manifest(value)
+
     def test_production_requires_exact_release_authorization(self):
         mutations = (
             ("branch", "dev"),
