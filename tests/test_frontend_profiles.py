@@ -136,3 +136,27 @@ class FrontendProfileTests(unittest.TestCase):
         self.assertEqual(hybrid_result["routing"]["gateway"]["public_application"], "frontend-gateway")
         self.assertEqual(hybrid_result["routing"]["gateway"]["routes"][0], {"path": "/", "application": "seo"})
         self.assertEqual({item["key"] for item in hybrid_result["connections"]}, {"REACT_UPSTREAM", "NEXT_UPSTREAM", "API_UPSTREAM"})
+
+        inline = base_manifest()
+        inline["modules"] = []
+        inline["frontend_profile"] = "hybrid"
+        inline["applications"].extend([
+            {
+                "name": "frontend", "role": "gateway", "base_directory": "/frontend", "dockerfile": "/Dockerfile",
+                "port": 80, "domain": "https://dev.profile-test.goodmorning.mx", "health_path": "/health",
+                "auto_deploy": True, "environment": [], "dependencies": [
+                    {"type": "application", "name": "api"},
+                    {"type": "application", "name": "seo"},
+                ],
+            },
+            {
+                "name": "seo", "role": "frontend", "base_directory": "/seo", "dockerfile": "/Dockerfile",
+                "port": 3000, "domain": None, "health_path": "/health", "auto_deploy": True, "environment": [],
+            },
+        ])
+        inline_result = compose_resources_v3(inline)
+        self.assertEqual({item["name"] for item in inline_result["applications"]}, {"api", "frontend", "seo"})
+        self.assertEqual(inline_result["routing"]["gateway"]["public_application"], "frontend")
+        self.assertEqual({(item["target"], item["key"]) for item in inline_result["connections"]}, {
+            ("frontend", "NEXT_UPSTREAM"), ("frontend", "API_UPSTREAM"),
+        })

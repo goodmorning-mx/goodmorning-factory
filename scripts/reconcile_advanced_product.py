@@ -608,6 +608,30 @@ def _application_domains(value: dict[str, Any]) -> Any:
     return None
 
 
+def _decoded_custom_labels(value: dict[str, Any]) -> str:
+    """Decode Coolify's base64 custom-label field, tolerating raw API values."""
+    labels = str(_field(value, "custom_labels") or "")
+    if not labels:
+        return ""
+    try:
+        return base64.b64decode(labels, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return labels
+
+
+def _reset_disabled_labels_for_public_gateway(
+    found: dict[str, Any], expected: dict[str, Any], app: dict[str, Any]
+) -> bool:
+    """Ask Coolify to regenerate defaults only when a gateway was explicitly disabled."""
+    if app.get("role") != "gateway" or not app.get("domain"):
+        return False
+    labels = {line.strip() for line in _decoded_custom_labels(found).splitlines() if line.strip()}
+    if "traefik.enable=false" not in labels:
+        return False
+    expected["custom_labels"] = ""
+    return True
+
+
 def _environment_values(
     app: dict[str, Any],
     database_urls: dict[str, str],
@@ -744,6 +768,7 @@ def _ensure_applications(
             identifier = _uuid(found, "application")
             found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
             expected = _application_payload(manifest, app, context, preview_source)
+            reset_disabled_gateway = _reset_disabled_labels_for_public_gateway(found, expected, app)
             for key in ("git_repository", "git_branch", "build_pack", "base_directory", "dockerfile_location", "ports_exposes"):
                 actual = str(_field(found, key) or "")
                 if key == "git_repository":
@@ -768,6 +793,12 @@ def _ensure_applications(
                     raise ReconcileError(
                         f"Coolify did not verify the requested domains for application {name!r}: "
                         f"found {actual_domains!r}, expected {expected_domains!r}."
+                    )
+                if reset_disabled_gateway and "traefik.enable=false" in {
+                    line.strip() for line in _decoded_custom_labels(found).splitlines() if line.strip()
+                }:
+                    raise ReconcileError(
+                        f"Coolify did not clear the disabled proxy label for public gateway application {name!r}."
                     )
                 actions.append({"resource": name, "kind": "application", "action": "reconciled", "fields": sorted(changes)})
             elif changes:

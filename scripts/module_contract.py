@@ -458,50 +458,68 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
         ensure_frontend_application("seo", next_app=True, public=True)
         result["routing"] = {"mode": "next", "host": f"https://{public_host}", "application": "seo"}
     elif frontend_profile == "hybrid":
-        applications = [item for item in applications if item.get("role") != "frontend" or item.get("name") in {"frontend", "seo"}]
+        applications = [
+            item for item in applications
+            if item.get("role") != "frontend" or item.get("name") in {"frontend", "seo"}
+        ]
         app_by_name = {item.get("name"): item for item in applications}
-        ensure_frontend_application("frontend", next_app=False, public=False)
-        ensure_frontend_application("seo", next_app=True, public=False)
-        gateway = {
-            "name": "frontend-gateway",
-            "role": "gateway",
-            "base_directory": "/gateway",
-            "dockerfile": "/Dockerfile",
-            "port": 80,
-            "domain": f"https://{public_host}",
-            "health_path": "/health",
-            "auto_deploy": True,
-            "environment": [],
-            "dependencies": [
-                {"type": "application", "name": "frontend"},
-                {"type": "application", "name": "seo"},
+        inline_gateway = app_by_name.get("frontend", {}).get("role") == "gateway"
+        if inline_gateway:
+            existing_gateway = app_by_name["frontend"]
+            _require(existing_gateway.get("base_directory") == "/frontend", "Inline hybrid gateway must use the /frontend base directory.")
+            _require(existing_gateway.get("port") == 80, "Inline hybrid gateway must expose port 80.")
+            _require(existing_gateway.get("domain") == f"https://{public_host}", "Inline hybrid gateway must retain the canonical public domain.")
+            _require(existing_gateway.get("health_path") == "/health", "Inline hybrid gateway must use the /health endpoint.")
+            expected_dependencies = [
                 {"type": "application", "name": "api"},
-            ],
-        }
-        existing_gateway = app_by_name.get("frontend-gateway")
-        if existing_gateway is None:
-            applications.append(gateway)
-            app_by_name["frontend-gateway"] = gateway
+                {"type": "application", "name": "seo"},
+            ]
+            _require(existing_gateway.get("dependencies") == expected_dependencies, "Inline hybrid gateway dependencies are incompatible.")
         else:
-            _require(existing_gateway.get("role") == "gateway", "Hybrid gateway must use the gateway role.")
-            _require(existing_gateway.get("base_directory") == "/gateway", "Hybrid gateway has an incompatible base directory.")
-            _require(existing_gateway.get("port") == 80, "Hybrid gateway has an incompatible port.")
-            _require(existing_gateway.get("domain") == f"https://{public_host}", "Hybrid gateway must own the canonical public domain.")
-            _require(existing_gateway.get("health_path") == "/health", "Hybrid gateway has an incompatible health path.")
-            _require(existing_gateway.get("dependencies") == gateway["dependencies"], "Hybrid gateway dependencies are incompatible.")
-        for key, source in (
-            ("REACT_UPSTREAM", "frontend"),
-            ("NEXT_UPSTREAM", "seo"),
-            ("API_UPSTREAM", "api"),
-        ):
-            if not any(item.get("target") == "frontend-gateway" and item.get("key") == key for item in connections):
-                connections.append({"target": "frontend-gateway", "key": key, "source": {"type": "application", "resource": source}})
+            ensure_frontend_application("frontend", next_app=False, public=False)
+        ensure_frontend_application("seo", next_app=True, public=False)
+        if inline_gateway:
+            gateway_name = "frontend"
+            upstreams = (("NEXT_UPSTREAM", "seo"), ("API_UPSTREAM", "api"))
+        else:
+            gateway = {
+                "name": "frontend-gateway",
+                "role": "gateway",
+                "base_directory": "/gateway",
+                "dockerfile": "/Dockerfile",
+                "port": 80,
+                "domain": f"https://{public_host}",
+                "health_path": "/health",
+                "auto_deploy": True,
+                "environment": [],
+                "dependencies": [
+                    {"type": "application", "name": "frontend"},
+                    {"type": "application", "name": "seo"},
+                    {"type": "application", "name": "api"},
+                ],
+            }
+            existing_gateway = app_by_name.get("frontend-gateway")
+            if existing_gateway is None:
+                applications.append(gateway)
+                app_by_name["frontend-gateway"] = gateway
+            else:
+                _require(existing_gateway.get("role") == "gateway", "Hybrid gateway must use the gateway role.")
+                _require(existing_gateway.get("base_directory") == "/gateway", "Hybrid gateway has an incompatible base directory.")
+                _require(existing_gateway.get("port") == 80, "Hybrid gateway has an incompatible port.")
+                _require(existing_gateway.get("domain") == f"https://{public_host}", "Hybrid gateway must own the canonical public domain.")
+                _require(existing_gateway.get("health_path") == "/health", "Hybrid gateway has an incompatible health path.")
+                _require(existing_gateway.get("dependencies") == gateway["dependencies"], "Hybrid gateway dependencies are incompatible.")
+            gateway_name = "frontend-gateway"
+            upstreams = (("REACT_UPSTREAM", "frontend"), ("NEXT_UPSTREAM", "seo"), ("API_UPSTREAM", "api"))
+        for key, source in upstreams:
+            if not any(item.get("target") == gateway_name and item.get("key") == key for item in connections):
+                connections.append({"target": gateway_name, "key": key, "source": {"type": "application", "resource": source}})
         result["routing"] = {
             "mode": "hybrid",
             "host": f"https://{public_host}",
             "gateway": {
                 "required": True,
-                "public_application": "frontend-gateway",
+                "public_application": gateway_name,
                 "routes": [
                     {"path": "/", "application": "seo"},
                     {"path": "/seo", "application": "seo"},
