@@ -246,6 +246,19 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual(payload["domains"], "")
         self.assertEqual(payload["custom_labels"], "dHJhZWZpay5lbmFibGU9ZmFsc2U=")
 
+    def test_public_gateway_resets_only_a_stale_disabled_proxy_label(self):
+        found = {"custom_labels": "dHJhZWZpay5lbmFibGU9ZmFsc2U="}
+        expected = {"domains": "https://dev.example.goodmorning.mx"}
+        gateway = {"role": "gateway", "domain": "https://dev.example.goodmorning.mx"}
+
+        self.assertTrue(advanced._reset_disabled_labels_for_public_gateway(found, expected, gateway))
+        self.assertEqual(expected["custom_labels"], "")
+
+        normal_labels = {"custom_labels": "dHJhZWZpay5lbmFibGU9dHJ1ZQ=="}
+        unchanged = {"domains": "https://dev.example.goodmorning.mx"}
+        self.assertFalse(advanced._reset_disabled_labels_for_public_gateway(normal_labels, unchanged, gateway))
+        self.assertNotIn("custom_labels", unchanged)
+
     def test_production_payload_is_pinned_to_main_and_production(self):
         value = contract.validate_manifest(production_manifest())
         mobile = next(item for item in value["applications"] if item["role"] == "mobile")

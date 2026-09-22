@@ -106,12 +106,12 @@
     },
     {
       "name": "frontend",
-      "role": "frontend",
+      "role": "gateway",
       "base_directory": "/frontend",
       "dockerfile": "/Dockerfile",
       "port": 80,
-      "domain": null,
-      "health_path": "/",
+      "domain": "https://dev.esim.goodmorning.mx",
+      "health_path": "/health",
       "auto_deploy": true,
       "environment": [
         {
@@ -124,6 +124,10 @@
           "source": "literal",
           "value": "/app/"
         }
+      ],
+      "dependencies": [
+        {"type": "application", "name": "api"},
+        {"type": "application", "name": "seo"}
       ]
     },
     {
@@ -158,44 +162,11 @@
         }
       ],
       "dependencies": []
-    },
-    {
-      "name": "frontend-gateway",
-      "role": "gateway",
-      "base_directory": "/gateway",
-      "dockerfile": "/Dockerfile",
-      "port": 80,
-      "domain": "https://dev.esim.goodmorning.mx",
-      "health_path": "/health",
-      "auto_deploy": true,
-      "environment": [],
-      "dependencies": [
-        {
-          "type": "application",
-          "name": "frontend"
-        },
-        {
-          "type": "application",
-          "name": "seo"
-        },
-        {
-          "type": "application",
-          "name": "api"
-        }
-      ]
     }
   ],
   "connections": [
     {
-      "target": "frontend-gateway",
-      "key": "REACT_UPSTREAM",
-      "source": {
-        "type": "application",
-        "resource": "frontend"
-      }
-    },
-    {
-      "target": "frontend-gateway",
+      "target": "frontend",
       "key": "NEXT_UPSTREAM",
       "source": {
         "type": "application",
@@ -203,7 +174,7 @@
       }
     },
     {
-      "target": "frontend-gateway",
+      "target": "frontend",
       "key": "API_UPSTREAM",
       "source": {
         "type": "application",
@@ -216,7 +187,7 @@
     "host": "https://dev.esim.goodmorning.mx",
     "gateway": {
       "required": true,
-      "public_application": "frontend-gateway",
+      "public_application": "frontend",
       "routes": [
         {
           "path": "/",

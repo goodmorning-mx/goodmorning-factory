@@ -224,13 +224,15 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         if frontend_profile == "next":
             _require(routing == {"mode": "next", "host": f"https://{public_host}", "application": "seo"}, "Next routing metadata is invalid.")
         else:
+            gateway_metadata = routing.get("gateway")
+            public_application = gateway_metadata.get("public_application") if isinstance(gateway_metadata, dict) else None
             _require(
                 routing == {
                     "mode": "hybrid",
                     "host": f"https://{public_host}",
                         "gateway": {
                             "required": True,
-                            "public_application": "frontend-gateway",
+                            "public_application": public_application,
                             "routes": [
                                 {"path": "/", "application": "seo"},
                                 {"path": "/seo", "application": "seo"},
@@ -403,14 +405,23 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
     _require(not domain_bindings_raw or production, "Custom domain bindings are supported only by production manifests.")
     applications_by_name = {item["name"]: item for item in applications}
     if frontend_profile == "hybrid":
-        _require(
-            applications_by_name.get("frontend", {}).get("domain") is None
-            and applications_by_name.get("seo", {}).get("domain") is None,
-            "Hybrid React and Next applications must remain private.",
-        )
-        gateway = applications_by_name.get("frontend-gateway")
-        _require(gateway is not None and gateway.get("role") == "gateway", "Hybrid profile requires a frontend-gateway application.")
+        frontend = applications_by_name.get("frontend")
+        seo = applications_by_name.get("seo")
+        inline_gateway = frontend is not None and frontend.get("role") == "gateway"
+        _require(seo is not None and seo.get("domain") is None, "Hybrid SEO application must remain private.")
+        if inline_gateway:
+            gateway = frontend
+            _require(frontend.get("base_directory") == "/frontend" and frontend.get("port") == 80, "Inline hybrid gateway must use /frontend on port 80.")
+            _require("frontend-gateway" not in applications_by_name, "Inline hybrid mode cannot also declare a separate gateway.")
+        else:
+            _require(frontend is not None and frontend.get("role") == "frontend" and frontend.get("domain") is None, "Hybrid React application must remain private.")
+            gateway = applications_by_name.get("frontend-gateway")
+            _require(gateway is not None and gateway.get("role") == "gateway", "Hybrid profile requires a frontend-gateway application.")
+        _require(gateway.get("role") == "gateway", "Hybrid gateway must use the gateway role.")
         _require(gateway.get("domain") == f"https://{product}.goodmorning.mx" if production else gateway.get("domain") == f"https://dev.{product}.goodmorning.mx", "Hybrid gateway must own the canonical public domain.")
+        if routing is not None:
+            expected_gateway_name = "frontend" if inline_gateway else "frontend-gateway"
+            _require(routing["gateway"]["public_application"] == expected_gateway_name, "Hybrid routing must point to its declared public gateway.")
     bound_hosts: set[str] = set(public_domains)
     domain_bindings: list[dict[str, Any]] = []
     for binding in domain_bindings_raw:
