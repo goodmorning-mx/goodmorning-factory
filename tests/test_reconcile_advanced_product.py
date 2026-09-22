@@ -53,6 +53,25 @@ class ExistingAppPlanClient(FakeClient):
 
 
 class ReconcileAdvancedProductTests(unittest.TestCase):
+    def test_production_application_payload_cannot_auto_deploy(self):
+        value = contract.validate_manifest(production_manifest())
+        for app in value["applications"]:
+            with self.subTest(application=app["name"]):
+                payload = advanced._application_payload(
+                    value,
+                    app,
+                    {
+                        "project_uuid": "project-1",
+                        "environment_uuid": "environment-1",
+                        "server_uuid": "server-1",
+                        "destination_uuid": "destination-1",
+                        "github_app_uuid": "github-app-1",
+                    },
+                )
+                self.assertEqual(payload["git_branch"], "main")
+                self.assertFalse(payload["instant_deploy"])
+                self.assertFalse(payload["is_auto_deploy_enabled"])
+
     def test_coolify_validation_diagnostics_report_fields_without_values(self):
         detail = advanced._coolify_error_detail(
             '{"message":"Validation failed.","errors":{"custom_labels":["secret submitted value"]}}'

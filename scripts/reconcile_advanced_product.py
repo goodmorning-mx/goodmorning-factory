@@ -519,6 +519,14 @@ def _legacy_environment(client: Coolify, manifest: dict[str, Any]) -> dict[str, 
 def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context: dict[str, str | None], preview_source: dict[str, str] | None = None) -> dict[str, Any]:
     product = manifest["product"]
     environment_name = _environment(manifest)
+    # Production deployments are started only by the reviewed Factory
+    # promotion workflow, after its pre-deployment backup gate. Never let a
+    # product-branch push or initial application creation deploy production.
+    native_auto_deploy = (
+        environment_name != "production"
+        and preview_source is None
+        and bool(app.get("auto_deploy", True))
+    )
     suffix = _suffix(manifest)
     resource_name = f"{product}-{app['name']}-{suffix}"
     role = app["role"]
@@ -547,10 +555,10 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         # Keep the manifest's established primary domain first, then append
         # explicitly reviewed custom-domain bindings.
         "domains": ",".join(domains),
-        # Native Coolify auto-deploy is part of the v3 desired state.  The
-        # initial create may still be followed by an explicit deploy request.
-        "instant_deploy": False if preview_source else True,
-        "is_auto_deploy_enabled": False if preview_source else True,
+        # DEV follows its reviewed auto-deploy setting. Production and pinned
+        # previews stay inert until their owning workflow explicitly deploys.
+        "instant_deploy": native_auto_deploy,
+        "is_auto_deploy_enabled": native_auto_deploy,
         "autogenerate_domain": False,
         "connect_to_docker_network": True,
         "health_check_enabled": role != "worker",

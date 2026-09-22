@@ -36,7 +36,7 @@
       "port": 8000,
       "domain": "https://api.cv.goodmorning.mx",
       "health_path": "/health",
-      "auto_deploy": true,
+      "auto_deploy": false,
       "environment": [
         {
           "key": "DATABASE_URL",
@@ -78,7 +78,7 @@
       "port": 80,
       "domain": null,
       "health_path": "/",
-      "auto_deploy": true,
+      "auto_deploy": false,
       "environment": [
         {
           "key": "VITE_API_URL",
@@ -100,7 +100,7 @@
       "port": 3000,
       "domain": null,
       "health_path": "/health",
-      "auto_deploy": true,
+      "auto_deploy": false,
       "environment": [
         {"key": "SITE_URL", "source": "literal", "value": "https://cv.goodmorning.mx"},
         {"key": "SITE_NAME", "source": "literal", "value": "CV · Tu próximo paso"},
@@ -117,7 +117,7 @@
       "port": 80,
       "domain": "https://cv.goodmorning.mx",
       "health_path": "/health",
-      "auto_deploy": true,
+      "auto_deploy": false,
       "environment": [],
       "dependencies": [
         {"type": "application", "name": "frontend"},

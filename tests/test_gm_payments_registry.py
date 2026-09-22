@@ -31,3 +31,4 @@ def test_gm_payments_is_not_added_to_existing_product_manifests():
     production = json.loads((root / "production/cv.json").read_text())
     payment_module = next(module for module in production["modules"] if module.get("name") == "gm-payments")
     assert payment_module["version"] == "0.1.1"
+    assert all(app["auto_deploy"] is False for app in production["applications"])
