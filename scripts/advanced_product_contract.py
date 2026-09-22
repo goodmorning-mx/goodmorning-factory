@@ -357,7 +357,13 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
             "Invalid application base directory.",
         )
         _require(isinstance(port, int) and 1 <= port <= 65535, "Invalid application port.")
-        _require(item.get("auto_deploy") is True, "Advanced applications must enable native auto-deploy.")
+        auto_deploy = item.get("auto_deploy")
+        _require(isinstance(auto_deploy, bool), "Advanced applications must declare native auto-deploy as a boolean.")
+        # Keep existing production manifests readable during the rollout. The
+        # reconciler hard-disables native auto-deploy for production regardless
+        # of this legacy declaration; development remains auto-deployed.
+        if not production:
+            _require(auto_deploy is True, "Advanced development applications must enable native auto-deploy.")
         health_path = item.get("health_path")
         _require(isinstance(health_path, str) and health_path.startswith("/") and "?" not in health_path, "Invalid health path.")
         domain = item.get("domain")
