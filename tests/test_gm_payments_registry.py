@@ -7,6 +7,7 @@ def test_gm_payments_is_registered_as_reusable_backend_only_module():
     registry = json.loads((root / "modules/registry.json").read_text())
     entry = next(item for item in registry["modules"] if item["name"] == "gm-payments")
     assert entry["repository"] == "goodmorning-mx/gm-payments"
+    assert entry["version"] == "0.1.1"
     assert entry["backend_package"] == "gm-payments"
     assert "frontend_package" not in entry
     assert entry["deployment_modes"] == ["embedded", "service"]
@@ -22,5 +23,11 @@ def test_gm_payments_is_not_added_to_existing_product_manifests():
         names = {module.get("name") for module in value.get("modules", [])}
         if path.name == "cv.json":
             assert "gm-payments" in names
+            payment_module = next(module for module in value["modules"] if module.get("name") == "gm-payments")
+            assert payment_module["version"] == "0.1.1"
         else:
             assert "gm-payments" not in names, path
+
+    production = json.loads((root / "production/cv.json").read_text())
+    payment_module = next(module for module in production["modules"] if module.get("name") == "gm-payments")
+    assert payment_module["version"] == "0.1.1"

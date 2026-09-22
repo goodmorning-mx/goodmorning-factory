@@ -77,7 +77,7 @@
     {
       "name": "gm-payments",
       "repository": "goodmorning-mx/gm-payments",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "backend_package": "gm-payments",
       "python_requires": ">=3.12",
       "deployment_modes": ["embedded", "service"],
