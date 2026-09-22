@@ -272,6 +272,27 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual(payload["domains"], "")
         self.assertEqual(payload["custom_labels"], "dHJhZWZpay5lbmFibGU9ZmFsc2U=")
 
+    def test_coolify_patch_encodes_private_domain_clear_without_changing_plan_value(self):
+        planned_changes = {
+            "domains": "",
+            "custom_labels": "dHJhZWZpay5lbmFibGU9ZmFsc2U=",
+        }
+
+        patch_payload = advanced._coolify_application_patch_payload(planned_changes)
+
+        self.assertEqual(planned_changes["domains"], "")
+        self.assertEqual(patch_payload["domains"], ",")
+        self.assertEqual(advanced._normalized_domain_list(patch_payload["domains"]), [])
+        self.assertEqual(
+            patch_payload["custom_labels"],
+            "dHJhZWZpay5lbmFibGU9ZmFsc2U=",
+        )
+
+    def test_coolify_patch_preserves_nonempty_application_domains(self):
+        changes = {"domains": "https://api.example.goodmorning.mx"}
+
+        self.assertEqual(advanced._coolify_application_patch_payload(changes), changes)
+
     def test_public_gateway_resets_only_a_stale_disabled_proxy_label(self):
         found = {"custom_labels": "dHJhZWZpay5lbmFibGU9ZmFsc2U="}
         expected = {"domains": "https://dev.example.goodmorning.mx"}

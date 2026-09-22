@@ -623,6 +623,21 @@ def _normalized_domain_list(value: Any) -> list[str]:
     return [str(item).strip().rstrip("/") for item in values if str(item).strip()]
 
 
+def _coolify_application_patch_payload(changes: dict[str, Any]) -> dict[str, Any]:
+    """Encode an explicit empty-domain update so Coolify does not drop it.
+
+    Coolify's Laravel request middleware converts an empty string to ``null``;
+    its API then treats ``domains`` as absent and preserves the old FQDN. A
+    comma-only value remains present, but Coolify's domain-list normalizer
+    filters its empty entries and stores no domains. Keep this API workaround
+    at the PATCH boundary: manifests and read-only plans continue to use ``""``.
+    """
+    payload = dict(changes)
+    if "domains" in payload and not _normalized_domain_list(payload["domains"]):
+        payload["domains"] = ","
+    return payload
+
+
 def _application_domains(value: dict[str, Any]) -> Any:
     """Prefer Coolify's explicit domain field, including an explicit clear."""
     for name in ("domains", "domain", "fqdn"):
@@ -809,7 +824,8 @@ def _ensure_applications(
                     raise ReconcileError(f"Existing application {name!r} is incompatible in {key!r}; automatic replacement is forbidden.")
             changes = _application_mutable_changes(found, expected, app)
             if changes and client.apply:
-                client.patch(f"/applications/{urllib.parse.quote(identifier, safe='')}", changes)
+                patch_payload = _coolify_application_patch_payload(changes)
+                client.patch(f"/applications/{urllib.parse.quote(identifier, safe='')}", patch_payload)
                 found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
                 actual_domains = _normalized_domain_list(_application_domains(found))
                 expected_domains = _normalized_domain_list(expected["domains"])
