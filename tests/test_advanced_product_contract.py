@@ -476,6 +476,8 @@ class AdvancedProductContractTests(unittest.TestCase):
             'test "$(jq -r \'.head_sha\' <<<"${run_json}")" = "${source_sha}"',
             'test "$(jq -er \'.topology\' "${manifest}")" = "resources-v3-production"',
             "COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES: \"true\"",
+            "GOODMORNING_MANAGED_STRIPE_SECRET_KEY: ${{ secrets.GOODMORNING_MANAGED_STRIPE_SECRET_KEY }}",
+            "GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET: ${{ secrets.GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET }}",
             "--confirm-environment production",
             "Smoke every public production application",
             "--retry 30 --retry-delay 10 --retry-all-errors",
