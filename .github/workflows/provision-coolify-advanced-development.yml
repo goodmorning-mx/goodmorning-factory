@@ -147,11 +147,8 @@ jobs:
             done < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- "products/*.json")
             if [ ! -s "${selection}" ] && ! git diff --quiet "${{ github.event.before }}" "${GITHUB_SHA}" -- \
               scripts/advanced_product_contract.py \
-              scripts/module_contract.py \
-              scripts/reconcile_advanced_product.py \
-              scripts/reconcile_database_backups.py \
-              .github/workflows/provision-coolify-advanced-development.yml; then
-              echo "Control-plane implementation changed; selecting the full resources-v3 catalog."
+              scripts/module_contract.py; then
+              echo "Manifest contract changed; selecting the full resources-v3 catalog."
               for manifest in products/*.json; do
                 if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v3" ]; then
                   printf '%s\n' "${manifest}" >> "${selection}"
