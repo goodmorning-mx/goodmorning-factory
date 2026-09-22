@@ -643,7 +643,8 @@ def _reset_disabled_labels_for_public_gateway(
     labels = {line.strip() for line in _decoded_custom_labels(found).splitlines() if line.strip()}
     if "traefik.enable=false" not in labels:
         return False
-    expected["custom_labels"] = ""
+    # Coolify validates non-null values as base64, so clear the override with null.
+    expected["custom_labels"] = None
     return True
 
 
