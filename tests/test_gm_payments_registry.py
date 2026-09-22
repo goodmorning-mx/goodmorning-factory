@@ -31,4 +31,11 @@ def test_gm_payments_is_not_added_to_existing_product_manifests():
     production = json.loads((root / "production/cv.json").read_text())
     payment_module = next(module for module in production["modules"] if module.get("name") == "gm-payments")
     assert payment_module["version"] == "0.1.1"
+    assert payment_module["required_secrets"]["STRIPE_SECRET_KEY"]["binding"] == "goodmorning/cv/production/stripe-secret-key"
+    assert payment_module["required_secrets"]["STRIPE_WEBHOOK_SECRET"]["binding"] == "goodmorning/cv/production/stripe-webhook-secret"
     assert all(app["auto_deploy"] is False for app in production["applications"])
+
+    development = json.loads((root / "products/cv.json").read_text())
+    dev_payment_module = next(module for module in development["modules"] if module.get("name") == "gm-payments")
+    assert dev_payment_module["required_secrets"]["STRIPE_SECRET_KEY"]["binding"] == "goodmorning/stripe-secret-key"
+    assert dev_payment_module["required_secrets"]["STRIPE_WEBHOOK_SECRET"]["binding"] == "goodmorning/stripe-webhook-secret"
