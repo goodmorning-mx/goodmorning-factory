@@ -44,6 +44,10 @@ SUCCESS_DEPLOYMENT = {"finished"}
 SENSITIVE_NAME = ("PASSWORD", "SECRET", "TOKEN", "KEY", "DATABASE_URL", "REDIS_URL")
 MANAGED_SECRET_BINDINGS = {
     "goodmorning/openai-default": "GOODMORNING_MANAGED_OPENAI_API_KEY",
+    "goodmorning/stripe-secret-key": "GOODMORNING_MANAGED_STRIPE_SECRET_KEY",
+    "goodmorning/stripe-webhook-secret": "GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET",
+    "goodmorning/cv/production/stripe-secret-key": "GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_SECRET_KEY",
+    "goodmorning/cv/production/stripe-webhook-secret": "GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_WEBHOOK_SECRET",
     "hosting/admin-bootstrap-password-hash": "HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH",
 }
 
@@ -100,6 +104,24 @@ def _field(item: dict[str, Any], *names: str) -> Any:
         if current not in (None, ""):
             return current
     return None
+
+
+def _coolify_error_detail(raw: str) -> str:
+    """Summarize API validation failures without echoing submitted values."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return "Coolify request failed."
+    if not isinstance(data, dict):
+        return "Coolify request failed."
+    message = data.get("message")
+    message = message if isinstance(message, str) and message else "Coolify request failed."
+    errors = data.get("errors")
+    if isinstance(errors, dict):
+        fields = sorted(key for key in errors if isinstance(key, str))
+        if fields:
+            message += f" Rejected fields: {', '.join(fields)}."
+    return message
 
 
 def _strip_coolify_literal_quotes(value: str) -> str:
@@ -197,10 +219,7 @@ class Coolify:
                 return Response(response.status, data)
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
-            try:
-                message = json.loads(raw).get("message", "Coolify request failed.")
-            except (json.JSONDecodeError, AttributeError):
-                message = "Coolify request failed."
+            message = _coolify_error_detail(raw)
             raise ReconcileError(f"Coolify {method} {path} failed with HTTP {exc.code}: {message}") from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise ReconcileError(f"Coolify {method} {path} failed: {exc}") from exc
@@ -298,15 +317,21 @@ def _verify_adopted_uuid(manifest: dict[str, Any], kind: str, resource_name: str
         )
 
 
+def _coolify_project_name(product: str) -> str:
+    """Keep short product slugs while satisfying Coolify's project-name minimum."""
+    return product if len(product) >= 3 else f"{product}-app"
+
+
 def _discover_context(client: Coolify, manifest: dict[str, Any], server_name: str, github_app_name: str, destination_uuid: str) -> dict[str, str | None]:
     product = manifest["product"]
+    project_name = _coolify_project_name(product)
     environment_name = _environment(manifest)
     servers = _items(client.get("/servers"))
     server = _unique(servers, server_name, "server")
     if not server:
         raise ReconcileError(f"Coolify server {server_name!r} was not found.")
     projects = _items(client.get("/projects"))
-    project = _unique(projects, product, "project")
+    project = _unique(projects, project_name, "project")
     environment = None
     if project:
         project_uuid = _uuid(project, "project")
@@ -332,7 +357,7 @@ def _ensure_project_environment(client: Coolify, manifest: dict[str, Any], conte
         if not client.apply:
             actions.append({"resource": product, "kind": "project", "action": "would_create"})
             return
-        created = client.post("/projects", {"name": product, "description": f"GoodMorning {product} resources-v3 project."})
+        created = client.post("/projects", {"name": _coolify_project_name(product), "description": f"GoodMorning {product} resources-v3 project."})
         context["project_uuid"] = _uuid(created, "project")
         actions.append({"resource": product, "kind": "project", "action": "created"})
     else:
@@ -496,7 +521,16 @@ def _legacy_environment(client: Coolify, manifest: dict[str, Any]) -> dict[str, 
 def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context: dict[str, str | None], preview_source: dict[str, str] | None = None) -> dict[str, Any]:
     product = manifest["product"]
     environment_name = _environment(manifest)
+    # Production deployments are started only by the reviewed Factory
+    # promotion workflow, after its pre-deployment backup gate. Never let a
+    # product-branch push or initial application creation deploy production.
+    native_auto_deploy = (
+        environment_name != "production"
+        and preview_source is None
+        and bool(app.get("auto_deploy", True))
+    )
     suffix = _suffix(manifest)
+    resource_name = f"{product}-{app['name']}-{suffix}"
     role = app["role"]
     volume = app.get("persistent_volume")
     run_options = ""
@@ -504,8 +538,8 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         run_options = f"--mount type=volume,source={volume['name']},target={volume['mount_path']}"
     domains = [app["domain"]] if app["domain"] else []
     domains.extend(app.get("custom_domains", []))
-    return {
-        "name": f"{product}-{app['name']}-{suffix}",
+    payload = {
+        "name": resource_name,
         "project_uuid": context["project_uuid"],
         "environment_uuid": context["environment_uuid"],
         "environment_name": environment_name,
@@ -523,10 +557,10 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         # Keep the manifest's established primary domain first, then append
         # explicitly reviewed custom-domain bindings.
         "domains": ",".join(domains),
-        # Native Coolify auto-deploy is part of the v3 desired state.  The
-        # initial create may still be followed by an explicit deploy request.
-        "instant_deploy": False if preview_source else True,
-        "is_auto_deploy_enabled": False if preview_source else True,
+        # DEV follows its reviewed auto-deploy setting. Production and pinned
+        # previews stay inert until their owning workflow explicitly deploys.
+        "instant_deploy": native_auto_deploy,
+        "is_auto_deploy_enabled": native_auto_deploy,
         "autogenerate_domain": False,
         "connect_to_docker_network": True,
         "health_check_enabled": role != "worker",
@@ -536,12 +570,30 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         "health_check_scheme": "http",
         "health_check_return_code": 200,
         "custom_docker_run_options": run_options,
+        # Coolify's shared Docker network uses generated container names by
+        # default. Declare the stable Resources V3 name as an alias so
+        # gateway/service bindings can resolve private application upstreams.
+        "custom_network_aliases": resource_name,
     }
+    # Coolify persists generated proxy labels on the application.  When a
+    # resource changes from public to private, clearing only ``domains`` leaves
+    # the old Host rule on the next container and can steal the gateway host.
+    # Manage the label field only for private applications; public resources
+    # keep Coolify's generated routing labels for their declared domain.
+    if not domains:
+        # Coolify persists generated proxy labels as base64 and its API does
+        # not regenerate them when ``domains`` is cleared. Keep the private
+        # application explicitly out of Traefik while preserving the public
+        # gateway/API labels managed by Coolify.
+        payload["custom_labels"] = base64.b64encode(b"traefik.enable=false").decode("ascii")
+    return payload
 
 
 def _application_mutable_changes(found: dict[str, Any], expected: dict[str, Any], app: dict[str, Any]) -> dict[str, Any]:
     mutable_fields = (
         "domains",
+        "custom_network_aliases",
+        *( ("custom_labels",) if "custom_labels" in expected else () ),
         *( ("git_commit_sha",) if "git_commit_sha" in expected else () ),
         "instant_deploy",
         "is_auto_deploy_enabled",
@@ -558,11 +610,14 @@ def _application_mutable_changes(found: dict[str, Any], expected: dict[str, Any]
     # a v3 volume declaration is required to manage it.
     if app.get("persistent_volume") is not None:
         mutable_fields = (*mutable_fields, "custom_docker_run_options")
-    return {
-        key: expected[key]
-        for key in mutable_fields
-        if str(_field(found, key) or "") != str(expected[key] or "")
-    }
+    changes = {}
+    for key in mutable_fields:
+        if key == "domains":
+            if not _application_domain_state_matches(found, expected[key]):
+                changes[key] = expected[key]
+        elif str(_field(found, key) or "") != str(expected[key] or ""):
+            changes[key] = expected[key]
+    return changes
 
 
 def _normalized_domain_list(value: Any) -> list[str]:
@@ -571,6 +626,71 @@ def _normalized_domain_list(value: Any) -> list[str]:
     else:
         values = str(value or "").split(",")
     return [str(item).strip().rstrip("/") for item in values if str(item).strip()]
+
+
+def _application_domain_fields(value: dict[str, Any]) -> dict[str, list[str]]:
+    """Normalize all Coolify domain aliases, not just its preferred API field."""
+    return {
+        name: _normalized_domain_list(value[name])
+        for name in ("domains", "domain", "fqdn")
+        if name in value
+    }
+
+
+def _application_domain_state_matches(value: dict[str, Any], expected: Any) -> bool:
+    expected_domains = _normalized_domain_list(expected)
+    observed = _application_domain_fields(value)
+    if not observed:
+        return not expected_domains
+    return all(domains == expected_domains for domains in observed.values())
+
+
+def _coolify_application_patch_payload(changes: dict[str, Any]) -> dict[str, Any]:
+    """Encode an explicit empty-domain update so Coolify does not drop it.
+
+    Coolify's Laravel request middleware converts an empty string to ``null``;
+    its API then treats ``domains`` as absent and preserves the old FQDN. A
+    comma-only value remains present, but Coolify's domain-list normalizer
+    filters its empty entries and stores no domains. Keep this API workaround
+    at the PATCH boundary: manifests and read-only plans continue to use ``""``.
+    """
+    payload = dict(changes)
+    if "domains" in payload and not _normalized_domain_list(payload["domains"]):
+        payload["domains"] = ","
+    return payload
+
+
+def _application_domains(value: dict[str, Any]) -> Any:
+    """Prefer Coolify's explicit domain field, including an explicit clear."""
+    for name in ("domains", "domain", "fqdn"):
+        if name in value:
+            return value[name]
+    return None
+
+
+def _decoded_custom_labels(value: dict[str, Any]) -> str:
+    """Decode Coolify's base64 custom-label field, tolerating raw API values."""
+    labels = str(_field(value, "custom_labels") or "")
+    if not labels:
+        return ""
+    try:
+        return base64.b64decode(labels, validate=True).decode("utf-8")
+    except (ValueError, UnicodeDecodeError):
+        return labels
+
+
+def _reset_disabled_labels_for_public_gateway(
+    found: dict[str, Any], expected: dict[str, Any], app: dict[str, Any]
+) -> bool:
+    """Ask Coolify to regenerate defaults only when a gateway was explicitly disabled."""
+    if app.get("role") != "gateway" or not app.get("domain"):
+        return False
+    labels = {line.strip() for line in _decoded_custom_labels(found).splitlines() if line.strip()}
+    if "traefik.enable=false" not in labels:
+        return False
+    # Coolify requires valid base64; encode one newline to clear the custom override.
+    expected["custom_labels"] = base64.b64encode(b"\n").decode("ascii")
+    return True
 
 
 def _environment_values(
@@ -654,10 +774,14 @@ def _ensure_applications(
             actions.append({"resource": f"{product}-{app['name']}-{suffix}", "kind": "application", "action": "planned_after_environment"})
         return
     existing = _items(client.get("/applications"))
+    # Application-to-application bindings must stay on Coolify's shared
+    # network. Using a public HTTPS domain from inside the gateway re-enters
+    # the proxy with the gateway Host header and can route to the wrong app.
+    # The stable network aliases declared in the payload are the internal
+    # contract for every service URL binding.
     application_urls = {
-        item["name"]: item["domain"]
+        item["name"]: f"http://{product}-{item['name']}-{suffix}:{item['port']}"
         for item in manifest["applications"]
-        if item.get("domain")
     }
     applications_by_name = {app["name"]: app for app in manifest["applications"]}
     ordered: list[dict[str, Any]] = []
@@ -705,6 +829,7 @@ def _ensure_applications(
             identifier = _uuid(found, "application")
             found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
             expected = _application_payload(manifest, app, context, preview_source)
+            reset_disabled_gateway = _reset_disabled_labels_for_public_gateway(found, expected, app)
             for key in ("git_repository", "git_branch", "build_pack", "base_directory", "dockerfile_location", "ports_exposes"):
                 actual = str(_field(found, key) or "")
                 if key == "git_repository":
@@ -721,10 +846,21 @@ def _ensure_applications(
                     raise ReconcileError(f"Existing application {name!r} is incompatible in {key!r}; automatic replacement is forbidden.")
             changes = _application_mutable_changes(found, expected, app)
             if changes and client.apply:
-                client.patch(f"/applications/{urllib.parse.quote(identifier, safe='')}", changes)
+                patch_payload = _coolify_application_patch_payload(changes)
+                client.patch(f"/applications/{urllib.parse.quote(identifier, safe='')}", patch_payload)
                 found = client.get(f"/applications/{urllib.parse.quote(identifier, safe='')}")
-                if _normalized_domain_list(_field(found, "domains", "domain", "fqdn")) != _normalized_domain_list(expected["domains"]):
-                    raise ReconcileError(f"Coolify did not verify the requested domains for application {name!r}.")
+                expected_domains = _normalized_domain_list(expected["domains"])
+                if not _application_domain_state_matches(found, expected["domains"]):
+                    raise ReconcileError(
+                        f"Coolify did not verify the requested domains for application {name!r}: "
+                        f"observed {_application_domain_fields(found)!r}, expected {expected_domains!r}."
+                    )
+                if reset_disabled_gateway and "traefik.enable=false" in {
+                    line.strip() for line in _decoded_custom_labels(found).splitlines() if line.strip()
+                }:
+                    raise ReconcileError(
+                        f"Coolify did not clear the disabled proxy label for public gateway application {name!r}."
+                    )
                 actions.append({"resource": name, "kind": "application", "action": "reconciled", "fields": sorted(changes)})
             elif changes:
                 actions.append({"resource": name, "kind": "application", "action": "would_update", "fields": sorted(changes)})

@@ -50,6 +50,11 @@ See `docs/coolify-resources-v3.md`,
 `scripts/reconcile_advanced_product.py`, plus
 `scripts/resources_v3_migration.py`.
 
+Frontend deployment profiles are documented in
+`docs/frontend-profiles.md`. Modules and frontend profiles are independent:
+existing products default to react, while new products may explicitly select
+next or hybrid.
+
 ## Compose v1 rollback path
 
 The previous single-Application Docker Compose topology remains supported as

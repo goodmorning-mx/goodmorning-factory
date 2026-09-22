@@ -165,17 +165,23 @@ def field(item: dict[str, Any], *names: str) -> Any:
 def discover_project(
     projects: list[dict[str, Any]], product: str
 ) -> dict[str, Any] | None:
+    project_name = product if len(product) >= 3 else f"{product}-app"
     matches = [
         project
         for project in projects
         if str(field(project, "name", "slug") or "").strip().lower()
-        == product.strip().lower()
+        == project_name.strip().lower()
     ]
     if len(matches) > 1:
         raise ProvisioningError(
-            f"Coolify project named {product!r} is duplicated; exact selection is ambiguous."
+            f"Coolify project named {project_name!r} is duplicated; exact selection is ambiguous."
         )
     return matches[0] if matches else None
+
+
+def coolify_project_name(product: str) -> str:
+    """Use a Coolify-compatible project name while preserving short product slugs."""
+    return product if len(product) >= 3 else f"{product}-app"
 
 
 def project_environment(
@@ -196,7 +202,7 @@ def project_environment_exists(project: dict[str, Any], environment: str) -> boo
 
 
 def create_project(args: argparse.Namespace) -> dict[str, Any]:
-    created = request("POST", "/projects", body={"name": args.product}).data
+    created = request("POST", "/projects", body={"name": coolify_project_name(args.product)}).data
     if not isinstance(created, dict):
         raise ProvisioningError("Malformed Coolify project creation response.")
     project = created.get("data") if isinstance(created.get("data"), dict) else created
@@ -1069,9 +1075,9 @@ def provision(args: argparse.Namespace) -> dict[str, Any]:
     planned_project = None
     project_created = False
     if project is None:
-        planned_project = {"name": args.product}
+        planned_project = {"name": coolify_project_name(args.product)}
         if args.dry_run:
-            project = {"uuid": None, "name": args.product}
+            project = {"uuid": None, "name": coolify_project_name(args.product)}
         else:
             project = create_project(args)
             project_created = True

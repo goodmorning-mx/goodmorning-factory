@@ -1,10 +1,47 @@
 {
   "topology": "resources-v3",
+  "frontend_profile": "hybrid",
   "product": "esim",
   "repository": "goodmorning-mx/esim",
   "branch": "dev",
   "development_domain": "dev.esim.goodmorning.mx",
   "coolify_github_app_name": "goodmorning-mx-coolify",
+  "modules": [
+    {
+      "name": "gm-pwa",
+      "version": "0.1.4",
+      "kind": "frontend",
+      "frontend_package": "@goodmorning/gm-pwa",
+      "node_requires": ["react>=18"],
+      "deployment_modes": ["embedded"],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [],
+      "bindings": [],
+      "dependencies": [],
+      "env": [],
+      "required_secrets": {},
+      "migrations": {"mode": "none"},
+      "pwa": {"manifest_required": true, "service_worker_required": true, "update_mode": "prompt", "api_auth_cache": "network-only"},
+      "compatibility": {"node": ">=20", "factory_api": "^1.0", "products": ["esim"]}
+    },
+    {
+      "name": "gm-auth",
+      "version": "0.1.4",
+      "kind": "full-stack",
+      "backend_package": "gm-auth",
+      "frontend_package": "@goodmorning/gm-auth",
+      "node_requires": ["react>=18"],
+      "deployment_modes": ["embedded", "service"],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [{"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true}],
+      "bindings": [{"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "backend"}],
+      "dependencies": [],
+      "env": [],
+      "required_secrets": {},
+      "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1},
+      "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["esim"]}
+    }
+  ],
   "applications": [
     {
       "name": "api",
@@ -56,27 +93,121 @@
           "key": "CATALOG_SYNC_TOKEN",
           "source": "managed_secret",
           "binding": "CATALOG_SYNC_TOKEN"
+        },
+        {
+          "key": "AUTH_SECRET",
+          "source": "generated_secret"
+        },
+        {
+          "key": "ADMIN_BOOTSTRAP_PASSWORD",
+          "source": "generated_secret"
         }
       ]
     },
     {
       "name": "frontend",
-      "role": "frontend",
+      "role": "gateway",
       "base_directory": "/frontend",
       "dockerfile": "/Dockerfile",
       "port": 80,
       "domain": "https://dev.esim.goodmorning.mx",
-      "health_path": "/",
+      "health_path": "/health",
       "auto_deploy": true,
       "environment": [
         {
           "key": "VITE_API_URL",
           "source": "literal",
-          "value": "https://api.dev.esim.goodmorning.mx"
+          "value": "/api"
+        },
+        {
+          "key": "VITE_BASE_PATH",
+          "source": "literal",
+          "value": "/app/"
+        }
+      ],
+      "dependencies": [
+        {"type": "application", "name": "api"},
+        {"type": "application", "name": "seo"}
+      ]
+    },
+    {
+      "name": "seo",
+      "role": "frontend",
+      "base_directory": "/seo",
+      "dockerfile": "/Dockerfile",
+      "port": 3000,
+      "domain": null,
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "API_INTERNAL_URL",
+          "source": "service_url",
+          "resource": "api"
+        },
+        {
+          "key": "SITE_URL",
+          "source": "literal",
+          "value": "https://dev.esim.goodmorning.mx"
+        },
+        {
+          "key": "SITE_NAME",
+          "source": "literal",
+          "value": "GoodMorning eSIM"
+        },
+        {
+          "key": "SITE_DESCRIPTION",
+          "source": "literal",
+          "value": "Compara planes eSIM para viajar por país, cobertura, datos y duración."
+        }
+      ],
+      "dependencies": []
+    }
+  ],
+  "connections": [
+    {
+      "target": "frontend",
+      "key": "NEXT_UPSTREAM",
+      "source": {
+        "type": "application",
+        "resource": "seo"
+      }
+    },
+    {
+      "target": "frontend",
+      "key": "API_UPSTREAM",
+      "source": {
+        "type": "application",
+        "resource": "api"
+      }
+    }
+  ],
+  "routing": {
+    "mode": "hybrid",
+    "host": "https://dev.esim.goodmorning.mx",
+    "gateway": {
+      "required": true,
+      "public_application": "frontend",
+      "routes": [
+        {
+          "path": "/",
+          "application": "seo"
+        },
+        {
+          "path": "/seo",
+          "application": "seo"
+        },
+        {
+          "path": "/app",
+          "application": "frontend"
+        },
+        {
+          "path": "/api",
+          "application": "api"
         }
       ]
     }
-  ],
+  },
   "databases": [
     {
       "name": "postgres",

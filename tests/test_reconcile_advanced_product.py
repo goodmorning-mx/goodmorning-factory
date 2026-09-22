@@ -53,6 +53,32 @@ class ExistingAppPlanClient(FakeClient):
 
 
 class ReconcileAdvancedProductTests(unittest.TestCase):
+    def test_production_application_payload_cannot_auto_deploy(self):
+        value = contract.validate_manifest(production_manifest())
+        for app in value["applications"]:
+            with self.subTest(application=app["name"]):
+                payload = advanced._application_payload(
+                    value,
+                    app,
+                    {
+                        "project_uuid": "project-1",
+                        "environment_uuid": "environment-1",
+                        "server_uuid": "server-1",
+                        "destination_uuid": "destination-1",
+                        "github_app_uuid": "github-app-1",
+                    },
+                )
+                self.assertEqual(payload["git_branch"], "main")
+                self.assertFalse(payload["instant_deploy"])
+                self.assertFalse(payload["is_auto_deploy_enabled"])
+
+    def test_coolify_validation_diagnostics_report_fields_without_values(self):
+        detail = advanced._coolify_error_detail(
+            '{"message":"Validation failed.","errors":{"custom_labels":["secret submitted value"]}}'
+        )
+        self.assertEqual(detail, "Validation failed. Rejected fields: custom_labels.")
+        self.assertNotIn("secret submitted value", detail)
+
     def test_resolve_deployment_uuid_uses_latest_persisted_record_after_deduplication(self):
         class DeploymentHistoryClient:
             def get(self, path):
@@ -223,7 +249,100 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual(payload["dockerfile_location"], "/mobile/Dockerfile")
         self.assertEqual(payload["ports_exposes"], "8060")
         self.assertEqual(payload["custom_docker_run_options"], "")
+        self.assertEqual(payload["custom_network_aliases"], "helloworldv2-mobile-dev")
         self.assertTrue(payload["is_auto_deploy_enabled"])
+
+    def test_private_application_clears_stale_proxy_labels(self):
+        value = contract.validate_manifest(manifest())
+        private_frontend = next(
+            item for item in value["applications"] if item["role"] == "worker"
+        )
+        payload = advanced._application_payload(
+            value,
+            private_frontend,
+            {
+                "project_uuid": "project",
+                "environment_uuid": "environment",
+                "server_uuid": "server",
+                "destination_uuid": "destination",
+                "github_app_uuid": "github",
+            },
+        )
+
+        self.assertEqual(payload["domains"], "")
+        self.assertEqual(payload["custom_labels"], "dHJhZWZpay5lbmFibGU9ZmFsc2U=")
+
+    def test_coolify_patch_encodes_private_domain_clear_without_changing_plan_value(self):
+        planned_changes = {
+            "domains": "",
+            "custom_labels": "dHJhZWZpay5lbmFibGU9ZmFsc2U=",
+        }
+
+        patch_payload = advanced._coolify_application_patch_payload(planned_changes)
+
+        self.assertEqual(planned_changes["domains"], "")
+        self.assertEqual(patch_payload["domains"], ",")
+        self.assertEqual(advanced._normalized_domain_list(patch_payload["domains"]), [])
+        self.assertEqual(
+            patch_payload["custom_labels"],
+            "dHJhZWZpay5lbmFibGU9ZmFsc2U=",
+        )
+
+    def test_coolify_patch_preserves_nonempty_application_domains(self):
+        changes = {"domains": "https://api.example.goodmorning.mx"}
+
+        self.assertEqual(advanced._coolify_application_patch_payload(changes), changes)
+
+    def test_stale_legacy_fqdn_forces_domain_clear_even_when_domains_alias_is_empty(self):
+        value = contract.validate_manifest(manifest())
+        private_frontend = next(
+            item for item in value["applications"] if item["role"] == "worker"
+        )
+        expected = advanced._application_payload(
+            value,
+            private_frontend,
+            {
+                "project_uuid": "project",
+                "environment_uuid": "environment",
+                "server_uuid": "server",
+                "destination_uuid": "destination",
+                "github_app_uuid": "github",
+            },
+        )
+        found = {
+            **expected,
+            "domains": "",
+            "fqdn": "https://cv.goodmorning.mx",
+        }
+
+        changes = advanced._application_mutable_changes(found, expected, private_frontend)
+
+        self.assertEqual(changes["domains"], "")
+        self.assertEqual(
+            advanced._coolify_application_patch_payload(changes)["domains"],
+            ",",
+        )
+        self.assertFalse(
+            advanced._application_domain_state_matches(found, expected["domains"])
+        )
+
+    def test_cleared_domain_aliases_are_consistent_and_do_not_repatch(self):
+        found = {"domains": "", "fqdn": None}
+
+        self.assertTrue(advanced._application_domain_state_matches(found, ""))
+
+    def test_public_gateway_resets_only_a_stale_disabled_proxy_label(self):
+        found = {"custom_labels": "dHJhZWZpay5lbmFibGU9ZmFsc2U="}
+        expected = {"domains": "https://dev.example.goodmorning.mx"}
+        gateway = {"role": "gateway", "domain": "https://dev.example.goodmorning.mx"}
+
+        self.assertTrue(advanced._reset_disabled_labels_for_public_gateway(found, expected, gateway))
+        self.assertEqual(expected["custom_labels"], "Cg==")
+
+        normal_labels = {"custom_labels": "dHJhZWZpay5lbmFibGU9dHJ1ZQ=="}
+        unchanged = {"domains": "https://dev.example.goodmorning.mx"}
+        self.assertFalse(advanced._reset_disabled_labels_for_public_gateway(normal_labels, unchanged, gateway))
+        self.assertNotIn("custom_labels", unchanged)
 
     def test_production_payload_is_pinned_to_main_and_production(self):
         value = contract.validate_manifest(production_manifest())
@@ -374,6 +493,43 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual(values[0]["value"], "secret-value")
         self.assertTrue(values[0]["is_shown_once"])
 
+    def test_stripe_managed_secret_bindings_resolve_from_factory_environment(self):
+        app = {
+            "environment": [
+                {"key": "STRIPE_SECRET_KEY", "source": "managed_secret", "binding": "goodmorning/stripe-secret-key"},
+                {"key": "STRIPE_WEBHOOK_SECRET", "source": "managed_secret", "binding": "goodmorning/stripe-webhook-secret"},
+            ]
+        }
+        with patch.dict(os.environ, {
+            "GOODMORNING_MANAGED_STRIPE_SECRET_KEY": "test-only-stripe-key",
+            "GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET": "test-only-webhook-secret",
+        }, clear=True):
+            values = advanced._environment_values(app, {}, {}, {})
+        self.assertEqual([item["key"] for item in values], ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"])
+        self.assertTrue(all(item["is_shown_once"] for item in values))
+
+    def test_cv_production_stripe_bindings_never_fall_back_to_development_secrets(self):
+        app = {
+            "environment": [
+                {"key": "STRIPE_SECRET_KEY", "source": "managed_secret", "binding": "goodmorning/cv/production/stripe-secret-key"},
+                {"key": "STRIPE_WEBHOOK_SECRET", "source": "managed_secret", "binding": "goodmorning/cv/production/stripe-webhook-secret"},
+            ]
+        }
+        with patch.dict(os.environ, {
+            "GOODMORNING_MANAGED_STRIPE_SECRET_KEY": "test-only-stripe-key",
+            "GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET": "test-only-webhook-secret",
+        }, clear=True):
+            with self.assertRaisesRegex(advanced.ReconcileError, "source for 'STRIPE_SECRET_KEY' is unavailable"):
+                advanced._environment_values(app, {}, {}, {})
+
+        with patch.dict(os.environ, {
+            "GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_SECRET_KEY": "sk_live_placeholder",
+            "GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_WEBHOOK_SECRET": "whsec_placeholder",
+        }, clear=True):
+            values = advanced._environment_values(app, {}, {}, {})
+        self.assertEqual([item["key"] for item in values], ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"])
+        self.assertTrue(all(item["is_shown_once"] for item in values))
+
     def test_adoption_does_not_clear_undeclared_existing_volume_options(self):
         value = contract.validate_manifest(manifest())
         value["migration"] = {
@@ -410,6 +566,11 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertTrue(
             advanced._scope_conflicts({"project_uuid": "another-project"}, context)
         )
+
+    def test_explicitly_cleared_domains_do_not_fall_through_to_legacy_fqdn(self):
+        response = {"domains": "", "fqdn": "https://legacy.example"}
+        self.assertEqual(advanced._application_domains(response), "")
+        self.assertEqual(advanced._normalized_domain_list(advanced._application_domains(response)), [])
 
 
 if __name__ == "__main__":

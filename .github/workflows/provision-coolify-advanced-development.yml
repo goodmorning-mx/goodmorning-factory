@@ -9,6 +9,7 @@ on:
     paths:
       - "products/*.json"
       - "scripts/advanced_product_contract.py"
+      - "scripts/module_contract.py"
       - "scripts/reconcile_advanced_product.py"
       - "scripts/resources_v3_migration.py"
       - "scripts/register_product_manifest.py"
@@ -46,6 +47,8 @@ jobs:
       COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0' }}
       COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
       GOODMORNING_MANAGED_OPENAI_API_KEY: ${{ secrets.GOODMORNING_MANAGED_OPENAI_API_KEY }}
+      GOODMORNING_MANAGED_STRIPE_SECRET_KEY: ${{ secrets.GOODMORNING_MANAGED_STRIPE_SECRET_KEY }}
+      GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET: ${{ secrets.GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET }}
       ROAMGO_KEY_ID: ${{ secrets.ROAMGO_KEY_ID }}
       ROAMGO_SECRET: ${{ secrets.ROAMGO_SECRET }}
       CATALOG_SYNC_TOKEN: ${{ secrets.CATALOG_SYNC_TOKEN }}
@@ -144,10 +147,8 @@ jobs:
             done < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- "products/*.json")
             if [ ! -s "${selection}" ] && ! git diff --quiet "${{ github.event.before }}" "${GITHUB_SHA}" -- \
               scripts/advanced_product_contract.py \
-              scripts/reconcile_advanced_product.py \
-              scripts/reconcile_database_backups.py \
-              .github/workflows/provision-coolify-advanced-development.yml; then
-              echo "Control-plane implementation changed; selecting the full resources-v3 catalog."
+              scripts/module_contract.py; then
+              echo "Manifest contract changed; selecting the full resources-v3 catalog."
               for manifest in products/*.json; do
                 if [ "$(jq -r '.topology // empty' "${manifest}")" = "resources-v3" ]; then
                   printf '%s\n' "${manifest}" >> "${selection}"

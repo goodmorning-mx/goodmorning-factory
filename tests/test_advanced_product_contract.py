@@ -145,6 +145,22 @@ class AdvancedProductContractTests(unittest.TestCase):
             ],
         )
 
+    def test_production_manifest_accepts_auto_deploy_disabled(self):
+        value = production_manifest()
+        for application in value["applications"]:
+            application["auto_deploy"] = False
+
+        result = contract.validate_manifest(value)
+
+        self.assertTrue(all(application["auto_deploy"] is False for application in result["applications"]))
+
+    def test_development_manifest_requires_native_auto_deploy(self):
+        value = manifest()
+        value["applications"][0]["auto_deploy"] = False
+
+        with self.assertRaisesRegex(contract.ContractError, "development applications must enable native auto-deploy"):
+            contract.validate_manifest(value)
+
     def test_production_requires_exact_release_authorization(self):
         mutations = (
             ("branch", "dev"),
@@ -412,7 +428,7 @@ class AdvancedProductContractTests(unittest.TestCase):
         self.assertIn("ADVANCED_APPLY_MANIFESTS", workflow)
         self.assertIn("steps.select.outputs.apply_selected == 'true'", workflow)
         self.assertIn(
-            "Control-plane implementation changed; selecting the full resources-v3 catalog.",
+            "Manifest contract changed; selecting the full resources-v3 catalog.",
             workflow,
         )
 
@@ -460,6 +476,12 @@ class AdvancedProductContractTests(unittest.TestCase):
             'test "$(jq -r \'.head_sha\' <<<"${run_json}")" = "${source_sha}"',
             'test "$(jq -er \'.topology\' "${manifest}")" = "resources-v3-production"',
             "COOLIFY_ALLOW_ADVANCED_PRODUCTION_WRITES: \"true\"",
+            "GOODMORNING_MANAGED_STRIPE_SECRET_KEY: ${{ secrets.GOODMORNING_MANAGED_STRIPE_SECRET_KEY }}",
+            "GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET: ${{ secrets.GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET }}",
+            "GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_SECRET_KEY: ${{ secrets.GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_SECRET_KEY }}",
+            "GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_WEBHOOK_SECRET: ${{ secrets.GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_WEBHOOK_SECRET }}",
+            "payment_mode=\"$(jq -er '.modules[] | select(.name == \"gm-payments\") | .env[] | select(.key == \"PAYMENT_MODE\") | .default' \"${manifest}\")\"",
+            "python scripts/validate_cv_production_secrets.py --mode \"${payment_mode}\"",
             "--confirm-environment production",
             "Smoke every public production application",
             "--retry 30 --retry-delay 10 --retry-all-errors",

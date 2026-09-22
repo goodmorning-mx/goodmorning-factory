@@ -36,6 +36,10 @@ jobs:
       COOLIFY_DESTINATION_UUID: ${{ vars.COOLIFY_RESOURCES_DESTINATION_UUID || 'g61slcctgnbvhhc8si0h9tf0' }}
       COOLIFY_ALLOW_REAL_DEPLOYMENT: ${{ vars.COOLIFY_ALLOW_REAL_DEPLOYMENT }}
       GOODMORNING_MANAGED_OPENAI_API_KEY: ${{ secrets.GOODMORNING_MANAGED_OPENAI_API_KEY }}
+      GOODMORNING_MANAGED_STRIPE_SECRET_KEY: ${{ secrets.GOODMORNING_MANAGED_STRIPE_SECRET_KEY }}
+      GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET: ${{ secrets.GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET }}
+      GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_SECRET_KEY: ${{ secrets.GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_SECRET_KEY }}
+      GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_WEBHOOK_SECRET: ${{ secrets.GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_WEBHOOK_SECRET }}
       HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH: ${{ secrets.HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH }}
       OCI_S3_ACCESS_KEY: ${{ secrets.OCI_S3_ACCESS_KEY }}
       OCI_S3_SECRET_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
@@ -129,6 +133,10 @@ jobs:
           test "$(jq -er '.repository' "${manifest}")" = "${repository}"
           test "$(jq -er '.branch' "${manifest}")" = "main"
           test "$(jq -r '.confirm_production // false' "${manifest}")" = "true"
+          if [ "${product}" = "cv" ]; then
+            payment_mode="$(jq -er '.modules[] | select(.name == "gm-payments") | .env[] | select(.key == "PAYMENT_MODE") | .default' "${manifest}")"
+            python scripts/validate_cv_production_secrets.py --mode "${payment_mode}"
+          fi
           current_sha="$(gh api "/repos/${repository}/branches/main" --jq '.commit.sha')"
           test "${current_sha}" = "${source_sha}"
           if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then

@@ -372,6 +372,19 @@ class ProductDevelopmentProvisionerTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"GOODMORNING_MANAGED_OPENAI_API_KEY": secret_value}, clear=True):
             self.assertEqual(pp.resolve_required_secrets(request), {"OPENAI_API_KEY": secret_value})
 
+    def test_resolves_stripe_managed_backend_bindings_without_logging_values(self):
+        request = args(required_secrets_json=json.dumps([
+            {"module": "gm-payments", "key": "STRIPE_SECRET_KEY", "source": "GOODMORNING_MANAGED", "binding": "goodmorning/stripe-secret-key", "target": "backend"},
+            {"module": "gm-payments", "key": "STRIPE_WEBHOOK_SECRET", "source": "GOODMORNING_MANAGED", "binding": "goodmorning/stripe-webhook-secret", "target": "backend"},
+        ]))
+        with mock.patch.dict(os.environ, {
+            "GOODMORNING_MANAGED_STRIPE_SECRET_KEY": "test-only-stripe-key",
+            "GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET": "test-only-webhook-secret",
+        }, clear=True):
+            resolved = pp.resolve_required_secrets(request)
+        self.assertEqual(set(resolved), {"STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"})
+        self.assertNotIn("test-only-stripe-key", json.dumps(vars(request)))
+
     def test_missing_managed_secret_fails_before_provisioning(self):
         request = args(required_secrets_json=json.dumps([{
             "module": "gm-agent",
