@@ -412,7 +412,7 @@ class AdvancedProductContractTests(unittest.TestCase):
         self.assertIn("ADVANCED_APPLY_MANIFESTS", workflow)
         self.assertIn("steps.select.outputs.apply_selected == 'true'", workflow)
         self.assertIn(
-            "Control-plane implementation changed; selecting the full resources-v3 catalog.",
+            "Manifest contract changed; selecting the full resources-v3 catalog.",
             workflow,
         )
 

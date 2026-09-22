@@ -53,6 +53,13 @@ class ExistingAppPlanClient(FakeClient):
 
 
 class ReconcileAdvancedProductTests(unittest.TestCase):
+    def test_coolify_validation_diagnostics_report_fields_without_values(self):
+        detail = advanced._coolify_error_detail(
+            '{"message":"Validation failed.","errors":{"custom_labels":["secret submitted value"]}}'
+        )
+        self.assertEqual(detail, "Validation failed. Rejected fields: custom_labels.")
+        self.assertNotIn("secret submitted value", detail)
+
     def test_resolve_deployment_uuid_uses_latest_persisted_record_after_deduplication(self):
         class DeploymentHistoryClient:
             def get(self, path):

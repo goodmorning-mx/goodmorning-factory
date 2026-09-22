@@ -104,6 +104,24 @@ def _field(item: dict[str, Any], *names: str) -> Any:
     return None
 
 
+def _coolify_error_detail(raw: str) -> str:
+    """Summarize API validation failures without echoing submitted values."""
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return "Coolify request failed."
+    if not isinstance(data, dict):
+        return "Coolify request failed."
+    message = data.get("message")
+    message = message if isinstance(message, str) and message else "Coolify request failed."
+    errors = data.get("errors")
+    if isinstance(errors, dict):
+        fields = sorted(key for key in errors if isinstance(key, str))
+        if fields:
+            message += f" Rejected fields: {', '.join(fields)}."
+    return message
+
+
 def _strip_coolify_literal_quotes(value: str) -> str:
     """Return a secret value without Coolify's display-only literal quotes.
 
@@ -199,10 +217,7 @@ class Coolify:
                 return Response(response.status, data)
         except urllib.error.HTTPError as exc:
             raw = exc.read().decode("utf-8", errors="replace")
-            try:
-                message = json.loads(raw).get("message", "Coolify request failed.")
-            except (json.JSONDecodeError, AttributeError):
-                message = "Coolify request failed."
+            message = _coolify_error_detail(raw)
             raise ReconcileError(f"Coolify {method} {path} failed with HTTP {exc.code}: {message}") from exc
         except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
             raise ReconcileError(f"Coolify {method} {path} failed: {exc}") from exc
