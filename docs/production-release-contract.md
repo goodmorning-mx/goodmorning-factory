@@ -25,6 +25,19 @@ Public domains are clean:
 Both applications have `instant_deploy=false` and
 `is_auto_deploy_enabled=false`. Only the reviewed Factory workflow can deploy.
 
+## CV Stripe secret isolation
+
+CV development continues to use the generic test-mode bindings
+`GOODMORNING_MANAGED_STRIPE_SECRET_KEY` and
+`GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET`. CV production instead requires the
+separate GitHub Actions `production` environment secrets
+`GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_SECRET_KEY` and
+`GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_WEBHOOK_SECRET`. The production
+workflow rejects missing or non-live key prefixes before backups or Coolify
+changes; it never falls back to development credentials. Configure those two
+secrets only after the matching live Stripe endpoint is ready. Never place their
+values in a manifest, commit, issue, or workflow input.
+
 ## Promotion
 
 The product release workflow dispatches `promote-advanced-product` to Factory

@@ -508,6 +508,28 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
         self.assertEqual([item["key"] for item in values], ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"])
         self.assertTrue(all(item["is_shown_once"] for item in values))
 
+    def test_cv_production_stripe_bindings_never_fall_back_to_development_secrets(self):
+        app = {
+            "environment": [
+                {"key": "STRIPE_SECRET_KEY", "source": "managed_secret", "binding": "goodmorning/cv/production/stripe-secret-key"},
+                {"key": "STRIPE_WEBHOOK_SECRET", "source": "managed_secret", "binding": "goodmorning/cv/production/stripe-webhook-secret"},
+            ]
+        }
+        with patch.dict(os.environ, {
+            "GOODMORNING_MANAGED_STRIPE_SECRET_KEY": "test-only-stripe-key",
+            "GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET": "test-only-webhook-secret",
+        }, clear=True):
+            with self.assertRaisesRegex(advanced.ReconcileError, "source for 'STRIPE_SECRET_KEY' is unavailable"):
+                advanced._environment_values(app, {}, {}, {})
+
+        with patch.dict(os.environ, {
+            "GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_SECRET_KEY": "sk_live_placeholder",
+            "GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_WEBHOOK_SECRET": "whsec_placeholder",
+        }, clear=True):
+            values = advanced._environment_values(app, {}, {}, {})
+        self.assertEqual([item["key"] for item in values], ["STRIPE_SECRET_KEY", "STRIPE_WEBHOOK_SECRET"])
+        self.assertTrue(all(item["is_shown_once"] for item in values))
+
     def test_adoption_does_not_clear_undeclared_existing_volume_options(self):
         value = contract.validate_manifest(manifest())
         value["migration"] = {

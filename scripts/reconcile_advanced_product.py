@@ -46,6 +46,8 @@ MANAGED_SECRET_BINDINGS = {
     "goodmorning/openai-default": "GOODMORNING_MANAGED_OPENAI_API_KEY",
     "goodmorning/stripe-secret-key": "GOODMORNING_MANAGED_STRIPE_SECRET_KEY",
     "goodmorning/stripe-webhook-secret": "GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET",
+    "goodmorning/cv/production/stripe-secret-key": "GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_SECRET_KEY",
+    "goodmorning/cv/production/stripe-webhook-secret": "GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_WEBHOOK_SECRET",
     "hosting/admin-bootstrap-password-hash": "HOSTING_ADMIN_BOOTSTRAP_PASSWORD_HASH",
 }
 
