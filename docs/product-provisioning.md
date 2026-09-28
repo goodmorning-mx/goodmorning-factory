@@ -49,10 +49,11 @@ Run **Create GoodMorning product repository** from GitHub Actions with:
 ```text
 product_name: customer-portal
 description: Customer portal MVP for GoodMorning
+frontend_profile: react
 confirm_provision: true
 ```
 
-`product_name` must use lowercase letters, numbers, and hyphens, start and end with a letter or number, be no longer than 100 characters, and not be `goodmorning-factory` or `goodmorning-mvp-template`.
+`product_name` must use lowercase letters, numbers, and hyphens, start and end with a letter or number, be no longer than 100 characters, and not be `goodmorning-factory` or `goodmorning-mvp-template`. `frontend_profile` is optional and defaults to `react`; supported values are `react`, `next`, and `hybrid`.
 
 ## Expected JSON output
 

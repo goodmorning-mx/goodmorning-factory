@@ -1,0 +1,67 @@
+{
+  "topology": "resources-v3-production",
+  "product": "mauriciodiaz",
+  "repository": "goodmorning-mx/mauriciodiaz",
+  "branch": "main",
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "applications": [
+    {
+      "name": "api",
+      "role": "api",
+      "base_directory": "/backend",
+      "dockerfile": "/Dockerfile",
+      "port": 8000,
+      "domain": "https://api.mauriciodiaz.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "resource": "postgres",
+          "driver": "psycopg"
+        }
+      ]
+    },
+    {
+      "name": "frontend",
+      "role": "frontend",
+      "base_directory": "/frontend",
+      "dockerfile": "/Dockerfile",
+      "port": 80,
+      "domain": "https://mauriciodiaz.goodmorning.mx",
+      "health_path": "/",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "VITE_API_URL",
+          "source": "literal",
+          "value": "https://api.mauriciodiaz.goodmorning.mx"
+        }
+      ]
+    }
+  ],
+  "databases": [
+    {
+      "name": "postgres",
+      "engine": "postgresql",
+      "version": "16",
+      "image": "postgres:16-alpine",
+      "public": false,
+      "backup": true
+    }
+  ],
+  "redis": [],
+  "confirm_production": true,
+  "promotion_policy": "auto-on-main",
+  "backup": {
+    "enabled": true,
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
+    "frequency": "0 2 * * *",
+    "local_retention_count": 2,
+    "local_retention_days": 2,
+    "s3_retention_count": 30,
+    "s3_retention_days": 30,
+    "timeout_seconds": 1800
+  }
+}

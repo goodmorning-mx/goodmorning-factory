@@ -23,6 +23,15 @@ on:
         required: true
         type: boolean
         default: false
+      frontend_profile:
+        description: Frontend profile for the product.
+        required: true
+        type: choice
+        options:
+          - react
+          - next
+          - hybrid
+        default: react
 
 permissions:
   contents: read
@@ -68,6 +77,7 @@ jobs:
             product_name="${{ github.event.inputs.product_name }}"
             description="${{ github.event.inputs.description }}"
             confirm_provision="${{ github.event.inputs.confirm_provision }}"
+            frontend_profile="${{ github.event.inputs.frontend_profile }}"
           elif [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             mapfile -t requests < <(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.merge_commit_sha }}" -- 'requests/*.json')
             if [ "${#requests[@]}" -ne 1 ] || [ ! -f "${requests[0]}" ]; then
@@ -77,6 +87,7 @@ jobs:
             product_name="$(jq -er '.product_name' "${requests[0]}")"
             description="$(jq -er '.description' "${requests[0]}")"
             confirm_provision="$(jq -r '.confirm_provision // false' "${requests[0]}")"
+            frontend_profile="$(jq -r '.frontend_profile // "react"' "${requests[0]}")"
           else
             mapfile -t requests < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- 'requests/*.json')
             if [ "${#requests[@]}" -ne 1 ] || [ ! -f "${requests[0]}" ]; then
@@ -86,10 +97,12 @@ jobs:
             product_name="$(jq -er '.product_name' "${requests[0]}")"
             description="$(jq -er '.description' "${requests[0]}")"
             confirm_provision="$(jq -r '.confirm_provision // false' "${requests[0]}")"
+            frontend_profile="$(jq -r '.frontend_profile // "react"' "${requests[0]}")"
           fi
           {
             echo "product_name=${product_name}"
             echo "confirm_provision=${confirm_provision}"
+            echo "frontend_profile=${frontend_profile}"
             echo "description<<GOODMORNING_DESCRIPTION"
             echo "${description}"
             echo "GOODMORNING_DESCRIPTION"
@@ -100,6 +113,13 @@ jobs:
         run: |
           echo "confirm_provision must be true before provisioning." >&2
           exit 1
+
+      - name: Validate frontend profile
+        run: |
+          case "${{ steps.request.outputs.frontend_profile }}" in
+            react|next|hybrid) ;;
+            *) echo "frontend_profile must be react, next, or hybrid." >&2; exit 1 ;;
+          esac
 
       - name: Validate product name before requesting token
         run: |
@@ -153,6 +173,7 @@ jobs:
             --product "${{ steps.request.outputs.product_name }}" \
             --backup-storage-uuid "${BACKUP_STORAGE_UUID}" \
             --factory-branch dev \
+            --frontend-profile "${{ steps.request.outputs.frontend_profile }}" \
             > catalog-result.json
           cat catalog-result.json
           manifest_path="$(jq -er '.manifest_path' catalog-result.json)"
@@ -179,6 +200,7 @@ jobs:
             --product "${{ steps.request.outputs.product_name }}" \
             --backup-storage-uuid "${BACKUP_STORAGE_UUID}" \
             --factory-branch dev \
+            --frontend-profile "${{ steps.request.outputs.frontend_profile }}" \
             > production-catalog-result.json
           cat production-catalog-result.json
 

@@ -24,6 +24,7 @@ REPOSITORY_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 ENV_KEY_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
 SAFE_PATH_RE = re.compile(r"^/[A-Za-z0-9._/-]+$")
 ALLOWED_ROLES = {"api", "frontend", "mobile", "worker", "gateway"}
+HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$")
 ALLOWED_DATABASE_ENGINES = {"postgresql", "timescaledb"}
 ALLOWED_ENV_SOURCES = {
     "literal",
@@ -34,6 +35,7 @@ ALLOWED_ENV_SOURCES = {
     "legacy_env",
     "generated_secret",
 }
+ALLOWED_FRONTEND_PROFILES = {"react", "next", "hybrid"}
 SENSITIVE_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL)", re.I)
 
 
@@ -174,7 +176,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "topology", "product", "repository", "branch", "development_domain", "coolify_github_app_name",
         "legacy", "migration", "connections", "applications", "databases", "redis", "backup",
         "modules", "module_dependency_order", "resource_ownership",
-        "module_update_policy",
+        "module_update_policy", "domain_bindings", "frontend_profile", "routing",
         "confirm_production", "promotion_policy",
     }
     _require(set(raw) <= allowed, "Advanced product manifest contains unknown top-level fields.")
@@ -212,6 +214,35 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
             _require(raw.get("development_domain") == f"dev.{product}.goodmorning.mx", "development_domain must match the product DEV namespace.")
     github_app = raw.get("coolify_github_app_name")
     _require(isinstance(github_app, str) and github_app == "goodmorning-mx-coolify", "Unexpected Coolify GitHub App.")
+    frontend_profile = raw.get("frontend_profile", "react")
+    _require(frontend_profile in ALLOWED_FRONTEND_PROFILES, "frontend_profile must be one of react, next, or hybrid.")
+    routing = raw.get("routing")
+    if routing is not None:
+        _require(frontend_profile == "hybrid" or frontend_profile == "next", "routing metadata requires a next or hybrid frontend profile.")
+        _require(isinstance(routing, dict), "routing must be an object.")
+        public_host = f"{product}.goodmorning.mx" if production else f"dev.{product}.goodmorning.mx"
+        if frontend_profile == "next":
+            _require(routing == {"mode": "next", "host": f"https://{public_host}", "application": "seo"}, "Next routing metadata is invalid.")
+        else:
+            gateway_metadata = routing.get("gateway")
+            public_application = gateway_metadata.get("public_application") if isinstance(gateway_metadata, dict) else None
+            _require(
+                routing == {
+                    "mode": "hybrid",
+                    "host": f"https://{public_host}",
+                        "gateway": {
+                            "required": True,
+                            "public_application": public_application,
+                            "routes": [
+                                {"path": "/", "application": "seo"},
+                                {"path": "/seo", "application": "seo"},
+                                {"path": "/app", "application": "frontend"},
+                                {"path": "/api", "application": "api"},
+                            ],
+                        },
+                },
+                "Hybrid routing metadata is invalid.",
+            )
 
     legacy_raw = raw.get("legacy")
     legacy: dict[str, Any] | None = None
@@ -307,7 +338,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         allowed_app = {
             "name", "role", "dockerfile", "port", "domain", "health_path",
             "environment", "persistent_volume", "auto_deploy", "base_directory",
-            "dependencies",
+            "dependencies", "custom_domains",
         }
         _require(set(item) <= allowed_app, "Unknown application field.")
         name = item.get("name")
@@ -326,12 +357,20 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
             "Invalid application base directory.",
         )
         _require(isinstance(port, int) and 1 <= port <= 65535, "Invalid application port.")
-        _require(item.get("auto_deploy") is True, "Advanced applications must enable native auto-deploy.")
+        auto_deploy = item.get("auto_deploy")
+        _require(isinstance(auto_deploy, bool), "Advanced applications must declare native auto-deploy as a boolean.")
+        # Keep existing production manifests readable during the rollout. The
+        # reconciler hard-disables native auto-deploy for production regardless
+        # of this legacy declaration; development remains auto-deployed.
+        if not production:
+            _require(auto_deploy is True, "Advanced development applications must enable native auto-deploy.")
         health_path = item.get("health_path")
         _require(isinstance(health_path, str) and health_path.startswith("/") and "?" not in health_path, "Invalid health path.")
         domain = item.get("domain")
         if role == "worker":
             _require(domain is None and port == 8000, "Workers must remain private and use the reviewed placeholder port.")
+        elif domain is None and frontend_profile == "hybrid" and role == "frontend" and name in {"frontend", "seo"}:
+            pass
         else:
             domain = _clean_https_domain(domain, product=product, production=production)
             _require(domain not in public_domains, "Duplicate public domain.")
@@ -361,10 +400,59 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
                 **item,
                 "base_directory": base_directory,
                 "domain": domain,
+                "custom_domains": list(item.get("custom_domains", [])),
                 "environment": environment,
                 "dependencies": dependencies,
             }
         )
+
+    domain_bindings_raw = raw.get("domain_bindings", [])
+    _require(isinstance(domain_bindings_raw, list), "domain_bindings must be a list.")
+    _require(not domain_bindings_raw or production, "Custom domain bindings are supported only by production manifests.")
+    applications_by_name = {item["name"]: item for item in applications}
+    if frontend_profile == "hybrid":
+        frontend = applications_by_name.get("frontend")
+        seo = applications_by_name.get("seo")
+        inline_gateway = frontend is not None and frontend.get("role") == "gateway"
+        _require(seo is not None and seo.get("domain") is None, "Hybrid SEO application must remain private.")
+        if inline_gateway:
+            gateway = frontend
+            _require(frontend.get("base_directory") == "/frontend" and frontend.get("port") == 80, "Inline hybrid gateway must use /frontend on port 80.")
+            _require("frontend-gateway" not in applications_by_name, "Inline hybrid mode cannot also declare a separate gateway.")
+        else:
+            _require(frontend is not None and frontend.get("role") == "frontend" and frontend.get("domain") is None, "Hybrid React application must remain private.")
+            gateway = applications_by_name.get("frontend-gateway")
+            _require(gateway is not None and gateway.get("role") == "gateway", "Hybrid profile requires a frontend-gateway application.")
+        _require(gateway.get("role") == "gateway", "Hybrid gateway must use the gateway role.")
+        _require(gateway.get("domain") == f"https://{product}.goodmorning.mx" if production else gateway.get("domain") == f"https://dev.{product}.goodmorning.mx", "Hybrid gateway must own the canonical public domain.")
+        if routing is not None:
+            expected_gateway_name = "frontend" if inline_gateway else "frontend-gateway"
+            _require(routing["gateway"]["public_application"] == expected_gateway_name, "Hybrid routing must point to its declared public gateway.")
+    bound_hosts: set[str] = set(public_domains)
+    domain_bindings: list[dict[str, Any]] = []
+    for binding in domain_bindings_raw:
+        _require(isinstance(binding, dict), "Domain bindings must be objects.")
+        _require(
+            set(binding) == {"apex", "aliases", "application", "environment", "desired_state"},
+            "Domain binding fields must be exactly apex, aliases, application, environment, and desired_state.",
+        )
+        apex = binding.get("apex")
+        aliases = binding.get("aliases")
+        application = binding.get("application")
+        environment = binding.get("environment")
+        desired_state = binding.get("desired_state")
+        _require(isinstance(apex, str) and HOSTNAME_RE.fullmatch(apex) is not None, "Domain binding apex must be a lowercase fully-qualified DNS name.")
+        _require(isinstance(aliases, list) and all(isinstance(alias, str) and HOSTNAME_RE.fullmatch(alias) is not None for alias in aliases), "Domain binding aliases must be lowercase fully-qualified DNS names.")
+        _require(len(aliases) == len(set(aliases)), "Domain binding aliases must be unique.")
+        _require(apex not in aliases, "Domain binding apex cannot also be an alias.")
+        _require(isinstance(application, str) and application in applications_by_name and applications_by_name[application]["role"] != "worker", "Domain binding must target a declared public application.")
+        _require(environment == "production", "Domain binding environment must be production.")
+        _require(desired_state == "active", "Only active desired domain bindings are supported.")
+        hosts = [apex, *aliases]
+        _require(not (bound_hosts & set(hosts)), "Domain binding duplicates a domain already assigned to an application.")
+        bound_hosts.update(hosts)
+        domain_bindings.append(dict(binding))
+        applications_by_name[application]["custom_domains"].extend(f"https://{host}" for host in hosts)
 
     _require(api_count == 1, "Advanced product must declare exactly one API.")
     _require(mobile_count <= 1, "Advanced product may declare at most one mobile frontend.")
@@ -434,8 +522,6 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         _require(pair not in connection_keys, "Duplicate application connection.")
         connection_keys.add(pair)
         _require(key not in {entry["key"] for entry in apps_by_name[target]["environment"]}, f"Connection {target!r}/{key!r} duplicates an environment entry.")
-        if source_type == "application":
-            _require(apps_by_name[resource].get("domain") is not None, "Service URL connections require a source application with a public domain.")
         connections.append({"target": target, "key": key, "source": dict(source)})
         apps_by_name[target]["environment"].append({
             "key": key,
@@ -514,6 +600,8 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "branch": expected_branch,
         **({"development_domain": raw["development_domain"]} if raw.get("development_domain") is not None else {}),
         "coolify_github_app_name": github_app,
+        "frontend_profile": frontend_profile,
+        **({"routing": dict(routing)} if routing is not None else {}),
         "legacy": legacy,
         "migration": migration,
         "connections": connections,
@@ -522,6 +610,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "resource_ownership": ownership,
         **({"module_update_policy": raw["module_update_policy"]} if raw.get("module_update_policy") is not None else {}),
         "applications": applications,
+        "domain_bindings": domain_bindings,
         "databases": databases,
         "redis": redis_resources,
         "backup": dict(backup),

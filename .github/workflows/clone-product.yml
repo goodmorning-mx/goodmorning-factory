@@ -1,0 +1,101 @@
+name: Clone GoodMorning product in DEV
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_product:
+        description: Existing private product slug to clone.
+        required: true
+        type: string
+      destination_slug:
+        description: New unique private product slug.
+        required: true
+        type: string
+      description:
+        description: Description for the cloned repository.
+        required: true
+        type: string
+      confirm_dev_clone:
+        description: Confirm source-only Git clone and fresh DEV resources.
+        required: true
+        type: boolean
+        default: false
+      recover_empty_destination:
+        description: Recover an empty repository left by a failed clone run.
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  clone:
+    if: inputs.confirm_dev_clone == true
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      COOLIFY_BACKUP_STORAGE_UUID: ${{ vars.COOLIFY_BACKUP_STORAGE_UUID || 'c1rrntk8wv4cf3tl3wqviwp3' }}
+      GOODMORNING_MANAGED_OPENAI_API_KEY: ${{ secrets.GOODMORNING_MANAGED_OPENAI_API_KEY }}
+      GOODMORNING_MANAGED_STRIPE_SECRET_KEY: ${{ secrets.GOODMORNING_MANAGED_STRIPE_SECRET_KEY }}
+      GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET: ${{ secrets.GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.ref_name }}
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Create GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
+          private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
+          owner: goodmorning-mx
+          permission-contents: write
+          permission-administration: write
+          permission-metadata: read
+          permission-pull-requests: write
+          permission-workflows: write
+      - name: Clone source repository
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          GIT_TOKEN: ${{ steps.app-token.outputs.token }}
+          SOURCE_PRODUCT: ${{ inputs.source_product }}
+          DESTINATION_SLUG: ${{ inputs.destination_slug }}
+          DESCRIPTION: ${{ inputs.description }}
+          RECOVER_EMPTY_DESTINATION: ${{ inputs.recover_empty_destination }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::${GH_TOKEN}"
+          python3 scripts/clone_product.py \
+            --source-product "${SOURCE_PRODUCT}" \
+            --destination-slug "${DESTINATION_SLUG}" \
+            --description "${DESCRIPTION}" \
+            $([ "${RECOVER_EMPTY_DESTINATION}" = "true" ] && echo --recover-empty-destination) \
+            --source-manifest "products/${SOURCE_PRODUCT}.json" \
+            > clone-result.json
+          jq 'del(.manifest)' clone-result.json
+          jq -S '.manifest' clone-result.json > "products/${DESTINATION_SLUG}.json"
+          jq -e --arg slug "${DESTINATION_SLUG}" '.product == $slug and .repository == ("goodmorning-mx/" + $slug) and (.legacy == null) and (.migration == null)' "products/${DESTINATION_SLUG}.json"
+      - name: Open Factory manifest PR
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          DESTINATION_SLUG: ${{ inputs.destination_slug }}
+          SOURCE_PRODUCT: ${{ inputs.source_product }}
+        run: |
+          set -euo pipefail
+          branch="factory/clone-${DESTINATION_SLUG}-${GITHUB_RUN_ID}"
+          git config user.name "GoodMorning Factory"
+          git config user.email "factory@goodmorning.mx"
+          git switch --create "${branch}"
+          git add "products/${DESTINATION_SLUG}.json"
+          git commit -m "factory: register clone ${DESTINATION_SLUG} from ${SOURCE_PRODUCT}"
+          git_auth="$(printf 'x-access-token:%s' "${GH_TOKEN}" | base64 -w0)"
+          git -c "http.extraHeader=AUTHORIZATION: basic ${git_auth}" push origin "${branch}"
+          gh pr create --base dev --head "${branch}" \
+            --title "factory: clone ${DESTINATION_SLUG} from ${SOURCE_PRODUCT}" \
+            --body "Automated DEV clone. Source: ${SOURCE_PRODUCT}. The repository contains source code only; the manifest provisions an independent empty database and DEV resources."

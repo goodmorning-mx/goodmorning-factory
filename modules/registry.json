@@ -73,6 +73,29 @@
       "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
       ,"resource_requirements": [],
       "bindings": []
+    },
+    {
+      "name": "gm-payments",
+      "repository": "goodmorning-mx/gm-payments",
+      "version": "0.1.1",
+      "backend_package": "gm-payments",
+      "python_requires": ">=3.12",
+      "deployment_modes": ["embedded", "service"],
+      "default_deployment_mode": "embedded",
+      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"},
+      "dependencies": [],
+      "required_secrets": {
+        "STRIPE_SECRET_KEY": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/stripe-secret-key", "target": "backend"},
+        "STRIPE_WEBHOOK_SECRET": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/stripe-webhook-secret", "target": "backend"}
+      },
+      "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1},
+      "compatibility": {"python": ">=3.12", "factory_api": "^1.0", "products": ["*"]},
+      "resource_requirements": [
+        {"name": "postgres", "kind": "postgresql", "resource_name": "product-postgres", "shared": true}
+      ],
+      "bindings": [
+        {"key": "DATABASE_URL", "source": "database_url", "requirement": "postgres", "target": "backend"}
+      ]
     }
   ]
 }

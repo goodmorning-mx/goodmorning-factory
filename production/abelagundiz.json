@@ -1,0 +1,73 @@
+{
+  "frontend_profile": "next",
+  "topology": "resources-v3-production",
+  "product": "abelagundiz",
+  "repository": "goodmorning-mx/abelagundiz",
+  "branch": "main",
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "applications": [
+    {
+      "name": "api",
+      "role": "api",
+      "base_directory": "/backend",
+      "dockerfile": "/Dockerfile",
+      "port": 8000,
+      "domain": "https://api.abelagundiz.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "resource": "postgres",
+          "driver": "psycopg"
+        }
+      ]
+    },
+    {
+      "name": "seo",
+      "role": "frontend",
+      "base_directory": "/seo",
+      "dockerfile": "/Dockerfile",
+      "port": 3000,
+      "domain": "https://abelagundiz.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "NEXT_PUBLIC_API_URL",
+          "source": "literal",
+          "value": "https://api.abelagundiz.goodmorning.mx"
+        }
+      ]
+    }
+  ],
+  "databases": [
+    {
+      "name": "postgres",
+      "engine": "postgresql",
+      "version": "16",
+      "image": "postgres:16-alpine",
+      "public": false,
+      "backup": true
+    }
+  ],
+  "redis": [],
+  "confirm_production": true,
+  "promotion_policy": "auto-on-main",
+  "backup": {
+    "enabled": true,
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
+    "frequency": "0 2 * * *",
+    "local_retention_count": 2,
+    "local_retention_days": 2,
+    "s3_retention_count": 30,
+    "s3_retention_days": 30,
+    "timeout_seconds": 1800
+  },
+  "routing": {
+    "mode": "next",
+    "host": "https://abelagundiz.goodmorning.mx",
+    "application": "seo"
+  }
+}

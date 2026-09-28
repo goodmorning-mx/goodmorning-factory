@@ -25,6 +25,20 @@ Public domains are clean:
 Both applications have `instant_deploy=false` and
 `is_auto_deploy_enabled=false`. Only the reviewed Factory workflow can deploy.
 
+## CV Stripe payment mode
+
+CV currently declares `PAYMENT_MODE=demo` in both manifests. DEV and production
+use the generic managed Stripe test-mode bindings
+`GOODMORNING_MANAGED_STRIPE_SECRET_KEY` and
+`GOODMORNING_MANAGED_STRIPE_WEBHOOK_SECRET`; the production preflight accepts
+only test-key prefixes in this mode, so this configuration cannot settle real
+charges. To switch to live, submit a reviewed Factory manifest/release that
+changes the mode to `live` and binds the dedicated GitHub Actions `production`
+environment secrets `GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_SECRET_KEY` and
+`GOODMORNING_MANAGED_CV_PRODUCTION_STRIPE_WEBHOOK_SECRET`. The preflight then
+requires live-key prefixes before backups or Coolify changes. Never place secret
+values in a manifest, commit, issue, or workflow input.
+
 ## Promotion
 
 The product release workflow dispatches `promote-advanced-product` to Factory

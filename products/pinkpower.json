@@ -1,0 +1,336 @@
+{
+  "applications": [
+    {
+      "auto_deploy": true,
+      "base_directory": "/backend",
+      "dependencies": [
+        "postgres"
+      ],
+      "dockerfile": "/Dockerfile",
+      "domain": "https://api.dev.pinkpower.goodmorning.mx",
+      "environment": [
+        {
+          "binding": "goodmorning/openai-default",
+          "key": "OPENAI_API_KEY",
+          "source": "managed_secret"
+        }
+      ],
+      "health_path": "/health",
+      "name": "api",
+      "port": 8000,
+      "role": "api"
+    },
+    {
+      "auto_deploy": true,
+      "base_directory": "/frontend",
+      "dependencies": [],
+      "dockerfile": "/Dockerfile",
+      "domain": "https://dev.pinkpower.goodmorning.mx",
+      "environment": [],
+      "health_path": "/",
+      "name": "frontend",
+      "port": 80,
+      "role": "frontend"
+    },
+    {
+      "auto_deploy": true,
+      "base_directory": "/backend",
+      "dependencies": [
+        "postgres"
+      ],
+      "dockerfile": "/Dockerfile.mcp",
+      "domain": "https://mcp-gateway.dev.pinkpower.goodmorning.mx",
+      "environment": [
+        {
+          "key": "APP_ENV",
+          "source": "literal",
+          "value": "dev"
+        },
+        {
+          "key": "MCP_PUBLIC_URL",
+          "source": "literal",
+          "value": "https://mcp-gateway.dev.pinkpower.goodmorning.mx/mcp"
+        },
+        {
+          "key": "MCP_OAUTH_SECRET",
+          "source": "generated_secret"
+        }
+      ],
+      "health_path": "/health",
+      "name": "mcp-gateway",
+      "port": 8200,
+      "role": "gateway"
+    }
+  ],
+  "backup": {
+    "enabled": true,
+    "frequency": "0 3 * * *",
+    "local_retention_count": 1,
+    "local_retention_days": 1,
+    "s3_retention_count": 7,
+    "s3_retention_days": 7,
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
+    "timeout_seconds": 1800
+  },
+  "branch": "dev",
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "databases": [
+    {
+      "backup": true,
+      "engine": "postgresql",
+      "image": "postgres:16-alpine",
+      "name": "postgres",
+      "public": false,
+      "version": "16"
+    }
+  ],
+  "development_domain": "dev.pinkpower.goodmorning.mx",
+  "module_update_policy": {
+    "default": {
+      "major": "blocked",
+      "minor": "manual",
+      "patch": "auto"
+    },
+    "modules": {
+      "gm-pwa": {
+        "patch": "auto"
+      }
+    }
+  },
+  "modules": [
+    {
+      "bindings": [],
+      "compatibility": {
+        "factory_api": "^1.0",
+        "node": ">=20",
+        "products": [
+          "pinkpower"
+        ]
+      },
+      "default_deployment_mode": "embedded",
+      "dependencies": [],
+      "deployment_modes": [
+        "embedded"
+      ],
+      "env": [],
+      "frontend_package": "@goodmorning/gm-pwa",
+      "kind": "frontend",
+      "migrations": {
+        "mode": "none"
+      },
+      "name": "gm-pwa",
+      "node_requires": [
+        "react>=18"
+      ],
+      "pwa": {
+        "api_auth_cache": "network-only",
+        "manifest_required": true,
+        "service_worker_required": true,
+        "update_mode": "prompt"
+      },
+      "required_secrets": {},
+      "resource_requirements": [],
+      "version": "0.1.4"
+    },
+    {
+      "backend_package": "gm-mcp",
+      "bindings": [
+        {
+          "driver": "psycopg",
+          "key": "DATABASE_URL",
+          "requirement": "primary-db",
+          "source": "database_url",
+          "target": "mcp-gateway"
+        },
+        {
+          "key": "MCP_OAUTH_SECRET",
+          "source": "generated_secret",
+          "target": "mcp-gateway"
+        }
+      ],
+      "compatibility": {
+        "factory_api": "^1.0",
+        "products": [
+          "pinkpower"
+        ],
+        "python": ">=3.12"
+      },
+      "default_deployment_mode": "embedded",
+      "dependencies": [],
+      "deployment_mode": "gateway",
+      "deployment_modes": [
+        "embedded",
+        "gateway"
+      ],
+      "kind": "backend",
+      "name": "gm-mcp",
+      "resource_requirements": [
+        {
+          "deployment_modes": [
+            "gateway"
+          ],
+          "kind": "postgresql",
+          "name": "primary-db",
+          "resource_name": "postgres",
+          "shared": true
+        },
+        {
+          "base_directory": "/backend",
+          "deployment_modes": [
+            "gateway"
+          ],
+          "dockerfile": "/Dockerfile.mcp",
+          "health_path": "/health",
+          "kind": "gateway",
+          "name": "mcp-gateway",
+          "port": 8200,
+          "public": true,
+          "resource_name": "mcp-gateway",
+          "shared": true
+        }
+      ],
+      "version": "0.3.1"
+    },
+    {
+      "backend_package": "gm-billing",
+      "bindings": [],
+      "compatibility": {
+        "factory_api": "^1.0",
+        "node": ">=20",
+        "products": [
+          "pinkpower"
+        ],
+        "python": ">=3.12"
+      },
+      "default_deployment_mode": "embedded",
+      "dependencies": [],
+      "deployment_modes": [
+        "embedded",
+        "service"
+      ],
+      "frontend_package": "@goodmorning/gm-billing",
+      "kind": "full-stack",
+      "migrations": {
+        "minimum_schema": 1,
+        "mode": "sql",
+        "path": "migrations"
+      },
+      "name": "gm-billing",
+      "resource_requirements": [],
+      "version": "0.1.1"
+    },
+    {
+      "backend_package": "gm-auth",
+      "bindings": [
+        {
+          "key": "DATABASE_URL",
+          "requirement": "primary-db",
+          "source": "database_url",
+          "target": "backend"
+        }
+      ],
+      "compatibility": {
+        "factory_api": "^1.0",
+        "node": ">=20",
+        "products": [
+          "pinkpower"
+        ],
+        "python": ">=3.12"
+      },
+      "default_deployment_mode": "embedded",
+      "dependencies": [],
+      "deployment_modes": [
+        "embedded",
+        "service"
+      ],
+      "env": [],
+      "frontend_package": "@goodmorning/gm-auth",
+      "kind": "full-stack",
+      "migrations": {
+        "minimum_schema": 1,
+        "mode": "sql",
+        "path": "migrations"
+      },
+      "name": "gm-auth",
+      "node_requires": [
+        "react>=18"
+      ],
+      "required_secrets": {},
+      "resource_requirements": [
+        {
+          "kind": "postgresql",
+          "name": "primary-db",
+          "resource_name": "postgres",
+          "shared": true
+        }
+      ],
+      "version": "0.1.4"
+    },
+    {
+      "backend_package": "gm-agent",
+      "bindings": [],
+      "compatibility": {
+        "factory_api": "^1.0",
+        "node": ">=20",
+        "products": [
+          "pinkpower"
+        ],
+        "python": ">=3.12"
+      },
+      "default_deployment_mode": "embedded",
+      "dependencies": [
+        "gm-mcp",
+        "gm-billing"
+      ],
+      "deployment_modes": [
+        "embedded",
+        "service",
+        "gateway"
+      ],
+      "env": [
+        {
+          "default": "gpt-4o-mini",
+          "key": "AGENT_MODEL",
+          "required": true
+        }
+      ],
+      "frontend_package": "@goodmorning/gm-agent",
+      "kind": "full-stack",
+      "migrations": {
+        "mode": "none"
+      },
+      "name": "gm-agent",
+      "node_requires": [
+        "react>=18"
+      ],
+      "python_requires": [
+        "gm-mcp>=0.3.1",
+        "gm-billing>=0.1.1"
+      ],
+      "required_secrets": {
+        "OPENAI_API_KEY": {
+          "binding": "goodmorning/openai-default",
+          "source": "GOODMORNING_MANAGED",
+          "target": "backend"
+        }
+      },
+      "resource_requirements": [
+        {
+          "deployment_modes": [
+            "gateway"
+          ],
+          "kind": "gateway",
+          "name": "agent-gateway",
+          "port": 8100,
+          "public": true,
+          "resource_name": "agent-gateway"
+        }
+      ],
+      "version": "0.1.5"
+    }
+  ],
+  "product": "pinkpower",
+  "redis": [],
+  "repository": "goodmorning-mx/pinkpower",
+  "topology": "resources-v3"
+}

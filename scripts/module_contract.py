@@ -365,6 +365,9 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
     result = {key: value for key, value in manifest.items()}
     result["modules"] = modules
     result["module_dependency_order"] = module_dependency_order(modules)
+    frontend_profile = manifest.get("frontend_profile", "react")
+    _require(frontend_profile in {"react", "next", "hybrid"}, "Unsupported frontend profile.")
+    result["frontend_profile"] = frontend_profile
     if manifest.get("topology") not in {"resources-v3", "resources-v3-production"}:
         return result
 
@@ -389,6 +392,8 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
             return target
         if target == "backend":
             candidates = [item["name"] for item in applications if item.get("role") == "api"]
+        elif frontend_profile == "hybrid":
+            candidates = [item["name"] for item in applications if item.get("name") == "frontend"]
         else:
             candidates = [item["name"] for item in applications if item.get("role") == "frontend"]
         _require(len(candidates) == 1, f"Module binding target {target!r} requires exactly one matching base application.")
@@ -402,6 +407,131 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
             _require(existing == entry, f"Module binding {app_name}/{entry['key']} conflicts with an existing environment key.")
             return
         environment.append(entry)
+
+    def compatible_environment(existing: dict[str, Any] | None, compiled: dict[str, Any]) -> bool:
+        if existing is None:
+            return True
+        return all(existing.get(key) == value for key, value in compiled.items()) and set(existing) <= set(compiled) | {"driver"}
+
+    product = manifest["product"]
+    production = manifest["topology"] == "resources-v3-production"
+    public_host = f"{product}.goodmorning.mx" if production else f"dev.{product}.goodmorning.mx"
+
+    def ensure_frontend_application(name: str, *, next_app: bool, public: bool) -> None:
+        existing = app_by_name.get(name)
+        if existing is not None:
+            _require(existing.get("role") == "frontend", f"Frontend profile application {name!r} must use the frontend role.")
+            _require(existing.get("base_directory") == ("/seo" if next_app else "/frontend"), f"Frontend profile application {name!r} has an incompatible base directory.")
+            _require(existing.get("port") == (3000 if next_app else 80), f"Frontend profile application {name!r} has an incompatible port.")
+            _require(existing.get("health_path") == ("/health" if next_app else "/"), f"Frontend profile application {name!r} has an incompatible health path.")
+            if public:
+                _require(existing.get("domain") is not None, f"Frontend profile application {name!r} must have a public domain.")
+            else:
+                existing["domain"] = None
+            return
+        application = {
+            "name": name,
+            "role": "frontend",
+            "base_directory": "/seo" if next_app else "/frontend",
+            "dockerfile": "/Dockerfile",
+            "port": 3000 if next_app else 80,
+            "domain": f"https://{public_host}" if public else None,
+            "health_path": "/health" if next_app else "/",
+            "auto_deploy": True,
+            "environment": [{
+                "key": "NEXT_PUBLIC_API_URL",
+                "source": "literal",
+                "value": f"https://api.{public_host}",
+            }] if next_app else [{
+                "key": "VITE_API_URL",
+                "source": "literal",
+                "value": f"https://api.{public_host}",
+            }],
+            "dependencies": [],
+        }
+        applications.append(application)
+        app_by_name[name] = application
+
+    if frontend_profile == "next":
+        applications = [item for item in applications if item.get("role") != "frontend" or item.get("name") == "seo"]
+        app_by_name = {item.get("name"): item for item in applications}
+        ensure_frontend_application("seo", next_app=True, public=True)
+        result["routing"] = {"mode": "next", "host": f"https://{public_host}", "application": "seo"}
+    elif frontend_profile == "hybrid":
+        applications = [
+            item for item in applications
+            if item.get("role") != "frontend" or item.get("name") in {"frontend", "seo"}
+        ]
+        app_by_name = {item.get("name"): item for item in applications}
+        inline_gateway = app_by_name.get("frontend", {}).get("role") == "gateway"
+        if inline_gateway:
+            existing_gateway = app_by_name["frontend"]
+            _require(existing_gateway.get("base_directory") == "/frontend", "Inline hybrid gateway must use the /frontend base directory.")
+            _require(existing_gateway.get("port") == 80, "Inline hybrid gateway must expose port 80.")
+            _require(existing_gateway.get("domain") == f"https://{public_host}", "Inline hybrid gateway must retain the canonical public domain.")
+            _require(existing_gateway.get("health_path") == "/health", "Inline hybrid gateway must use the /health endpoint.")
+            expected_dependencies = [
+                {"type": "application", "name": "api"},
+                {"type": "application", "name": "seo"},
+            ]
+            _require(existing_gateway.get("dependencies") == expected_dependencies, "Inline hybrid gateway dependencies are incompatible.")
+        else:
+            ensure_frontend_application("frontend", next_app=False, public=False)
+        ensure_frontend_application("seo", next_app=True, public=False)
+        if inline_gateway:
+            gateway_name = "frontend"
+            upstreams = (("NEXT_UPSTREAM", "seo"), ("API_UPSTREAM", "api"))
+        else:
+            gateway = {
+                "name": "frontend-gateway",
+                "role": "gateway",
+                "base_directory": "/gateway",
+                "dockerfile": "/Dockerfile",
+                "port": 80,
+                "domain": f"https://{public_host}",
+                "health_path": "/health",
+                "auto_deploy": True,
+                "environment": [],
+                "dependencies": [
+                    {"type": "application", "name": "frontend"},
+                    {"type": "application", "name": "seo"},
+                    {"type": "application", "name": "api"},
+                ],
+            }
+            existing_gateway = app_by_name.get("frontend-gateway")
+            if existing_gateway is None:
+                applications.append(gateway)
+                app_by_name["frontend-gateway"] = gateway
+            else:
+                _require(existing_gateway.get("role") == "gateway", "Hybrid gateway must use the gateway role.")
+                _require(existing_gateway.get("base_directory") == "/gateway", "Hybrid gateway has an incompatible base directory.")
+                _require(existing_gateway.get("port") == 80, "Hybrid gateway has an incompatible port.")
+                _require(existing_gateway.get("domain") == f"https://{public_host}", "Hybrid gateway must own the canonical public domain.")
+                _require(existing_gateway.get("health_path") == "/health", "Hybrid gateway has an incompatible health path.")
+                _require(existing_gateway.get("dependencies") == gateway["dependencies"], "Hybrid gateway dependencies are incompatible.")
+            gateway_name = "frontend-gateway"
+            upstreams = (("REACT_UPSTREAM", "frontend"), ("NEXT_UPSTREAM", "seo"), ("API_UPSTREAM", "api"))
+        for key, source in upstreams:
+            if not any(item.get("target") == gateway_name and item.get("key") == key for item in connections):
+                connections.append({"target": gateway_name, "key": key, "source": {"type": "application", "resource": source}})
+        result["routing"] = {
+            "mode": "hybrid",
+            "host": f"https://{public_host}",
+            "gateway": {
+                "required": True,
+                "public_application": gateway_name,
+                "routes": [
+                    {"path": "/", "application": "seo"},
+                    {"path": "/seo", "application": "seo"},
+                    {"path": "/app", "application": "frontend"},
+                    {"path": "/api", "application": "api"},
+                ],
+            },
+        }
+    else:
+        if "frontend" not in app_by_name:
+            ensure_frontend_application("frontend", next_app=False, public=True)
+        result.pop("routing", None)
 
     for module_name in result["module_dependency_order"]:
         module = module_by_name[module_name]
@@ -479,11 +609,26 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
             if binding.get("binding") is not None:
                 entry["binding"] = binding["binding"]
             if source == "service_url":
-                connections.append({"target": target_app(target), "key": binding["key"], "source": {"type": "application", "resource": entry["resource"]}})
+                target_name = target_app(target)
+                compiled = {"key": binding["key"], "source": "service_url", "resource": entry["resource"]}
+                existing = next((item for item in app_by_name[target_name].get("environment", []) if item.get("key") == binding["key"]), None)
+                _require(compatible_environment(existing, compiled), f"Module binding {target_name}/{binding['key']} conflicts with an existing environment key.")
+                if existing is None:
+                    connections.append({"target": target_name, "key": binding["key"], "source": {"type": "application", "resource": entry["resource"]}})
             elif source == "database_url":
-                connections.append({"target": target_app(target), "key": binding["key"], "source": {"type": "database", "resource": entry["resource"], **({"driver": binding["driver"]} if binding.get("driver") else {})}})
+                target_name = target_app(target)
+                compiled = {"key": binding["key"], "source": "database_url", "resource": entry["resource"], **({"driver": binding["driver"]} if binding.get("driver") else {})}
+                existing = next((item for item in app_by_name[target_name].get("environment", []) if item.get("key") == binding["key"]), None)
+                _require(compatible_environment(existing, compiled), f"Module binding {target_name}/{binding['key']} conflicts with an existing environment key.")
+                if existing is None:
+                    connections.append({"target": target_name, "key": binding["key"], "source": {"type": "database", "resource": entry["resource"], **({"driver": binding["driver"]} if binding.get("driver") else {})}})
             elif source == "redis_url":
-                connections.append({"target": target_app(target), "key": binding["key"], "source": {"type": "redis", "resource": entry["resource"]}})
+                target_name = target_app(target)
+                compiled = {"key": binding["key"], "source": "redis_url", "resource": entry["resource"]}
+                existing = next((item for item in app_by_name[target_name].get("environment", []) if item.get("key") == binding["key"]), None)
+                _require(compatible_environment(existing, compiled), f"Module binding {target_name}/{binding['key']} conflicts with an existing environment key.")
+                if existing is None:
+                    connections.append({"target": target_name, "key": binding["key"], "source": {"type": "redis", "resource": entry["resource"]}})
             else:
                 add_env(target, entry)
 

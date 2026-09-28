@@ -1,0 +1,172 @@
+{
+  "topology": "resources-v3-production",
+  "frontend_profile": "hybrid",
+  "product": "cv",
+  "repository": "goodmorning-mx/cv",
+  "branch": "main",
+  "modules": [
+    {
+      "name": "gm-pwa", "version": "0.1.4", "kind": "frontend", "frontend_package": "@goodmorning/gm-pwa", "node_requires": ["react>=18"],
+      "deployment_modes": ["embedded"], "default_deployment_mode": "embedded", "resource_requirements": [], "bindings": [], "dependencies": [], "env": [], "required_secrets": {}, "migrations": {"mode": "none"},
+      "pwa": {"manifest_required": true, "service_worker_required": true, "update_mode": "prompt", "api_auth_cache": "network-only"}, "compatibility": {"node": ">=20", "factory_api": "^1.0", "products": ["cv"]}
+    },
+    {
+      "name": "gm-mcp", "version": "0.3.1", "kind": "backend", "backend_package": "gm-mcp", "deployment_modes": ["embedded", "gateway"], "default_deployment_mode": "embedded", "resource_requirements": [], "bindings": [], "dependencies": [], "env": [], "required_secrets": {}, "migrations": {"mode": "none"}, "compatibility": {"python": ">=3.12", "factory_api": "^1.0", "products": ["cv"]}
+    },
+    {
+      "name": "gm-billing", "version": "0.1.1", "kind": "full-stack", "backend_package": "gm-billing", "frontend_package": "@goodmorning/gm-billing", "python_requires": [], "node_requires": ["react>=18"], "deployment_modes": ["embedded", "service"], "default_deployment_mode": "embedded", "resource_requirements": [], "bindings": [], "dependencies": [], "env": [], "required_secrets": {}, "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1}, "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["cv"]}
+    },
+    {
+      "name": "gm-auth", "version": "0.1.4", "kind": "full-stack", "backend_package": "gm-auth", "frontend_package": "@goodmorning/gm-auth", "node_requires": ["react>=18"], "deployment_modes": ["embedded", "service"], "default_deployment_mode": "embedded", "resource_requirements": [{"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true}], "bindings": [{"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "backend"}], "dependencies": [], "env": [], "required_secrets": {}, "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1}, "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["cv"]}
+    },
+    {
+      "name": "gm-agent", "version": "0.1.5", "kind": "full-stack", "backend_package": "gm-agent", "frontend_package": "@goodmorning/gm-agent", "python_requires": ["gm-mcp>=0.3.1", "gm-billing>=0.1.1"], "node_requires": ["react>=18"], "deployment_modes": ["embedded", "service", "gateway"], "default_deployment_mode": "embedded", "resource_requirements": [], "bindings": [], "dependencies": ["gm-mcp", "gm-billing"], "env": [{"key": "AGENT_MODEL", "required": true, "default": "gpt-4o-mini"}], "required_secrets": {"OPENAI_API_KEY": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/openai-default", "target": "backend"}}, "migrations": {"mode": "none"}, "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["cv"]}
+    },
+    {
+      "name": "gm-payments", "version": "0.1.1", "kind": "backend", "backend_package": "gm-payments", "python_requires": ["stripe>=12,<13"], "node_requires": [], "deployment_modes": ["embedded", "service"], "default_deployment_mode": "embedded", "resource_requirements": [{"name": "postgres", "kind": "postgresql", "resource_name": "postgres", "shared": true}], "bindings": [{"key": "DATABASE_URL", "source": "database_url", "requirement": "postgres", "target": "backend"}], "dependencies": [], "env": [{"key": "PAYMENT_PROVIDER", "required": true, "default": "stripe"}, {"key": "PAYMENT_MODE", "required": true, "default": "demo"}], "required_secrets": {"STRIPE_SECRET_KEY": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/stripe-secret-key", "target": "backend"}, "STRIPE_WEBHOOK_SECRET": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/stripe-webhook-secret", "target": "backend"}}, "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1}, "compatibility": {"python": ">=3.12", "factory_api": "^1.0", "products": ["cv"]}
+    }
+  ],
+  "coolify_github_app_name": "goodmorning-mx-coolify",
+  "applications": [
+    {
+      "name": "api",
+      "role": "api",
+      "base_directory": "/backend",
+      "dockerfile": "/Dockerfile",
+      "port": 8000,
+      "domain": "https://api.cv.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": false,
+      "environment": [
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "resource": "postgres",
+          "driver": "psycopg"
+        },
+        {"key": "APP_NAME", "source": "literal", "value": "CV API"},
+        {"key": "APP_ENV", "source": "literal", "value": "prod"},
+        {"key": "ORGANIZATION_ID", "source": "literal", "value": "cv"},
+        {"key": "AUTH_SECRET", "source": "generated_secret"},
+        {"key": "MCP_OAUTH_SECRET", "source": "generated_secret"},
+        {"key": "MCP_ISSUER_URL", "source": "literal", "value": "https://api.cv.goodmorning.mx"},
+        {"key": "MCP_RESOURCE_URL", "source": "literal", "value": "https://api.cv.goodmorning.mx/mcp"},
+        {"key": "AGENT_MODEL", "source": "literal", "value": "gpt-4o-mini"},
+        {"key": "BILLING_INPUT_PER_MILLION", "source": "literal", "value": "0.15"},
+        {"key": "BILLING_OUTPUT_PER_MILLION", "source": "literal", "value": "0.60"},
+        {"key": "BILLING_CACHED_PER_MILLION", "source": "literal", "value": "0.075"},
+        {"key": "BILLING_MARKUP", "source": "literal", "value": "1.20"},
+        {"key": "CORS_ORIGINS", "source": "literal", "value": "https://cv.goodmorning.mx"},
+        {"key": "PAYMENT_SUCCESS_URL", "source": "literal", "value": "https://cv.goodmorning.mx/app/?payment=success"},
+        {"key": "PAYMENT_CANCEL_URL", "source": "literal", "value": "https://cv.goodmorning.mx/app/?payment=cancel"},
+        {
+          "key": "OPENAI_API_KEY",
+          "source": "managed_secret",
+          "binding": "goodmorning/openai-default"
+        },
+        {"key": "PAYMENT_PROVIDER", "source": "literal", "value": "stripe"},
+        {"key": "PAYMENT_MODE", "source": "literal", "value": "demo"},
+        {"key": "CV_PRICE_MXN", "source": "literal", "value": "19900"},
+        {"key": "STRIPE_SECRET_KEY", "source": "managed_secret", "binding": "goodmorning/stripe-secret-key"},
+        {"key": "STRIPE_WEBHOOK_SECRET", "source": "managed_secret", "binding": "goodmorning/stripe-webhook-secret"}
+      ]
+    },
+    {
+      "name": "frontend",
+      "role": "frontend",
+      "base_directory": "/frontend",
+      "dockerfile": "/Dockerfile",
+      "port": 80,
+      "domain": null,
+      "health_path": "/",
+      "auto_deploy": false,
+      "environment": [
+        {
+          "key": "VITE_API_URL",
+          "source": "literal",
+          "value": "/api"
+        },
+        {
+          "key": "VITE_BASE_PATH",
+          "source": "literal",
+          "value": "/app/"
+        }
+      ]
+    },
+    {
+      "name": "seo",
+      "role": "frontend",
+      "base_directory": "/seo",
+      "dockerfile": "/Dockerfile",
+      "port": 3000,
+      "domain": null,
+      "health_path": "/health",
+      "auto_deploy": false,
+      "environment": [
+        {"key": "SITE_URL", "source": "literal", "value": "https://cv.goodmorning.mx"},
+        {"key": "SITE_NAME", "source": "literal", "value": "CV · Tu próximo paso"},
+        {"key": "SITE_DESCRIPTION", "source": "literal", "value": "Crea un CV claro, auténtico y listo para tu próximo paso con ayuda de IA."},
+        {"key": "SITE_INDEXABLE", "source": "literal", "value": "true"}
+      ],
+      "dependencies": []
+    },
+    {
+      "name": "frontend-gateway",
+      "role": "gateway",
+      "base_directory": "/gateway",
+      "dockerfile": "/Dockerfile",
+      "port": 80,
+      "domain": "https://cv.goodmorning.mx",
+      "health_path": "/health",
+      "auto_deploy": false,
+      "environment": [],
+      "dependencies": [
+        {"type": "application", "name": "frontend"},
+        {"type": "application", "name": "seo"},
+        {"type": "application", "name": "api"}
+      ]
+    }
+  ],
+  "connections": [
+    {"target": "frontend-gateway", "key": "REACT_UPSTREAM", "source": {"type": "application", "resource": "frontend"}},
+    {"target": "frontend-gateway", "key": "NEXT_UPSTREAM", "source": {"type": "application", "resource": "seo"}},
+    {"target": "frontend-gateway", "key": "API_UPSTREAM", "source": {"type": "application", "resource": "api"}}
+  ],
+  "routing": {
+    "mode": "hybrid",
+    "host": "https://cv.goodmorning.mx",
+    "gateway": {
+      "required": true,
+      "public_application": "frontend-gateway",
+      "routes": [
+        {"path": "/", "application": "seo"},
+        {"path": "/seo", "application": "seo"},
+        {"path": "/app", "application": "frontend"},
+        {"path": "/api", "application": "api"}
+      ]
+    }
+  },
+  "databases": [
+    {
+      "name": "postgres",
+      "engine": "postgresql",
+      "version": "16",
+      "image": "postgres:16-alpine",
+      "public": false,
+      "backup": true
+    }
+  ],
+  "redis": [],
+  "confirm_production": true,
+  "promotion_policy": "auto-on-main",
+  "backup": {
+    "enabled": true,
+    "storage_uuid": "c1rrntk8wv4cf3tl3wqviwp3",
+    "frequency": "0 2 * * *",
+    "local_retention_count": 2,
+    "local_retention_days": 2,
+    "s3_retention_count": 30,
+    "s3_retention_days": 30,
+    "timeout_seconds": 1800
+  }
+}
