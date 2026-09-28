@@ -568,6 +568,13 @@ def _environment_values(
     application_urls = application_urls or {}
     values: list[dict[str, Any]] = []
     for item in app["environment"]:
+        frontend_build_variable = (
+            app.get("role") == "frontend"
+            and (
+                item["key"].startswith("VITE_")
+                or item["key"].startswith("NEXT_PUBLIC_")
+            )
+        )
         source = item["source"]
         if source == "literal":
             value = item["value"]
@@ -606,8 +613,8 @@ def _environment_values(
             {
                 "key": item["key"],
                 "value": value,
-                "is_runtime": True,
-                "is_buildtime": False,
+                "is_runtime": not frontend_build_variable,
+                "is_buildtime": frontend_build_variable,
                 "is_preview": False,
                 "is_literal": True,
                 "is_multiline": False,
