@@ -4,6 +4,46 @@
   "product": "lesbianapp",
   "repository": "goodmorning-mx/lesbianapp",
   "branch": "dev",
+  "modules": [
+    {
+      "name": "gm-pwa",
+      "version": "0.1.4",
+      "kind": "frontend",
+      "frontend_package": "@goodmorning/gm-pwa",
+      "node_requires": ["react>=18"],
+      "deployment_modes": ["embedded"],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [],
+      "bindings": [],
+      "pwa": {
+        "manifest_required": true,
+        "service_worker_required": true,
+        "update_mode": "prompt",
+        "api_auth_cache": "network-only"
+      },
+      "compatibility": {"node": ">=20", "factory_api": "^1.0", "products": ["lesbianapp"]}
+    },
+    {
+      "name": "gm-auth",
+      "version": "0.1.4",
+      "kind": "full-stack",
+      "backend_package": "gm-auth",
+      "frontend_package": "@goodmorning/gm-auth",
+      "python_requires": [">=3.12"],
+      "node_requires": ["react>=18", "react-dom>=18"],
+      "deployment_modes": ["embedded", "service"],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [
+        {"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true}
+      ],
+      "bindings": [
+        {"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "backend", "driver": "psycopg"},
+        {"key": "AUTH_SECRET", "source": "generated_secret", "target": "backend"}
+      ],
+      "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1},
+      "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["lesbianapp"]}
+    }
+  ],
   "development_domain": "dev.lesbianapp.goodmorning.mx",
   "coolify_github_app_name": "goodmorning-mx-coolify",
   "applications": [
@@ -22,6 +62,25 @@
           "source": "database_url",
           "resource": "postgres",
           "driver": "psycopg"
+        },
+        {
+          "key": "APP_NAME",
+          "source": "literal",
+          "value": "Lesbianapp API"
+        },
+        {
+          "key": "APP_ENV",
+          "source": "literal",
+          "value": "dev"
+        },
+        {
+          "key": "CORS_ORIGINS",
+          "source": "literal",
+          "value": "https://dev.lesbianapp.goodmorning.mx"
+        },
+        {
+          "key": "AUTH_SECRET",
+          "source": "generated_secret"
         }
       ]
     },
