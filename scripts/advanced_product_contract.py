@@ -338,7 +338,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         allowed_app = {
             "name", "role", "dockerfile", "port", "domain", "health_path",
             "environment", "persistent_volume", "auto_deploy", "base_directory",
-            "dependencies", "custom_domains", "include_source_commit_in_build",
+            "dependencies", "custom_domains",
         }
         _require(set(item) <= allowed_app, "Unknown application field.")
         name = item.get("name")
@@ -359,8 +359,6 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         _require(isinstance(port, int) and 1 <= port <= 65535, "Invalid application port.")
         auto_deploy = item.get("auto_deploy")
         _require(isinstance(auto_deploy, bool), "Advanced applications must declare native auto-deploy as a boolean.")
-        include_source_commit = item.get("include_source_commit_in_build", False)
-        _require(isinstance(include_source_commit, bool), "include_source_commit_in_build must be a boolean.")
         # Keep existing production manifests readable during the rollout. The
         # reconciler hard-disables native auto-deploy for production regardless
         # of this legacy declaration; development remains auto-deployed.
@@ -401,7 +399,6 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
             {
                 **item,
                 "base_directory": base_directory,
-                "include_source_commit_in_build": include_source_commit,
                 "domain": domain,
                 "custom_domains": list(item.get("custom_domains", [])),
                 "environment": environment,
