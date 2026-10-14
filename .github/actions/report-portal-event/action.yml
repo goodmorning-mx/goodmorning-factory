@@ -1,0 +1,59 @@
+name: Report Factory stage to Software portal
+description: Send an authenticated operation stage event to the Software Factory API.
+inputs:
+  operation-id:
+    description: Durable Software Factory operation identifier.
+    required: true
+  product-slug:
+    description: Product repository slug.
+    required: true
+  stage:
+    description: Factory stage name accepted by the portal.
+    required: true
+  status:
+    description: queued, in_progress, success, failure, cancelled, blocked, or unknown.
+    required: true
+  title:
+    description: Customer-facing short stage title.
+    required: true
+  summary:
+    description: Customer-facing short stage summary.
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/github-script@v7
+      env:
+        OPERATION_ID: ${{ inputs.operation-id }}
+        PRODUCT_SLUG: ${{ inputs.product-slug }}
+        FACTORY_STAGE: ${{ inputs.stage }}
+        FACTORY_STATUS: ${{ inputs.status }}
+        FACTORY_TITLE: ${{ inputs.title }}
+        FACTORY_SUMMARY: ${{ inputs.summary }}
+      with:
+        github-token: ${{ github.token }}
+        script: |
+          const token = await core.getIDToken('software.goodmorning.mx');
+          core.setSecret(token);
+          const response = await fetch('https://api.dev.software.goodmorning.mx/internal/factory/events', {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${token}`,
+              'content-type': 'application/json',
+            },
+            body: JSON.stringify({
+              event_id: `${context.runId}:${process.env.FACTORY_STAGE}:${process.env.FACTORY_STATUS}`,
+              event_type: 'factory.product.stage',
+              product_slug: process.env.PRODUCT_SLUG,
+              operation_id: process.env.OPERATION_ID,
+              stage: process.env.FACTORY_STAGE,
+              status: process.env.FACTORY_STATUS,
+              title: process.env.FACTORY_TITLE,
+              summary: process.env.FACTORY_SUMMARY,
+              workflow_run_id: context.runId,
+              url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+            }),
+          });
+          if (!response.ok) {
+            throw new Error(`Portal event ingestion failed with HTTP ${response.status}.`);
+          }

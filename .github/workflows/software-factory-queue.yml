@@ -1,0 +1,61 @@
+name: Claim Software Factory product requests
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  id-token: write
+
+concurrency:
+  group: software-factory-operation-queue
+  cancel-in-progress: false
+
+jobs:
+  claim-and-dispatch:
+    if: github.ref == 'refs/heads/dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Claim and dispatch one product operation
+        uses: actions/github-script@v7
+        env:
+          PORTAL_API_URL: https://api.dev.software.goodmorning.mx
+          PORTAL_OIDC_AUDIENCE: software.goodmorning.mx
+        with:
+          script: |
+            const oidcToken = await core.getIDToken(process.env.PORTAL_OIDC_AUDIENCE);
+            core.setSecret(oidcToken);
+            const response = await fetch(`${process.env.PORTAL_API_URL}/internal/factory/operations/claim`, {
+              method: 'POST',
+              headers: { authorization: `Bearer ${oidcToken}` },
+            });
+            if (!response.ok) {
+              throw new Error(`Portal claim failed with HTTP ${response.status}.`);
+            }
+            const result = await response.json();
+            if (!result.operation) {
+              core.info('No queued product creation request is available.');
+              return;
+            }
+            const operation = result.operation;
+            if (operation.kind !== 'product.create') {
+              throw new Error('Factory queue returned an unsupported operation kind.');
+            }
+            await github.rest.actions.createWorkflowDispatch({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              workflow_id: 'create-product.yml',
+              ref: 'dev',
+              inputs: {
+                product_name: operation.slug,
+                description: operation.description || '',
+                confirm_provision: 'true',
+                frontend_profile: operation.frontend_profile || 'react',
+                operation_id: operation.id,
+              },
+            });
+            core.info(`Dispatched product creation operation ${operation.id} for ${operation.slug}.`);
