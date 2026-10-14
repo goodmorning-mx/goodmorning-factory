@@ -15,6 +15,7 @@
       "domain": "https://api.software.goodmorning.mx",
       "health_path": "/health",
       "auto_deploy": true,
+      "include_source_commit_in_build": true,
       "environment": [
         {
           "key": "DATABASE_URL",
@@ -40,6 +41,7 @@
       "domain": "https://software.goodmorning.mx",
       "health_path": "/",
       "auto_deploy": true,
+      "include_source_commit_in_build": true,
       "environment": [
         {
           "key": "VITE_API_URL",

@@ -54,7 +54,10 @@ class ExistingAppPlanClient(FakeClient):
 
 class ReconcileAdvancedProductTests(unittest.TestCase):
     def test_production_application_payload_cannot_auto_deploy(self):
-        value = contract.validate_manifest(production_manifest())
+        raw = production_manifest()
+        for app in raw["applications"]:
+            app["include_source_commit_in_build"] = True
+        value = contract.validate_manifest(raw)
         for app in value["applications"]:
             with self.subTest(application=app["name"]):
                 payload = advanced._application_payload(
@@ -71,6 +74,7 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
                 self.assertEqual(payload["git_branch"], "main")
                 self.assertFalse(payload["instant_deploy"])
                 self.assertFalse(payload["is_auto_deploy_enabled"])
+                self.assertTrue(payload["include_source_commit_in_build"])
 
     def test_coolify_validation_diagnostics_report_fields_without_values(self):
         detail = advanced._coolify_error_detail(
