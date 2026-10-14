@@ -32,9 +32,14 @@ on:
           - next
           - hybrid
         default: react
+      operation_id:
+        description: Portal operation identifier for Factory status callbacks.
+        required: false
+        type: string
 
 permissions:
   contents: read
+  id-token: write
   issues: write
   actions: write
 
@@ -71,13 +76,20 @@ jobs:
       - name: Resolve product request
         id: request
         shell: bash
+        env:
+          USER_PRODUCT_NAME: ${{ inputs.product_name || '' }}
+          USER_DESCRIPTION: ${{ inputs.description || '' }}
+          USER_CONFIRM_PROVISION: ${{ inputs.confirm_provision || '' }}
+          USER_FRONTEND_PROFILE: ${{ inputs.frontend_profile || '' }}
+          OPERATION_ID: ${{ inputs.operation_id || '' }}
         run: |
           set -euo pipefail
           if [ "${GITHUB_EVENT_NAME}" = "workflow_dispatch" ]; then
-            product_name="${{ github.event.inputs.product_name }}"
-            description="${{ github.event.inputs.description }}"
-            confirm_provision="${{ github.event.inputs.confirm_provision }}"
-            frontend_profile="${{ github.event.inputs.frontend_profile }}"
+            product_name="${USER_PRODUCT_NAME}"
+            description="${USER_DESCRIPTION}"
+            confirm_provision="${USER_CONFIRM_PROVISION}"
+            frontend_profile="${USER_FRONTEND_PROFILE}"
+            operation_id="${OPERATION_ID}"
           elif [ "${GITHUB_EVENT_NAME}" = "pull_request" ]; then
             mapfile -t requests < <(git diff --name-only "${{ github.event.pull_request.base.sha }}" "${{ github.event.pull_request.merge_commit_sha }}" -- 'requests/*.json')
             if [ "${#requests[@]}" -ne 1 ] || [ ! -f "${requests[0]}" ]; then
@@ -88,6 +100,7 @@ jobs:
             description="$(jq -er '.description' "${requests[0]}")"
             confirm_provision="$(jq -r '.confirm_provision // false' "${requests[0]}")"
             frontend_profile="$(jq -r '.frontend_profile // "react"' "${requests[0]}")"
+            operation_id=""
           else
             mapfile -t requests < <(git diff --name-only "${{ github.event.before }}" "${GITHUB_SHA}" -- 'requests/*.json')
             if [ "${#requests[@]}" -ne 1 ] || [ ! -f "${requests[0]}" ]; then
@@ -98,14 +111,29 @@ jobs:
             description="$(jq -er '.description' "${requests[0]}")"
             confirm_provision="$(jq -r '.confirm_provision // false' "${requests[0]}")"
             frontend_profile="$(jq -r '.frontend_profile // "react"' "${requests[0]}")"
+            operation_id=""
           fi
+          if [ -n "${operation_id}" ] && ! [[ "${operation_id}" =~ ^[0-9a-fA-F-]{36}$ ]]; then
+            echo "Invalid operation_id."
+            exit 1
+          fi
+          if [ "${#product_name}" -gt 63 ] || ! [[ "${product_name}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]]; then
+            echo "Invalid product name."
+            exit 1
+          fi
+          case "${frontend_profile}" in
+            react|next|hybrid) ;;
+            *) echo "Invalid frontend profile."; exit 1 ;;
+          esac
+          delimiter="GOODMORNING_DESCRIPTION_$(python3 -c 'import uuid; print(uuid.uuid4().hex)')"
           {
             echo "product_name=${product_name}"
             echo "confirm_provision=${confirm_provision}"
             echo "frontend_profile=${frontend_profile}"
-            echo "description<<GOODMORNING_DESCRIPTION"
-            echo "${description}"
-            echo "GOODMORNING_DESCRIPTION"
+            echo "operation_id=${operation_id}"
+            echo "description<<${delimiter}"
+            printf '%s\n' "${description}"
+            echo "${delimiter}"
           } >> "${GITHUB_OUTPUT}"
 
       - name: Refuse unconfirmed provisioning
@@ -122,11 +150,14 @@ jobs:
           esac
 
       - name: Validate product name before requesting token
+        env:
+          REQUESTED_PRODUCT_NAME: ${{ steps.request.outputs.product_name }}
         run: |
           python3 - <<'PY'
+          import os
           import re
           import sys
-          name = "${{ steps.request.outputs.product_name }}"
+          name = os.environ["REQUESTED_PRODUCT_NAME"]
           reserved = {"goodmorning-factory", "goodmorning-mvp-template"}
           if not name or len(name) > 63 or name in reserved or not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]*[a-z0-9])?", name):
               print("Invalid product_name. Use lowercase letters, numbers, and hyphens; start/end with a letter or number; avoid reserved names; max 63 characters.", file=sys.stderr)
@@ -145,11 +176,13 @@ jobs:
         id: provision
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          PRODUCT_NAME: ${{ steps.request.outputs.product_name }}
+          PRODUCT_DESCRIPTION: ${{ steps.request.outputs.description }}
         run: |
           set -euo pipefail
           if python3 scripts/create_product.py \
-            --name "${{ steps.request.outputs.product_name }}" \
-            --description "${{ steps.request.outputs.description }}" \
+            --name "${PRODUCT_NAME}" \
+            --description "${PRODUCT_DESCRIPTION}" \
             --owner goodmorning-mx \
             --template-owner goodmorning-mx \
             --template-repo goodmorning-mvp-template \
@@ -160,6 +193,17 @@ jobs:
             cp provisioning-error.json provisioning-result.json
             exit 1
           fi
+
+      - name: Report repository creation stage
+        if: steps.request.outputs.operation_id != ''
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ steps.request.outputs.operation_id }}
+          product-slug: ${{ steps.request.outputs.product_name }}
+          stage: repository
+          status: in_progress
+          title: Repositorio creado
+          summary: Factory creó el repositorio y continúa con la configuración del producto.
 
       - name: Register repository-first product manifest
         id: catalog
@@ -203,6 +247,17 @@ jobs:
             --frontend-profile "${{ steps.request.outputs.frontend_profile }}" \
             > production-catalog-result.json
           cat production-catalog-result.json
+
+      - name: Report resource registration stage
+        if: steps.request.outputs.operation_id != ''
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ steps.request.outputs.operation_id }}
+          product-slug: ${{ steps.request.outputs.product_name }}
+          stage: provisioning
+          status: in_progress
+          title: Recursos registrados
+          summary: Factory preparó los manifiestos DEV y producción; ahora reconcilia la infraestructura DEV.
 
       - name: Create deployment verification sentinel
         id: sentinel
@@ -264,6 +319,17 @@ jobs:
             exit 1
           fi
 
+      - name: Report deployment stage
+        if: steps.request.outputs.operation_id != ''
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ steps.request.outputs.operation_id }}
+          product-slug: ${{ steps.request.outputs.product_name }}
+          stage: deployment
+          status: in_progress
+          title: Aplicaciones DEV desplegadas
+          summary: Coolify completó la reconciliación de las aplicaciones y la base privada DEV.
+
       - name: Verify Oracle database backup
         run: |
           set -euo pipefail
@@ -272,6 +338,17 @@ jobs:
           python scripts/reconcile_database_backups.py \
             --manifest "${{ steps.catalog.outputs.manifest_path }}" \
             --backup-now true
+
+      - name: Report backup verification stage
+        if: steps.request.outputs.operation_id != ''
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ steps.request.outputs.operation_id }}
+          product-slug: ${{ steps.request.outputs.product_name }}
+          stage: verification
+          status: in_progress
+          title: Backup DEV verificado
+          summary: Factory verificó el backup externo de PostgreSQL DEV.
 
       - name: Close verified deployment sentinel
         env:
@@ -304,3 +381,25 @@ jobs:
             echo
             echo "The workflow never prints token or private-key material."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Report product creation completed
+        if: ${{ success() && steps.request.outputs.operation_id != '' }}
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ steps.request.outputs.operation_id }}
+          product-slug: ${{ steps.request.outputs.product_name }}
+          stage: ready
+          status: success
+          title: Producto listo
+          summary: El repositorio, despliegue DEV, PostgreSQL privado y backup externo quedaron verificados.
+
+      - name: Report product creation failed
+        if: ${{ failure() && steps.request.outputs.operation_id != '' }}
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ steps.request.outputs.operation_id }}
+          product-slug: ${{ steps.request.outputs.product_name }}
+          stage: failed
+          status: failure
+          title: Creación detenida
+          summary: Factory no pudo completar una etapa. Consulta el workflow vinculado para ver el motivo.
