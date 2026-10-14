@@ -28,7 +28,7 @@
         {"key": "AUTH_BOOTSTRAP_SECRET", "source": "generated_secret"},
         {"key": "GITHUB_OIDC_AUDIENCE", "source": "literal", "value": "software.goodmorning.mx"},
         {"key": "GITHUB_OIDC_REPOSITORY_ID", "source": "literal", "value": "1298125378"},
-        {"key": "GITHUB_OIDC_ALLOWED_WORKFLOWS", "source": "literal", "value": "goodmorning-mx/goodmorning-factory/.github/workflows/provision-coolify-advanced-development.yml@refs/heads/dev"}
+        {"key": "GITHUB_OIDC_ALLOWED_WORKFLOWS", "source": "literal", "value": "goodmorning-mx/goodmorning-factory/.github/workflows/provision-coolify-advanced-development.yml@refs/heads/dev,goodmorning-mx/goodmorning-factory/.github/workflows/software-factory-queue.yml@refs/heads/dev,goodmorning-mx/goodmorning-factory/.github/workflows/create-product.yml@refs/heads/dev,goodmorning-mx/goodmorning-factory/.github/workflows/product-change.yml@refs/heads/dev"}
       ]
     },
     {

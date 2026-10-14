@@ -27,6 +27,30 @@ inputs:
     description: Optional repository source commit SHA.
     required: false
     default: ''
+  repository-id:
+    description: GitHub numeric repository id reported after private repository creation.
+    required: false
+    default: ''
+  portal-environment:
+    description: Software portal database receiving this Factory operation event.
+    required: false
+    default: dev
+  environment:
+    description: Product runtime environment (dev or production) being verified.
+    required: false
+    default: ''
+  desired-sha:
+    description: Expected source SHA for the product runtime.
+    required: false
+    default: ''
+  observed-sha:
+    description: Source SHA observed from the product runtime.
+    required: false
+    default: ''
+  deployment-id:
+    description: Optional Coolify deployment identifier.
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -40,12 +64,26 @@ runs:
         FACTORY_SUMMARY: ${{ inputs.summary }}
         FACTORY_PR_NUMBER: ${{ inputs.pull-request-number }}
         FACTORY_SOURCE_SHA: ${{ inputs.source-sha }}
+        FACTORY_REPOSITORY_ID: ${{ inputs.repository-id }}
+        PORTAL_ENVIRONMENT: ${{ inputs.portal-environment }}
+        PRODUCT_ENVIRONMENT: ${{ inputs.environment }}
+        FACTORY_DESIRED_SHA: ${{ inputs.desired-sha }}
+        FACTORY_OBSERVED_SHA: ${{ inputs.observed-sha }}
+        FACTORY_DEPLOYMENT_ID: ${{ inputs.deployment-id }}
       with:
         github-token: ${{ github.token }}
         script: |
           const token = await core.getIDToken('software.goodmorning.mx');
           core.setSecret(token);
-          const response = await fetch('https://api.dev.software.goodmorning.mx/internal/factory/events', {
+          const portalUrls = {
+            dev: 'https://api.dev.software.goodmorning.mx',
+            production: 'https://api.software.goodmorning.mx',
+          };
+          const portalUrl = portalUrls[process.env.PORTAL_ENVIRONMENT];
+          if (!portalUrl) {
+            throw new Error('Unsupported Software portal environment.');
+          }
+          const response = await fetch(`${portalUrl}/internal/factory/events`, {
             method: 'POST',
             headers: {
               authorization: `Bearer ${token}`,
@@ -62,6 +100,11 @@ runs:
               summary: process.env.FACTORY_SUMMARY,
               pull_request_number: process.env.FACTORY_PR_NUMBER ? Number(process.env.FACTORY_PR_NUMBER) : undefined,
               source_sha: process.env.FACTORY_SOURCE_SHA || undefined,
+              environment: process.env.PRODUCT_ENVIRONMENT || undefined,
+              desired_sha: process.env.FACTORY_DESIRED_SHA || undefined,
+              observed_sha: process.env.FACTORY_OBSERVED_SHA || undefined,
+              deployment_id: process.env.FACTORY_DEPLOYMENT_ID || undefined,
+              repository_id: /^\d+$/.test(process.env.FACTORY_REPOSITORY_ID || '') ? Number(process.env.FACTORY_REPOSITORY_ID) : undefined,
               workflow_run_id: context.runId,
               url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
             }),

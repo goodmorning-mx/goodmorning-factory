@@ -7,6 +7,13 @@ on:
         description: Durable portal operation identifier.
         required: true
         type: string
+      portal_environment:
+        description: Software portal database owning this request.
+        required: true
+        type: choice
+        options:
+          - dev
+          - production
 
 permissions:
   contents: read
@@ -25,6 +32,7 @@ jobs:
       id-token: write
     env:
       OPERATION_ID: ${{ inputs.operation_id }}
+      PORTAL_ENVIRONMENT: ${{ inputs.portal_environment }}
     steps:
       - name: Check out reviewed Factory workflow
         uses: actions/checkout@v4
@@ -49,13 +57,19 @@ jobs:
         uses: actions/github-script@v7
         env:
           OPERATION_ID: ${{ inputs.operation_id }}
-          PORTAL_API_URL: https://api.dev.software.goodmorning.mx
+          PORTAL_ENVIRONMENT: ${{ inputs.portal_environment }}
           PORTAL_OIDC_AUDIENCE: software.goodmorning.mx
         with:
           script: |
             const token = await core.getIDToken(process.env.PORTAL_OIDC_AUDIENCE);
             core.setSecret(token);
-            const response = await fetch(`${process.env.PORTAL_API_URL}/internal/factory/operations/authorize`, {
+            const portalUrls = {
+              dev: 'https://api.dev.software.goodmorning.mx',
+              production: 'https://api.software.goodmorning.mx',
+            };
+            const portalUrl = portalUrls[process.env.PORTAL_ENVIRONMENT];
+            if (!portalUrl) throw new Error('Unsupported Software portal environment.');
+            const response = await fetch(`${portalUrl}/internal/factory/operations/authorize`, {
               method: 'POST',
               headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
               body: JSON.stringify({ operation_id: process.env.OPERATION_ID }),
@@ -232,6 +246,7 @@ jobs:
           summary: Factory generó el cambio en una rama aislada y pasó las verificaciones del producto.
           pull-request-number: ${{ steps.existing.outputs.pr_number || steps.pull-request.outputs.number }}
           source-sha: ${{ steps.existing.outputs.source_sha || steps.pull-request.outputs.sha }}
+          portal-environment: ${{ inputs.portal_environment }}
 
       - name: Report request failure
         if: ${{ failure() && steps.authorize.outcome == 'success' }}
@@ -243,3 +258,4 @@ jobs:
           status: failure
           title: Solicitud detenida
           summary: Factory no pudo preparar un cambio revisable. Consulta el workflow vinculado para ver el motivo.
+          portal-environment: ${{ inputs.portal_environment }}

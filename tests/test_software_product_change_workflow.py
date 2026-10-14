@@ -35,9 +35,30 @@ class SoftwareProductChangeWorkflowTests(unittest.TestCase):
 
     def test_only_reviewed_factory_workflows_can_use_portal_oidc(self):
         manifest = (ROOT / "products/software.json").read_text()
+        production = (ROOT / "production/software.json").read_text()
         self.assertIn(".github/workflows/software-factory-queue.yml@refs/heads/dev", manifest)
         self.assertIn(".github/workflows/create-product.yml@refs/heads/dev", manifest)
         self.assertIn(".github/workflows/product-change.yml@refs/heads/dev", manifest)
+        self.assertIn(".github/workflows/software-factory-queue.yml@refs/heads/dev", production)
+        self.assertIn(".github/workflows/create-product.yml@refs/heads/dev", production)
+        self.assertIn(".github/workflows/product-change.yml@refs/heads/dev", production)
+
+    def test_factory_callbacks_keep_portal_environment_urls_allowlisted(self):
+        action = (ROOT / ".github/actions/report-portal-event/action.yml").read_text()
+        create_product = (ROOT / ".github/workflows/create-product.yml").read_text()
+        queue = (ROOT / ".github/workflows/software-factory-queue.yml").read_text()
+        self.assertIn("dev: 'https://api.dev.software.goodmorning.mx'", action)
+        self.assertIn("production: 'https://api.software.goodmorning.mx'", action)
+        self.assertIn("portal_environment: portal.environment", queue)
+        self.assertIn("type: choice\n        options:\n          - dev\n          - production", create_product)
+        self.assertIn('gh api "/repos/goodmorning-mx/${PRODUCT_NAME}" --jq .id', create_product)
+        self.assertIn('gh api "/repos/goodmorning-mx/${PRODUCT_NAME}/git/ref/heads/dev" --jq .object.sha', create_product)
+        self.assertIn("repository-id: ${{ steps.provision.outputs.repository_id }}", create_product)
+        self.assertIn("Verify public runtime reports the exact source SHA", create_product)
+        self.assertIn('api_url="https://api.dev.${PRODUCT_NAME}.goodmorning.mx/version"', create_product)
+        self.assertIn('hybrid) frontend_path="/app/version.json"', create_product)
+        self.assertIn('desired-sha: ${{ steps.provision.outputs.source_sha }}', create_product)
+        self.assertIn("steps.runtime-version.outcome == 'success'", create_product)
 
 
 if __name__ == "__main__":
