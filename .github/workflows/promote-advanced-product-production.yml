@@ -14,10 +14,21 @@ on:
         description: Type deploy:<product>:production exactly.
         required: true
         type: string
+      portal_environment:
+        description: Software portal that owns this product operation.
+        required: false
+        type: choice
+        options: [dev, production]
+        default: dev
+      operation_id:
+        description: Optional Software portal operation identifier.
+        required: false
+        type: string
 
 permissions:
   contents: read
   issues: write
+  id-token: write
 
 concurrency:
   group: goodmorning-factory-advanced-production-${{ github.event.client_payload.product || inputs.manifest_path }}
@@ -101,6 +112,10 @@ jobs:
           EVENT_SOURCE_SHA: ${{ github.event.client_payload.source_sha }}
           EVENT_SOURCE_RUN_ID: ${{ github.event.client_payload.source_run_id }}
           EVENT_MANIFEST_PATH: ${{ github.event.client_payload.manifest_path }}
+          EVENT_PORTAL_ENVIRONMENT: ${{ github.event.client_payload.portal_environment }}
+          EVENT_OPERATION_ID: ${{ github.event.client_payload.operation_id }}
+          REQUESTED_PORTAL_ENVIRONMENT: ${{ inputs.portal_environment || 'dev' }}
+          REQUESTED_OPERATION_ID: ${{ inputs.operation_id || '' }}
         run: |
           set -euo pipefail
           echo "::add-mask::${GH_TOKEN}"
@@ -111,6 +126,8 @@ jobs:
             source_sha="${EVENT_SOURCE_SHA}"
             source_run_id="${EVENT_SOURCE_RUN_ID}"
             manifest="${EVENT_MANIFEST_PATH}"
+            portal_environment="${EVENT_PORTAL_ENVIRONMENT}"
+            operation_id="${EVENT_OPERATION_ID}"
             test "${manifest}" = "production/${product}.json"
             [[ "${source_run_id}" =~ ^[0-9]+$ ]]
           else
@@ -120,11 +137,16 @@ jobs:
             repository="$(jq -er '.repository' "${manifest}")"
             source_branch="main"
             source_sha="$(gh api "/repos/${repository}/branches/main" --jq '.commit.sha')"
-            source_run_id=""
+            runs="$(gh api "/repos/${repository}/actions/runs?branch=main&event=push&per_page=100")"
+            source_run_id="$(jq -er --arg sha "${source_sha}" '[.workflow_runs[] | select(.name == "CI" and .status == "completed" and .conclusion == "success" and .event == "push" and .head_branch == "main" and .head_sha == $sha)] | sort_by(.run_started_at) | last | .id' <<<"${runs}")"
+            portal_environment="${REQUESTED_PORTAL_ENVIRONMENT}"
+            operation_id="${REQUESTED_OPERATION_ID}"
             test "${REQUESTED_CONFIRMATION}" = "deploy:${product}:production"
           fi
           [[ "${product}" =~ ^[a-z0-9][a-z0-9-]*$ ]]
           test "${repository}" = "goodmorning-mx/${product}"
+          [[ "${portal_environment}" =~ ^(dev|production)$ ]]
+          if [ -n "${operation_id}" ]; then [[ "${operation_id}" =~ ^[0-9a-fA-F-]{36}$ ]]; fi
           test "${source_branch}" = "main"
           [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]
           test -f "${manifest}"
@@ -139,7 +161,7 @@ jobs:
           fi
           current_sha="$(gh api "/repos/${repository}/branches/main" --jq '.commit.sha')"
           test "${current_sha}" = "${source_sha}"
-          if [ "${GITHUB_EVENT_NAME}" = "repository_dispatch" ]; then
+          if [ "${source_run_id}" ]; then
             test "$(jq -r '.promotion_policy // empty' "${manifest}")" = "auto-on-main"
             run_json="$(gh api "/repos/${repository}/actions/runs/${source_run_id}")"
             test "$(jq -r '.name' <<<"${run_json}")" = "CI"
@@ -156,7 +178,32 @@ jobs:
             echo "manifest=${manifest}"
             echo "product=${product}"
             echo "source_sha=${source_sha}"
+            echo "source_run_id=${source_run_id}"
+            echo "portal_environment=${portal_environment}"
+            echo "operation_id=${operation_id}"
+            frontend_url="$(jq -r '.routing.host // empty' "${manifest}")"
+            if [ -z "${frontend_url}" ]; then
+              frontend_url="$(jq -er '.applications[] | select(.role == "frontend" and .domain != null) | .domain' "${manifest}")"
+            fi
+            echo "environment_url=${frontend_url}"
+            repository_id="$(gh api "/repos/${repository}" --jq '.id')"
+            [[ "${repository_id}" =~ ^[0-9]+$ ]]
+            echo "repository_id=${repository_id}"
           } >> "${GITHUB_OUTPUT}"
+
+      - name: Report production promotion started
+        if: steps.authorize.outputs.operation_id != ''
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ steps.authorize.outputs.operation_id }}
+          product-slug: ${{ steps.authorize.outputs.product }}
+          stage: deployment
+          status: in_progress
+          title: Promoción a producción iniciada
+          summary: Factory validó la CI de main y comenzó el despliegue protegido.
+          repository-id: ${{ steps.authorize.outputs.repository_id }}
+          source-sha: ${{ steps.authorize.outputs.source_sha }}
+          portal-environment: ${{ steps.authorize.outputs.portal_environment }}
 
       - name: Plan production changes read-only
         id: plan
@@ -239,6 +286,57 @@ jobs:
           done
           test "${status}" = "404"
 
+      - name: Verify public production runtimes report the exact source SHA
+        id: runtime-version
+        env:
+          MANIFEST: ${{ steps.authorize.outputs.manifest }}
+          EXPECTED_SHA: ${{ steps.authorize.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          api_domain="$(jq -er '.applications[] | select(.role == "api") | .domain' "${MANIFEST}")"
+          profile="$(jq -er '.frontend_profile // "react"' "${MANIFEST}")"
+          frontend_domain="$(jq -r '.routing.host // empty' "${MANIFEST}")"
+          if [ -z "${frontend_domain}" ]; then
+            frontend_domain="$(jq -er '.applications[] | select(.role == "frontend" and .domain != null) | .domain' "${MANIFEST}")"
+          fi
+          case "${profile}" in
+            react|next) frontend_path="/version.json" ;;
+            hybrid) frontend_path="/app/version.json" ;;
+            *) echo "Unsupported frontend profile." >&2; exit 1 ;;
+          esac
+          observed_api=""
+          observed_frontend=""
+          for attempt in $(seq 1 36); do
+            observed_api="$(curl --silent --show-error --fail --max-time 8 "${api_domain}/version" 2>/dev/null | jq -r '.commit_sha // empty' 2>/dev/null || true)"
+            observed_frontend="$(curl --silent --show-error --fail --max-time 8 "${frontend_domain}${frontend_path}" 2>/dev/null | jq -r '.commit_sha // empty' 2>/dev/null || true)"
+            if [ "${observed_api}" = "${EXPECTED_SHA}" ] && [ "${observed_frontend}" = "${EXPECTED_SHA}" ]; then
+              echo "observed_sha=${EXPECTED_SHA}" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            [ "${attempt}" -eq 36 ] || sleep 10
+          done
+          echo "Runtime version mismatch (API=${observed_api:-unavailable}, frontend=${observed_frontend:-unavailable})." >&2
+          echo "observed_sha=${observed_frontend:-${observed_api}}" >> "${GITHUB_OUTPUT}"
+          exit 1
+
+      - name: Report exact production runtime SHA
+        if: always() && steps.authorize.outputs.operation_id != ''
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ steps.authorize.outputs.operation_id }}
+          product-slug: ${{ steps.authorize.outputs.product }}
+          stage: verification
+          status: ${{ steps.runtime-version.outcome == 'success' && 'success' || 'failure' }}
+          title: ${{ steps.runtime-version.outcome == 'success' && 'Versión de producción confirmada' || 'Versión de producción sin confirmar' }}
+          summary: ${{ steps.runtime-version.outcome == 'success' && 'API y frontend reportan la SHA exacta liberada en main.' || 'Factory no pudo confirmar la SHA esperada en API y frontend.' }}
+          repository-id: ${{ steps.authorize.outputs.repository_id }}
+          source-sha: ${{ steps.authorize.outputs.source_sha }}
+          environment: production
+          desired-sha: ${{ steps.authorize.outputs.source_sha }}
+          observed-sha: ${{ steps.runtime-version.outputs.observed_sha }}
+          environment-url: ${{ steps.authorize.outputs.environment_url }}
+          portal-environment: ${{ steps.authorize.outputs.portal_environment }}
+
       - name: Verify post-deployment production backup
         shell: bash
         run: |
@@ -259,6 +357,34 @@ jobs:
             echo "- MCP security migration was exercised through the production API"
             echo "- Pre/post deployment backups verified"
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Report production promotion completed
+        if: success() && steps.authorize.outputs.operation_id != ''
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ steps.authorize.outputs.operation_id }}
+          product-slug: ${{ steps.authorize.outputs.product }}
+          stage: ready
+          status: success
+          title: Producción lista
+          summary: Backup anterior y posterior, migración, healthchecks y SHA exacta quedaron verificados.
+          repository-id: ${{ steps.authorize.outputs.repository_id }}
+          source-sha: ${{ steps.authorize.outputs.source_sha }}
+          portal-environment: ${{ steps.authorize.outputs.portal_environment }}
+
+      - name: Report production promotion failure
+        if: failure() && steps.authorize.outcome == 'success' && steps.authorize.outputs.operation_id != ''
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ steps.authorize.outputs.operation_id }}
+          product-slug: ${{ steps.authorize.outputs.product }}
+          stage: failed
+          status: failure
+          title: Promoción detenida
+          summary: Factory detuvo una etapa de producción. Consulta el workflow vinculado para ver el motivo.
+          repository-id: ${{ steps.authorize.outputs.repository_id }}
+          source-sha: ${{ steps.authorize.outputs.source_sha }}
+          portal-environment: ${{ steps.authorize.outputs.portal_environment }}
 
       - name: Report sanitized production failure
         if: failure()

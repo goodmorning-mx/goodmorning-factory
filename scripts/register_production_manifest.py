@@ -19,7 +19,7 @@ def build_manifest(product: str, storage_uuid: str, frontend_profile: str = "rea
         "name": "api", "role": "api", "base_directory": "/backend",
         "dockerfile": "/Dockerfile", "port": 8000,
         "domain": f"https://api.{product}.goodmorning.mx",
-        "health_path": "/health", "auto_deploy": True, "environment": [
+        "health_path": "/health", "auto_deploy": False, "environment": [
             {"key": "DATABASE_URL", "source": "database_url", "resource": "postgres", "driver": "psycopg"},
         ],
     }]
@@ -28,7 +28,7 @@ def build_manifest(product: str, storage_uuid: str, frontend_profile: str = "rea
             "name": "frontend", "role": "frontend", "base_directory": "/frontend",
             "dockerfile": "/Dockerfile", "port": 80,
             "domain": f"https://{product}.goodmorning.mx" if frontend_profile == "react" else None,
-            "health_path": "/", "auto_deploy": True, "environment": [
+            "health_path": "/", "auto_deploy": False, "environment": [
                 {"key": "VITE_API_URL", "source": "literal", "value": f"https://api.{product}.goodmorning.mx" if frontend_profile == "react" else "/api"},
                 *([{"key": "VITE_BASE_PATH", "source": "literal", "value": "/app/"}] if frontend_profile == "hybrid" else []),
             ],
@@ -38,7 +38,7 @@ def build_manifest(product: str, storage_uuid: str, frontend_profile: str = "rea
             "name": "seo", "role": "frontend", "base_directory": "/seo",
             "dockerfile": "/Dockerfile", "port": 3000,
             "domain": f"https://{product}.goodmorning.mx" if frontend_profile == "next" else None,
-            "health_path": "/health", "auto_deploy": True, "environment": [
+            "health_path": "/health", "auto_deploy": False, "environment": [
                 {"key": "NEXT_PUBLIC_API_URL", "source": "literal", "value": f"https://api.{product}.goodmorning.mx" if frontend_profile == "next" else "/api"},
             ],
         })
@@ -75,7 +75,7 @@ def build_manifest(product: str, storage_uuid: str, frontend_profile: str = "rea
             "name": "frontend-gateway", "role": "gateway", "base_directory": "/gateway",
             "dockerfile": "/Dockerfile", "port": 80,
             "domain": f"https://{product}.goodmorning.mx",
-            "health_path": "/health", "auto_deploy": True, "environment": [],
+            "health_path": "/health", "auto_deploy": False, "environment": [],
             "dependencies": [
                 {"type": "application", "name": "frontend"},
                 {"type": "application", "name": "seo"},
