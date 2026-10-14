@@ -42,20 +42,33 @@ jobs:
               return;
             }
             const operation = result.operation;
-            if (operation.kind !== 'product.create') {
+            const workflows = {
+              'product.create': {
+                workflow_id: 'create-product.yml',
+                inputs: {
+                  product_name: operation.slug,
+                  description: operation.description || '',
+                  confirm_provision: 'true',
+                  frontend_profile: operation.frontend_profile || 'react',
+                  operation_id: operation.id,
+                },
+              },
+              'code.change': {
+                workflow_id: 'product-change.yml',
+                inputs: {
+                  operation_id: operation.id,
+                },
+              },
+            };
+            const dispatch = workflows[operation.kind];
+            if (!dispatch) {
               throw new Error('Factory queue returned an unsupported operation kind.');
             }
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              workflow_id: 'create-product.yml',
+              workflow_id: dispatch.workflow_id,
               ref: 'dev',
-              inputs: {
-                product_name: operation.slug,
-                description: operation.description || '',
-                confirm_provision: 'true',
-                frontend_profile: operation.frontend_profile || 'react',
-                operation_id: operation.id,
-              },
+              inputs: dispatch.inputs,
             });
-            core.info(`Dispatched product creation operation ${operation.id} for ${operation.slug}.`);
+            core.info(`Dispatched ${operation.kind} operation ${operation.id} for ${operation.slug}.`);

@@ -19,6 +19,14 @@ inputs:
   summary:
     description: Customer-facing short stage summary.
     required: true
+  pull-request-number:
+    description: Optional pull request number for a code change.
+    required: false
+    default: ''
+  source-sha:
+    description: Optional repository source commit SHA.
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -30,6 +38,8 @@ runs:
         FACTORY_STATUS: ${{ inputs.status }}
         FACTORY_TITLE: ${{ inputs.title }}
         FACTORY_SUMMARY: ${{ inputs.summary }}
+        FACTORY_PR_NUMBER: ${{ inputs.pull-request-number }}
+        FACTORY_SOURCE_SHA: ${{ inputs.source-sha }}
       with:
         github-token: ${{ github.token }}
         script: |
@@ -50,6 +60,8 @@ runs:
               status: process.env.FACTORY_STATUS,
               title: process.env.FACTORY_TITLE,
               summary: process.env.FACTORY_SUMMARY,
+              pull_request_number: process.env.FACTORY_PR_NUMBER ? Number(process.env.FACTORY_PR_NUMBER) : undefined,
+              source_sha: process.env.FACTORY_SOURCE_SHA || undefined,
               workflow_run_id: context.runId,
               url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
             }),
