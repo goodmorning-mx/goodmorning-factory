@@ -23,25 +23,46 @@ jobs:
       - name: Claim and dispatch one product operation
         uses: actions/github-script@v7
         env:
-          PORTAL_API_URL: https://api.dev.software.goodmorning.mx
           PORTAL_OIDC_AUDIENCE: software.goodmorning.mx
         with:
           script: |
             const oidcToken = await core.getIDToken(process.env.PORTAL_OIDC_AUDIENCE);
             core.setSecret(oidcToken);
-            const response = await fetch(`${process.env.PORTAL_API_URL}/internal/factory/operations/claim`, {
-              method: 'POST',
-              headers: { authorization: `Bearer ${oidcToken}` },
-            });
-            if (!response.ok) {
-              throw new Error(`Portal claim failed with HTTP ${response.status}.`);
+            const portals = [
+              { environment: 'dev', url: 'https://api.dev.software.goodmorning.mx' },
+              { environment: 'production', url: 'https://api.software.goodmorning.mx' },
+            ];
+            let claimed;
+            for (const portal of portals) {
+              let response;
+              try {
+                response = await fetch(`${portal.url}/internal/factory/operations/claim`, {
+                  method: 'POST',
+                  headers: { authorization: `Bearer ${oidcToken}` },
+                  signal: AbortSignal.timeout(8000),
+                });
+              } catch {
+                core.warning(`Software portal ${portal.environment} did not answer its operation claim.`);
+                continue;
+              }
+              if (!response.ok) {
+                if (response.status >= 500) {
+                  core.warning(`Software portal ${portal.environment} returned HTTP ${response.status} for its operation claim.`);
+                  continue;
+                }
+                throw new Error(`Software portal ${portal.environment} rejected the Factory worker with HTTP ${response.status}.`);
+              }
+              const result = await response.json();
+              if (result.operation) {
+                claimed = { portal, operation: result.operation };
+                break;
+              }
             }
-            const result = await response.json();
-            if (!result.operation) {
-              core.info('No queued product creation request is available.');
+            if (!claimed) {
+              core.info('No reachable Software portal has a queued operation.');
               return;
             }
-            const operation = result.operation;
+            const { portal, operation } = claimed;
             const workflows = {
               'product.create': {
                 workflow_id: 'create-product.yml',
@@ -51,12 +72,14 @@ jobs:
                   confirm_provision: 'true',
                   frontend_profile: operation.frontend_profile || 'react',
                   operation_id: operation.id,
+                  portal_environment: portal.environment,
                 },
               },
               'code.change': {
                 workflow_id: 'product-change.yml',
                 inputs: {
                   operation_id: operation.id,
+                  portal_environment: portal.environment,
                 },
               },
             };

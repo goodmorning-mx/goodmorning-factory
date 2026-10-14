@@ -36,6 +36,14 @@ on:
         description: Portal operation identifier for Factory status callbacks.
         required: false
         type: string
+      portal_environment:
+        description: Software portal database owning this request.
+        required: false
+        type: choice
+        options:
+          - dev
+          - production
+        default: dev
 
 permissions:
   contents: read
@@ -193,6 +201,18 @@ jobs:
             cp provisioning-error.json provisioning-result.json
             exit 1
           fi
+          repository_id="$(gh api "/repos/goodmorning-mx/${PRODUCT_NAME}" --jq .id)"
+          if ! [[ "${repository_id}" =~ ^[0-9]+$ ]]; then
+            echo "GitHub returned an invalid repository identity."
+            exit 1
+          fi
+          source_sha="$(gh api "/repos/goodmorning-mx/${PRODUCT_NAME}/git/ref/heads/dev" --jq .object.sha)"
+          if ! [[ "${source_sha}" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "GitHub returned an invalid development branch SHA."
+            exit 1
+          fi
+          echo "repository_id=${repository_id}" >> "${GITHUB_OUTPUT}"
+          echo "source_sha=${source_sha}" >> "${GITHUB_OUTPUT}"
 
       - name: Report repository creation stage
         if: steps.request.outputs.operation_id != ''
@@ -204,6 +224,8 @@ jobs:
           status: in_progress
           title: Repositorio creado
           summary: Factory creó el repositorio y continúa con la configuración del producto.
+          repository-id: ${{ steps.provision.outputs.repository_id }}
+          portal-environment: ${{ inputs.portal_environment || 'dev' }}
 
       - name: Register repository-first product manifest
         id: catalog
@@ -258,6 +280,8 @@ jobs:
           status: in_progress
           title: Recursos registrados
           summary: Factory preparó los manifiestos DEV y producción; ahora reconcilia la infraestructura DEV.
+          repository-id: ${{ steps.provision.outputs.repository_id }}
+          portal-environment: ${{ inputs.portal_environment || 'dev' }}
 
       - name: Create deployment verification sentinel
         id: sentinel
@@ -329,6 +353,8 @@ jobs:
           status: in_progress
           title: Aplicaciones DEV desplegadas
           summary: Coolify completó la reconciliación de las aplicaciones y la base privada DEV.
+          repository-id: ${{ steps.provision.outputs.repository_id }}
+          portal-environment: ${{ inputs.portal_environment || 'dev' }}
 
       - name: Verify Oracle database backup
         run: |
@@ -338,6 +364,55 @@ jobs:
           python scripts/reconcile_database_backups.py \
             --manifest "${{ steps.catalog.outputs.manifest_path }}" \
             --backup-now true
+
+      - name: Verify public runtime reports the exact source SHA
+        id: runtime-version
+        env:
+          PRODUCT_NAME: ${{ steps.request.outputs.product_name }}
+          FRONTEND_PROFILE: ${{ steps.request.outputs.frontend_profile }}
+          EXPECTED_SHA: ${{ steps.provision.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          api_url="https://api.dev.${PRODUCT_NAME}.goodmorning.mx/version"
+          frontend_url="https://dev.${PRODUCT_NAME}.goodmorning.mx"
+          case "${FRONTEND_PROFILE}" in
+            react) frontend_path="/version.json" ;;
+            next) frontend_path="/version.json" ;;
+            hybrid) frontend_path="/app/version.json" ;;
+            *) echo "Unsupported frontend profile." >&2; exit 1 ;;
+          esac
+          observed_api=""
+          observed_frontend=""
+          for attempt in $(seq 1 36); do
+            observed_api="$(curl --silent --show-error --fail --max-time 8 "${api_url}" 2>/dev/null | jq -r '.commit_sha // empty' 2>/dev/null || true)"
+            observed_frontend="$(curl --silent --show-error --fail --max-time 8 "${frontend_url}${frontend_path}" 2>/dev/null | jq -r '.commit_sha // empty' 2>/dev/null || true)"
+            if [ "${observed_api}" = "${EXPECTED_SHA}" ] && [ "${observed_frontend}" = "${EXPECTED_SHA}" ]; then
+              echo "observed_sha=${observed_frontend}" >> "${GITHUB_OUTPUT}"
+              echo "verified=true" >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            [ "${attempt}" -eq 36 ] || sleep 10
+          done
+          echo "Runtime SHA verification timed out (API=${observed_api:-unavailable}, frontend=${observed_frontend:-unavailable})." >&2
+          echo "observed_sha=${observed_frontend:-${observed_api}}" >> "${GITHUB_OUTPUT}"
+          exit 1
+
+      - name: Report exact runtime version
+        if: always() && steps.request.outputs.operation_id != '' && steps.provision.outputs.repository_id != ''
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ steps.request.outputs.operation_id }}
+          product-slug: ${{ steps.request.outputs.product_name }}
+          stage: verification
+          status: ${{ steps.runtime-version.outcome == 'success' && 'success' || 'failure' }}
+          title: ${{ steps.runtime-version.outcome == 'success' && 'Versión exacta confirmada' || 'Versión exacta pendiente' }}
+          summary: ${{ steps.runtime-version.outcome == 'success' && 'API y frontend reportan la misma SHA publicada por la rama DEV.' || 'Factory no pudo confirmar que API y frontend reporten la SHA esperada.' }}
+          repository-id: ${{ steps.provision.outputs.repository_id }}
+          source-sha: ${{ steps.provision.outputs.source_sha }}
+          environment: dev
+          desired-sha: ${{ steps.provision.outputs.source_sha }}
+          observed-sha: ${{ steps.runtime-version.outputs.observed_sha }}
+          portal-environment: ${{ inputs.portal_environment || 'dev' }}
 
       - name: Report backup verification stage
         if: steps.request.outputs.operation_id != ''
@@ -349,6 +424,8 @@ jobs:
           status: in_progress
           title: Backup DEV verificado
           summary: Factory verificó el backup externo de PostgreSQL DEV.
+          repository-id: ${{ steps.provision.outputs.repository_id }}
+          portal-environment: ${{ inputs.portal_environment || 'dev' }}
 
       - name: Close verified deployment sentinel
         env:
@@ -391,7 +468,9 @@ jobs:
           stage: ready
           status: success
           title: Producto listo
-          summary: El repositorio, despliegue DEV, PostgreSQL privado y backup externo quedaron verificados.
+          summary: El repositorio, SHA exacta de API y frontend en DEV, PostgreSQL privado y backup externo quedaron verificados.
+          repository-id: ${{ steps.provision.outputs.repository_id }}
+          portal-environment: ${{ inputs.portal_environment || 'dev' }}
 
       - name: Report product creation failed
         if: ${{ failure() && steps.request.outputs.operation_id != '' }}
@@ -403,3 +482,5 @@ jobs:
           status: failure
           title: Creación detenida
           summary: Factory no pudo completar una etapa. Consulta el workflow vinculado para ver el motivo.
+          repository-id: ${{ steps.provision.outputs.repository_id }}
+          portal-environment: ${{ inputs.portal_environment || 'dev' }}
