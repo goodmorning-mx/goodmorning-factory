@@ -553,6 +553,9 @@ def _application_payload(manifest: dict[str, Any], app: dict[str, Any], context:
         "base_directory": app["base_directory"],
         "dockerfile_location": app["dockerfile"],
         "ports_exposes": str(app["port"]),
+        # SOURCE_COMMIT is a Coolify predefined value. Images may embed it only
+        # when the manifest explicitly requests build-time availability.
+        "include_source_commit_in_build": bool(app.get("include_source_commit_in_build", False)),
         # Coolify's application API accepts comma-separated HTTPS domains.
         # Keep the manifest's established primary domain first, then append
         # explicitly reviewed custom-domain bindings.
@@ -597,6 +600,7 @@ def _application_mutable_changes(found: dict[str, Any], expected: dict[str, Any]
         *( ("git_commit_sha",) if "git_commit_sha" in expected else () ),
         "instant_deploy",
         "is_auto_deploy_enabled",
+        "include_source_commit_in_build",
         "autogenerate_domain",
         "health_check_enabled",
         "health_check_path",

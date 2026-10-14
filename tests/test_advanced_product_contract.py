@@ -161,6 +161,13 @@ class AdvancedProductContractTests(unittest.TestCase):
         with self.assertRaisesRegex(contract.ContractError, "development applications must enable native auto-deploy"):
             contract.validate_manifest(value)
 
+    def test_source_commit_build_availability_must_be_boolean(self):
+        value = manifest()
+        value["applications"][0]["include_source_commit_in_build"] = "true"
+
+        with self.assertRaisesRegex(contract.ContractError, "include_source_commit_in_build must be a boolean"):
+            contract.validate_manifest(value)
+
     def test_production_requires_exact_release_authorization(self):
         mutations = (
             ("branch", "dev"),
