@@ -51,6 +51,10 @@ inputs:
     description: Optional Coolify deployment identifier.
     required: false
     default: ''
+  environment-url:
+    description: Public URL of the product environment being verified.
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -70,6 +74,7 @@ runs:
         FACTORY_DESIRED_SHA: ${{ inputs.desired-sha }}
         FACTORY_OBSERVED_SHA: ${{ inputs.observed-sha }}
         FACTORY_DEPLOYMENT_ID: ${{ inputs.deployment-id }}
+        PRODUCT_ENVIRONMENT_URL: ${{ inputs.environment-url }}
       with:
         github-token: ${{ github.token }}
         script: |
@@ -104,6 +109,7 @@ runs:
               desired_sha: process.env.FACTORY_DESIRED_SHA || undefined,
               observed_sha: process.env.FACTORY_OBSERVED_SHA || undefined,
               deployment_id: process.env.FACTORY_DEPLOYMENT_ID || undefined,
+              environment_url: process.env.PRODUCT_ENVIRONMENT_URL || undefined,
               repository_id: /^\d+$/.test(process.env.FACTORY_REPOSITORY_ID || '') ? Number(process.env.FACTORY_REPOSITORY_ID) : undefined,
               workflow_run_id: context.runId,
               url: `https://github.com/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,

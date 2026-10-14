@@ -8,8 +8,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class SoftwareProductChangeWorkflowTests(unittest.TestCase):
     def test_queue_dispatches_only_operation_id_for_code_changes(self):
         workflow = (ROOT / ".github/workflows/software-factory-queue.yml").read_text()
-        self.assertIn("'code.change': {", workflow)
-        self.assertIn("workflow_id: 'product-change.yml'", workflow)
+        self.assertIn("operation.kind === 'code.change'", workflow)
+        self.assertIn("workflowId = 'product-change.yml'", workflow)
         self.assertIn("operation_id: operation.id", workflow)
         self.assertNotIn("prompt: operation.prompt", workflow)
 
@@ -42,6 +42,8 @@ class SoftwareProductChangeWorkflowTests(unittest.TestCase):
         self.assertIn(".github/workflows/software-factory-queue.yml@refs/heads/dev", production)
         self.assertIn(".github/workflows/create-product.yml@refs/heads/dev", production)
         self.assertIn(".github/workflows/product-change.yml@refs/heads/dev", production)
+        self.assertIn(".github/workflows/promote-advanced-product-production.yml@refs/heads/dev", manifest)
+        self.assertIn(".github/workflows/promote-advanced-product-production.yml@refs/heads/dev", production)
 
     def test_factory_callbacks_keep_portal_environment_urls_allowlisted(self):
         action = (ROOT / ".github/actions/report-portal-event/action.yml").read_text()
@@ -59,6 +61,21 @@ class SoftwareProductChangeWorkflowTests(unittest.TestCase):
         self.assertIn('hybrid) frontend_path="/app/version.json"', create_product)
         self.assertIn('desired-sha: ${{ steps.provision.outputs.source_sha }}', create_product)
         self.assertIn("steps.runtime-version.outcome == 'success'", create_product)
+
+    def test_authenticated_main_ci_release_enters_the_factory_queue(self):
+        queue = (ROOT / ".github/workflows/software-factory-queue.yml").read_text()
+        release = (ROOT / ".github/workflows/promote-advanced-product-production.yml").read_text()
+        self.assertIn("production.deploy", queue)
+        self.assertIn("permission-actions: read", queue)
+        self.assertIn("getWorkflowRun", queue)
+        self.assertIn("createDispatchEvent", queue)
+        self.assertIn("event_type: 'promote-advanced-product'", queue)
+        self.assertIn("contents: write", queue)
+        self.assertIn("EVENT_SOURCE_RUN_ID", release)
+        self.assertIn('test "$(jq -r \'.head_sha\' <<<"${run_json}")" = "${source_sha}"', release)
+        self.assertIn("steps.runtime-version.outcome == 'success'", release)
+        self.assertIn("environment: production", release)
+        self.assertIn("environment-url: ${{ steps.authorize.outputs.environment_url }}", release)
 
 
 if __name__ == "__main__":

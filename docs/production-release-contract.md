@@ -41,15 +41,18 @@ values in a manifest, commit, issue, or workflow input.
 
 ## Promotion
 
-The product release workflow dispatches `promote-advanced-product` to Factory
-after the `CI` workflow succeeds on `main`. The Factory workflow also retains a
+The template's OIDC event reporter notifies the Software portal after CI on
+`main` succeeds. The portal records a production release operation, and the
+scheduled Factory worker verifies the exact successful run with a product-scoped
+read token before dispatching `promote-advanced-product` with its SHA and run ID.
+Factory validates that source identity again. The Factory workflow also retains a
 manual dispatch for recovery and operator-approved retries. An automatic
 promotion requires:
 
 1. an existing reviewed `production/<product>.json` manifest;
 2. `confirm_production=true` in that manifest;
-3. the repository's production release workflow, with the Factory GitHub App
-   ID variable and private key secret configured;
+3. the product's registered repository identity and Factory's scoped Actions
+   read access to its CI runs;
 4. the exact `main` SHA and successful `CI` push run for that SHA;
 5. Factory branch `dev` and the GitHub Environment `production`;
 6. the existing Coolify and Oracle credentials.

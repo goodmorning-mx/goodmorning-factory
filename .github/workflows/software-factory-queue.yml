@@ -7,7 +7,7 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
   id-token: write
 
 concurrency:
@@ -20,7 +20,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Claim and dispatch one product operation
+      - name: Claim one product operation
+        id: claim
         uses: actions/github-script@v7
         env:
           PORTAL_OIDC_AUDIENCE: software.goodmorning.mx
@@ -60,38 +61,106 @@ jobs:
             }
             if (!claimed) {
               core.info('No reachable Software portal has a queued operation.');
+              core.setOutput('found', 'false');
               return;
             }
             const { portal, operation } = claimed;
-            const workflows = {
-              'product.create': {
-                workflow_id: 'create-product.yml',
-                inputs: {
-                  product_name: operation.slug,
-                  description: operation.description || '',
-                  confirm_provision: 'true',
-                  frontend_profile: operation.frontend_profile || 'react',
+            if (!['product.create', 'code.change', 'production.deploy'].includes(operation.kind)) {
+              throw new Error('Factory queue returned an unsupported operation kind.');
+            }
+            core.setOutput('found', 'true');
+            core.setOutput('kind', operation.kind);
+            core.setOutput('slug', operation.slug);
+            core.setOutput('operation', JSON.stringify({ ...operation, portal_environment: portal.environment }));
+
+      - name: Create read-only product Actions token
+        if: steps.claim.outputs.kind == 'production.deploy'
+        id: product-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.GOODMORNING_FACTORY_APP_ID }}
+          private-key: ${{ secrets.GOODMORNING_FACTORY_PRIVATE_KEY }}
+          owner: goodmorning-mx
+          repositories: ${{ steps.claim.outputs.slug }}
+          permission-actions: read
+
+      - name: Dispatch claimed operation
+        if: steps.claim.outputs.found == 'true'
+        uses: actions/github-script@v7
+        env:
+          OPERATION_JSON: ${{ steps.claim.outputs.operation }}
+          PRODUCT_ACTIONS_TOKEN: ${{ steps.product-token.outputs.token }}
+        with:
+          script: |
+            const operation = JSON.parse(process.env.OPERATION_JSON);
+            let workflowId;
+            let inputs;
+            if (operation.kind === 'product.create') {
+              workflowId = 'create-product.yml';
+              inputs = {
+                product_name: operation.slug,
+                description: operation.description || '',
+                confirm_provision: 'true',
+                frontend_profile: operation.frontend_profile || 'react',
+                operation_id: operation.id,
+                portal_environment: operation.portal_environment,
+              };
+            } else if (operation.kind === 'code.change') {
+              workflowId = 'product-change.yml';
+              inputs = { operation_id: operation.id, portal_environment: operation.portal_environment };
+            } else if (operation.kind === 'production.deploy') {
+              const repository = `goodmorning-mx/${operation.slug}`;
+            const { getOctokit } = require('@actions/github');
+            const readOnlyGithub = getOctokit(process.env.PRODUCT_ACTIONS_TOKEN);
+              const { data: run } = await readOnlyGithub.rest.actions.getWorkflowRun({
+                owner: 'goodmorning-mx',
+                repo: operation.slug,
+                run_id: operation.source_run_id,
+              });
+              if (run.name !== 'CI' || run.event !== 'push' || run.status !== 'completed'
+                || run.conclusion !== 'success' || run.head_branch !== 'main'
+                || run.head_sha !== operation.source_sha || run.head_repository?.full_name !== repository) {
+                throw new Error('The queued production release does not match a successful main CI run.');
+              }
+              await github.rest.repos.createDispatchEvent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                event_type: 'promote-advanced-product',
+                client_payload: {
+                  product: operation.slug,
+                  repository,
+                  source_branch: 'main',
+                  source_sha: operation.source_sha,
+                  source_run_id: String(operation.source_run_id),
+                  manifest_path: `production/${operation.slug}.json`,
+                  portal_environment: operation.portal_environment,
                   operation_id: operation.id,
-                  portal_environment: portal.environment,
                 },
-              },
-              'code.change': {
-                workflow_id: 'product-change.yml',
-                inputs: {
-                  operation_id: operation.id,
-                  portal_environment: portal.environment,
-                },
-              },
-            };
-            const dispatch = workflows[operation.kind];
-            if (!dispatch) {
+              });
+              core.info(`Dispatched ${operation.kind} operation ${operation.id} for ${operation.slug}.`);
+              return;
+            } else {
               throw new Error('Factory queue returned an unsupported operation kind.');
             }
             await github.rest.actions.createWorkflowDispatch({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              workflow_id: dispatch.workflow_id,
+              workflow_id: workflowId,
               ref: 'dev',
-              inputs: dispatch.inputs,
+              inputs,
             });
             core.info(`Dispatched ${operation.kind} operation ${operation.id} for ${operation.slug}.`);
+
+      - name: Report operation dispatch failure
+        if: failure() && steps.claim.outputs.found == 'true'
+        uses: ./.github/actions/report-portal-event
+        with:
+          operation-id: ${{ fromJSON(steps.claim.outputs.operation).id }}
+          product-slug: ${{ fromJSON(steps.claim.outputs.operation).slug }}
+          stage: failed
+          status: failure
+          title: Factory no pudo iniciar la operación
+          summary: El worker no pudo validar o despachar esta operación. Consulta el workflow vinculado.
+          repository-id: ${{ fromJSON(steps.claim.outputs.operation).repository_id }}
+          source-sha: ${{ fromJSON(steps.claim.outputs.operation).source_sha }}
+          portal-environment: ${{ fromJSON(steps.claim.outputs.operation).portal_environment }}

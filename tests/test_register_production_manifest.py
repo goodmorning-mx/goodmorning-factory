@@ -17,6 +17,7 @@ class RegisterProductionManifestTests(unittest.TestCase):
         self.assertEqual(manifest["promotion_policy"], "auto-on-main")
         self.assertTrue(manifest["confirm_production"])
         self.assertTrue(manifest["backup"]["enabled"])
+        self.assertTrue(all(app["auto_deploy"] is False for app in manifest["applications"]))
 
     def test_registers_production_manifest_after_repository_verification(self):
         calls = []

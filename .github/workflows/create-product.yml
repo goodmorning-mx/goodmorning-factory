@@ -412,6 +412,7 @@ jobs:
           environment: dev
           desired-sha: ${{ steps.provision.outputs.source_sha }}
           observed-sha: ${{ steps.runtime-version.outputs.observed_sha }}
+          environment-url: https://dev.${{ steps.request.outputs.product_name }}.goodmorning.mx
           portal-environment: ${{ inputs.portal_environment || 'dev' }}
 
       - name: Report backup verification stage
