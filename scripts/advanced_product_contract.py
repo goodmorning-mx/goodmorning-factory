@@ -177,7 +177,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "legacy", "migration", "connections", "applications", "databases", "redis", "backup",
         "modules", "module_dependency_order", "resource_ownership",
         "module_update_policy", "domain_bindings", "frontend_profile", "routing",
-        "confirm_production", "promotion_policy",
+        "confirm_production", "promotion_policy", "expected_schema_revision",
     }
     _require(set(raw) <= allowed, "Advanced product manifest contains unknown top-level fields.")
     topology = raw.get("topology")
@@ -212,6 +212,13 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         _require("confirm_production" not in raw and "promotion_policy" not in raw, "Production authorization fields are forbidden in development manifests.")
         if raw.get("development_domain") is not None:
             _require(raw.get("development_domain") == f"dev.{product}.goodmorning.mx", "development_domain must match the product DEV namespace.")
+    expected_schema_revision = raw.get("expected_schema_revision")
+    if expected_schema_revision is not None:
+        _require(
+            isinstance(expected_schema_revision, str)
+            and re.fullmatch(r"[A-Za-z0-9_-]{1,64}", expected_schema_revision) is not None,
+            "expected_schema_revision must be a valid Alembic revision identifier.",
+        )
     github_app = raw.get("coolify_github_app_name")
     _require(isinstance(github_app, str) and github_app == "goodmorning-mx-coolify", "Unexpected Coolify GitHub App.")
     frontend_profile = raw.get("frontend_profile", "react")
@@ -614,6 +621,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         "databases": databases,
         "redis": redis_resources,
         "backup": dict(backup),
+        **({"expected_schema_revision": expected_schema_revision} if expected_schema_revision is not None else {}),
         **(
             {"confirm_production": True, "promotion_policy": "auto-on-main"}
             if production

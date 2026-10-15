@@ -276,15 +276,19 @@ jobs:
         run: |
           set -euo pipefail
           manifest="${{ steps.authorize.outputs.manifest }}"
+          expected="$(jq -r '.expected_schema_revision // empty' "${manifest}")"
+          if [ -z "${expected}" ]; then
+            echo "No expected_schema_revision declared; skipping live schema verification."
+            exit 0
+          fi
           api_domain="$(jq -er '.applications[] | select(.role == "api") | .domain' "${manifest}")"
-          probe="${api_domain}/api/v1/invitations/factory-migration-probe-${{ steps.authorize.outputs.source_sha }}"
-          status=""
-          for attempt in $(seq 1 30); do
-            status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' --max-time 20 "${probe}" || true)"
-            if [ "${status}" = "404" ]; then break; fi
-            sleep 10
-          done
-          test "${status}" = "404"
+          version_json="$(curl --fail --silent --show-error --retry 30 --retry-delay 10 --retry-all-errors --max-time 20 "${api_domain}/version")"
+          observed="$(jq -er '.schema_revision' <<<"${version_json}")"
+          if [ "${observed}" != "${expected}" ]; then
+            echo "Expected schema ${expected}, observed ${observed}." >&2
+            exit 1
+          fi
+          echo "Live schema revision ${observed} verified."
 
       - name: Verify public production runtimes report the exact source SHA
         id: runtime-version
