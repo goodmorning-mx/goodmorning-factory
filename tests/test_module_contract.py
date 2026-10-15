@@ -40,6 +40,22 @@ def modules():
 
 
 class ModuleContractTests(unittest.TestCase):
+    def test_current_registry_compiles_the_approved_agent_release_by_sha(self):
+        registry = load_module_release_registry()
+        agent = {
+            "name": "gm-agent", "version": "0.1.6",
+            "source_commit": "06500d8c935ea2cbe5a146b4703f06e3fedceb7f",
+            "kind": "full-stack", "backend_package": "gm-agent",
+            "frontend_package": "@goodmorning/gm-agent", "dependencies": [],
+        }
+        result = compile_installation([agent], require_source_commits=True, release_registry=registry)
+        self.assertEqual(result["python_install_requirements"], [
+            "gm-agent @ git+https://github.com/goodmorning-mx/gm-agent.git@06500d8c935ea2cbe5a146b4703f06e3fedceb7f"
+        ])
+        self.assertEqual(result["node_install_dependencies"], {
+            "@goodmorning/gm-agent": "git+https://github.com/goodmorning-mx/gm-agent.git#06500d8c935ea2cbe5a146b4703f06e3fedceb7f"
+        })
+
     def test_current_registry_compiles_the_approved_billing_release_by_sha(self):
         registry = load_module_release_registry()
         billing = {
