@@ -40,6 +40,18 @@ def modules():
 
 
 class ModuleContractTests(unittest.TestCase):
+    def test_current_registry_compiles_the_approved_mcp_release_by_sha(self):
+        registry = load_module_release_registry()
+        mcp = {
+            "name": "gm-mcp", "version": "0.3.2",
+            "source_commit": "631dee26fc057d10a4cc09ff8f3f89dfaa8a08bc",
+            "kind": "backend", "backend_package": "gm-mcp", "dependencies": [],
+        }
+        result = compile_installation([mcp], require_source_commits=True, release_registry=registry)
+        self.assertEqual(result["python_install_requirements"], [
+            "gm-mcp @ git+https://github.com/goodmorning-mx/gm-mcp.git@631dee26fc057d10a4cc09ff8f3f89dfaa8a08bc"
+        ])
+
     def test_current_registry_compiles_the_approved_payment_release_by_sha(self):
         registry = load_module_release_registry()
         payment = {

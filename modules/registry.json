@@ -155,12 +155,10 @@
           "version": "0.3.2",
           "tag": "v0.3.2",
           "commit_sha": "631dee26fc057d10a4cc09ff8f3f89dfaa8a08bc",
-          "formal_release": false,
+          "formal_release": true,
           "checks_passed": true,
-          "installable": false,
-          "blockers": [
-            "formal_release_missing"
-          ]
+          "installable": true,
+          "blockers": []
         }
       }
     },

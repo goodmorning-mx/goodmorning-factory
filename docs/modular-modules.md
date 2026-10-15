@@ -61,10 +61,10 @@ inputs. The prompt workflow validates changed module references before running
 product tests and regenerates package lockfiles itself; generated code cannot
 edit dependency lockfiles.
 
-The current registry marks only `gm-payments` v`0.1.1` installable. Other module
-releases remain blocked until their metadata, formal release, and check evidence
-meet the same contract. Existing version-tag references remain readable but
-are not accepted as a new or changed dependency.
+The current registry marks `gm-payments` v`0.1.1` and `gm-mcp` v`0.3.2`
+installable. Other module releases remain blocked until their metadata, formal
+release, and check evidence meet the same contract. Existing version-tag
+references remain readable but are not accepted as a new or changed dependency.
 
 ## Deployment and infrastructure contract
 
