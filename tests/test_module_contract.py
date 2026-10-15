@@ -40,6 +40,34 @@ def modules():
 
 
 class ModuleContractTests(unittest.TestCase):
+    def test_current_registry_compiles_the_approved_auth_release_by_sha(self):
+        registry = load_module_release_registry()
+        auth = {
+            "name": "gm-auth", "version": "0.1.5",
+            "source_commit": "138d66cb44a94781e0d38d8afd1be2dbf718c294",
+            "kind": "full-stack", "backend_package": "gm-auth",
+            "frontend_package": "@goodmorning/gm-auth", "dependencies": [],
+        }
+        result = compile_installation([auth], require_source_commits=True, release_registry=registry)
+        self.assertEqual(result["python_install_requirements"], [
+            "gm-auth @ git+https://github.com/goodmorning-mx/gm-auth.git@138d66cb44a94781e0d38d8afd1be2dbf718c294"
+        ])
+        self.assertEqual(result["node_install_dependencies"], {
+            "@goodmorning/gm-auth": "git+https://github.com/goodmorning-mx/gm-auth.git#138d66cb44a94781e0d38d8afd1be2dbf718c294"
+        })
+
+    def test_current_registry_compiles_the_approved_pwa_release_by_sha(self):
+        registry = load_module_release_registry()
+        pwa = {
+            "name": "gm-pwa", "version": "0.1.5",
+            "source_commit": "67e08f85f8c12f5953ee819c391bec050e227a64",
+            "kind": "frontend", "frontend_package": "@goodmorning/gm-pwa", "dependencies": [],
+        }
+        result = compile_installation([pwa], require_source_commits=True, release_registry=registry)
+        self.assertEqual(result["node_install_dependencies"], {
+            "@goodmorning/gm-pwa": "git+https://github.com/goodmorning-mx/gm-pwa.git#67e08f85f8c12f5953ee819c391bec050e227a64"
+        })
+
     def test_current_registry_compiles_the_approved_agent_release_by_sha(self):
         registry = load_module_release_registry()
         agent = {
