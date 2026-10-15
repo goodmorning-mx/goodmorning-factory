@@ -2,6 +2,7 @@
   "frontend_profile": "react",
   "topology": "resources-v3",
   "product": "software",
+  "expected_schema_revision": "202610150002",
   "repository": "goodmorning-mx/software",
   "branch": "dev",
   "development_domain": "dev.software.goodmorning.mx",

@@ -418,6 +418,37 @@ class AdvancedProductContractTests(unittest.TestCase):
             write_mcp["environment"],
         )
 
+    def test_expected_schema_revision_is_validated_and_preserved(self):
+        value = manifest()
+        value["expected_schema_revision"] = "202610150002"
+        self.assertEqual(
+            contract.validate_manifest(value)["expected_schema_revision"],
+            "202610150002",
+        )
+        value["expected_schema_revision"] = "bad revision!"
+        with self.assertRaisesRegex(contract.ContractError, "expected_schema_revision"):
+            contract.validate_manifest(value)
+
+    def test_software_manifests_declare_live_schema_revision(self):
+        root = Path(__file__).resolve().parents[1]
+        self.assertEqual(
+            contract.load_manifest(root / "products/software.json")["expected_schema_revision"],
+            "202610150002",
+        )
+        self.assertEqual(
+            contract.load_manifest(root / "production/software.json")["expected_schema_revision"],
+            "202610150002",
+        )
+
+    def test_advanced_development_workflow_verifies_declared_live_schema_revision(self):
+        workflow = (
+            Path(__file__).resolve().parents[1]
+            / ".github/workflows/provision-coolify-advanced-development.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("Verify live database schema revisions", workflow)
+        self.assertIn(".expected_schema_revision // empty", workflow)
+        self.assertIn("jq -er '.schema_revision'", workflow)
+
     def test_advanced_workflow_separates_plan_and_apply_selections(self):
         workflow = (
             Path(__file__).resolve().parents[1]
@@ -486,8 +517,9 @@ class AdvancedProductContractTests(unittest.TestCase):
             "Smoke every public production application",
             "--retry 30 --retry-delay 10 --retry-all-errors",
             "Verify product database migration through the API",
-            "factory-migration-probe-${{ steps.authorize.outputs.source_sha }}",
-            'test "${status}" = "404"',
+            ".expected_schema_revision // empty",
+            "jq -er '.schema_revision'",
+            'if [ "${observed}" != "${expected}" ]; then',
         )
         for marker in required:
             self.assertIn(marker, workflow)

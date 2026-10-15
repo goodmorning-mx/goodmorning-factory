@@ -2,6 +2,7 @@
   "frontend_profile": "react",
   "topology": "resources-v3-production",
   "product": "software",
+  "expected_schema_revision": "202610150002",
   "repository": "goodmorning-mx/software",
   "branch": "main",
   "coolify_github_app_name": "goodmorning-mx-coolify",
