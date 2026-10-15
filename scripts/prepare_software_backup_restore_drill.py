@@ -8,14 +8,24 @@ import os
 from pathlib import Path
 from typing import Any
 
-from scripts.reconcile_database_backups import (
-    CoolifyClient,
-    load_manifest,
-    required_env,
-    select_database,
-    validate_postgres_database,
-    verify_object,
-)
+if __package__:
+    from .reconcile_database_backups import (
+        CoolifyClient,
+        load_manifest,
+        required_env,
+        select_database,
+        validate_postgres_database,
+        verify_object,
+    )
+else:
+    from reconcile_database_backups import (
+        CoolifyClient,
+        load_manifest,
+        required_env,
+        select_database,
+        validate_postgres_database,
+        verify_object,
+    )
 
 
 def _timestamp(item: dict[str, Any], fallback: int) -> tuple[str, int]:
