@@ -7,8 +7,9 @@ Factory maintains reviewed release metadata in `modules/registry.json`. Every
 new or updated GoodMorning module dependency must match an approved formal
 release and a full source commit SHA. A mutable branch or semantic tag is not
 an installation pin. Currently `gm-payments` v`0.1.1`, `gm-mcp` v`0.3.2`,
-`gm-billing` v`0.1.2`, and `gm-agent` v`0.1.6` are installable; other module releases remain blocked
-until reviewed.
+`gm-billing` v`0.1.2`, `gm-agent` v`0.1.6`, `gm-auth` v`0.1.5`, and
+`gm-pwa` v`0.1.5` are installable; other module releases remain blocked until
+reviewed.
 
 ## Backend
 
@@ -42,13 +43,16 @@ value is never committed to a manifest, package, frontend, or deployment log.
 
 ## Frontend
 
-No frontend module release is currently approved for installation. When a
-frontend module is approved, use the exact source SHA recorded in the Factory
-registry rather than a version tag:
+Frontend module packages are installed from the same reviewed commit SHA as
+their backend module, where applicable. Use the exact source SHA recorded in
+the Factory registry rather than a version tag:
 
 ```bash
 npm install "@goodmorning/gm-example@git+https://github.com/goodmorning-mx/gm-example.git#<approved-40-character-sha>"
 ```
+
+For example, `gm-pwa` v`0.1.5` is pinned to
+`67e08f85f8c12f5953ee819c391bec050e227a64`.
 
 Mount the generic UI from the product shell rather than reimplementing it:
 

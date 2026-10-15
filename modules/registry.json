@@ -47,6 +47,15 @@
             "checks_missing",
             "package_versions_mismatch"
           ]
+        },
+        "0.1.5": {
+          "version": "0.1.5",
+          "tag": "v0.1.5",
+          "commit_sha": "138d66cb44a94781e0d38d8afd1be2dbf718c294",
+          "formal_release": true,
+          "checks_passed": true,
+          "installable": true,
+          "blockers": []
         }
       }
     },
@@ -242,6 +251,15 @@
             "tag_checks_missing",
             "consumer_build_missing"
           ]
+        },
+        "0.1.5": {
+          "version": "0.1.5",
+          "tag": "v0.1.5",
+          "commit_sha": "67e08f85f8c12f5953ee819c391bec050e227a64",
+          "formal_release": true,
+          "checks_passed": true,
+          "installable": true,
+          "blockers": []
         }
       }
     },
