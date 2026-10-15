@@ -40,6 +40,22 @@ def modules():
 
 
 class ModuleContractTests(unittest.TestCase):
+    def test_current_registry_compiles_the_approved_billing_release_by_sha(self):
+        registry = load_module_release_registry()
+        billing = {
+            "name": "gm-billing", "version": "0.1.2",
+            "source_commit": "11a0beafe3c7618b0cfc472f4c5b8619c98d1aab",
+            "kind": "full-stack", "backend_package": "gm-billing",
+            "frontend_package": "@goodmorning/gm-billing", "dependencies": [],
+        }
+        result = compile_installation([billing], require_source_commits=True, release_registry=registry)
+        self.assertEqual(result["python_install_requirements"], [
+            "gm-billing @ git+https://github.com/goodmorning-mx/gm-billing.git@11a0beafe3c7618b0cfc472f4c5b8619c98d1aab"
+        ])
+        self.assertEqual(result["node_install_dependencies"], {
+            "@goodmorning/gm-billing": "git+https://github.com/goodmorning-mx/gm-billing.git#11a0beafe3c7618b0cfc472f4c5b8619c98d1aab"
+        })
+
     def test_current_registry_compiles_the_approved_mcp_release_by_sha(self):
         registry = load_module_release_registry()
         mcp = {
