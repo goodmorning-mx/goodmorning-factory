@@ -93,6 +93,15 @@
             "python_npm_versions_mismatch",
             "unverified_gm_billing_dependency"
           ]
+        },
+        "0.1.6": {
+          "version": "0.1.6",
+          "tag": "v0.1.6",
+          "commit_sha": "06500d8c935ea2cbe5a146b4703f06e3fedceb7f",
+          "formal_release": true,
+          "checks_passed": true,
+          "installable": true,
+          "blockers": []
         }
       }
     },
