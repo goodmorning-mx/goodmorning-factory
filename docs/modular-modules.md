@@ -1,32 +1,49 @@
 # GoodMorning modular modules
 
-Products declare reusable modules in their product manifest. The factory
+Products declare reusable modules in their product manifest. The Factory
 validates the declaration and compiles the package, environment, dependency,
 and migration inputs; product repositories remain responsible for installing
 the packages and mounting their entrypoints.
+
+Example of a module entry using the currently approved `gm-payments` release:
 
 ```json
 {
   "modules": [
     {
-      "name": "gm-agent",
-      "version": "0.1.3",
-      "kind": "full-stack",
-      "backend_package": "gm-agent",
-      "frontend_package": "@goodmorning/gm-agent",
-      "python_requires": ["gm-mcp>=0.1.0", "gm-billing>=0.1.0"],
-      "dependencies": ["gm-mcp", "gm-billing"],
-      "env": [],
+      "name": "gm-payments",
+      "version": "0.1.1",
+      "source_commit": "77502f1d732f9c33bb145c90d2af13ec076be0d6",
+      "kind": "backend",
+      "backend_package": "gm-payments",
+      "python_requires": ["stripe>=12,<13"],
+      "deployment_modes": ["embedded", "service"],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [
+        {"name": "postgres", "kind": "postgresql", "resource_name": "postgres", "shared": true}
+      ],
+      "bindings": [
+        {"key": "DATABASE_URL", "source": "database_url", "requirement": "postgres", "target": "backend"}
+      ],
+      "dependencies": [],
+      "env": [
+        {"key": "PAYMENT_PROVIDER", "required": true, "default": "stripe"},
+        {"key": "PAYMENT_MODE", "required": true, "default": "demo"}
+      ],
       "required_secrets": {
-        "OPENAI_API_KEY": {
+        "STRIPE_SECRET_KEY": {
           "source": "GOODMORNING_MANAGED",
-          "binding": "goodmorning/openai-default",
+          "binding": "goodmorning/stripe-secret-key",
+          "target": "backend"
+        },
+        "STRIPE_WEBHOOK_SECRET": {
+          "source": "GOODMORNING_MANAGED",
+          "binding": "goodmorning/stripe-webhook-secret",
           "target": "backend"
         }
       },
-      "migrations": {"mode": "alembic", "path": "migrations", "minimum_schema": 1},
-      "compatibility": {"python": ">=3.12", "node": ">=20", "factory_api": "^1.0", "products": ["*"]},
-      "entrypoints": {"backend": "gm_agent:install", "frontend": "@goodmorning/gm-agent"}
+      "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1},
+      "compatibility": {"python": ">=3.12", "factory_api": "^1.0", "products": ["*"]}
     }
   ]
 }
@@ -34,13 +51,20 @@ the packages and mounting their entrypoints.
 
 `validate_product_modules` rejects duplicate modules, undeclared dependencies,
 secret defaults, unsafe migration paths, invalid package names, and module
-kind/package mismatches. `required_secrets` contains metadata only: it never
-contains a secret value. `GOODMORNING_MANAGED` bindings are resolved by the
-Factory deployment workflow from its protected central secret store and are
-injected only into the declared backend or frontend resource. `CUSTOMER_MANAGED`
-is accepted by the contract for future support but is not provisioned yet.
-`compile_installation` provides deterministic package lists, environment,
-secret-binding, and migration inputs for product onboarding.
+kind/package mismatches. A `source_commit`, when present, must be a full
+40-character lowercase Git SHA and must match an installable, formally released,
+tested version in `modules/registry.json`. Legacy manifests can omit this field;
+new module dependency changes in prompt-generated PRs must use an approved SHA.
+`compile_installation` emits direct Python and npm Git references pinned to that
+commit, in addition to package names, environment, secret-binding, and migration
+inputs. The prompt workflow validates changed module references before running
+product tests and regenerates package lockfiles itself; generated code cannot
+edit dependency lockfiles.
+
+The current registry marks only `gm-payments` v`0.1.1` installable. Other module
+releases remain blocked until their metadata, formal release, and check evidence
+meet the same contract. Existing version-tag references remain readable but
+are not accepted as a new or changed dependency.
 
 ## Deployment and infrastructure contract
 

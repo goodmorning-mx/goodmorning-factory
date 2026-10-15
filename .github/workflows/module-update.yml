@@ -118,6 +118,7 @@ jobs:
           fi
           python scripts/module_updates.py --module "${MODULE}" --product "${PRODUCT}" --target "${TARGET}" --product-root "${root}" --apply
           if [ -f "${root}/frontend/package.json" ]; then
+            npm --prefix "${root}/frontend" install --package-lock-only --ignore-scripts --no-audit --no-fund
             npm --prefix "${root}/frontend" ci
             npm --prefix "${root}/frontend" run build
           fi

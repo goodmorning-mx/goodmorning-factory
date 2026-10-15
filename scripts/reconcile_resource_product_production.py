@@ -11,9 +11,9 @@ from pathlib import Path
 from typing import Any
 
 try:
-    from scripts.module_contract import ModuleContractError, validate_product_modules
+    from scripts.module_contract import ModuleContractError, load_module_release_registry, validate_product_modules
 except ModuleNotFoundError:  # Direct execution: python scripts/reconcile_resource_product_production.py
-    from module_contract import ModuleContractError, validate_product_modules
+    from module_contract import ModuleContractError, load_module_release_registry, validate_product_modules
 
 
 PRODUCT_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
@@ -229,7 +229,7 @@ def validate_manifest(manifest: dict[str, Any]) -> dict[str, Any]:
         raise ManifestError("confirm_production must be true for every production reconciliation.")
 
     try:
-        modules = validate_product_modules(manifest.get("modules", []))
+        modules = validate_product_modules(manifest.get("modules", []), release_registry=load_module_release_registry())
     except ModuleContractError as exc:
         raise ManifestError(f"Invalid reusable modules: {exc}") from exc
 

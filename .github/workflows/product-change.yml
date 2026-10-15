@@ -134,6 +134,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import os
+          import json
           from pathlib import Path
           policy = """Implement the user's requested product change in this repository.
 
@@ -142,13 +143,27 @@ jobs:
           make the smallest complete change, and run appropriate local checks.
           Do not read or print credentials. Do not modify .github workflows, CI or
           deployment configuration, secrets, environment files, dependency lockfiles,
-          or Factory integration. Do not push or merge. Report any blocker in your
-          final response and leave a reviewable source change when possible.
+          or Factory integration. A GoodMorning module may be added or updated only
+          when its release is explicitly marked installable in the Factory registry;
+          use its exact approved source SHA. If a requested module has no approved
+          release, report that blocker and do not substitute a different release or
+          copy its source. Do not push or merge. Report any blocker in your final
+          response and leave a reviewable source change when possible.
 
-          User request:
           """
+          registry = json.loads(Path("modules/registry.json").read_text(encoding="utf-8"))
+          module_lines = ["### Releases GoodMorning aprobados para instalación", ""]
+          available = 0
+          for module in registry.get("modules", []):
+              for version, release in module.get("release_candidates", {}).items():
+                  if release.get("installable") and release.get("formal_release") and release.get("checks_passed") and not release.get("blockers"):
+                      module_lines.append(f"- `{module['name']}` v`{version}` · SHA `{release['commit_sha']}` · backend `{module.get('backend_package') or 'ninguno'}` · frontend `{module.get('frontend_package') or 'ninguno'}`")
+                      available += 1
+          if not available:
+              module_lines.append("No hay módulos aprobados actualmente. Si el usuario solicita uno, reporta el bloqueo y continúa solo con trabajo que no dependa de ese módulo.")
+          module_lines.extend(["", "Cuando se agregue uno, fija requirements/package.json a este SHA y deja que Factory regenere los lockfiles automáticamente.", "", "User request:"])
           Path(os.environ["CODEX_TASK_FILE"]).write_text(
-              policy + Path(os.environ["USER_PROMPT_FILE"]).read_text(encoding="utf-8").strip() + "\n",
+              policy + "\n".join(module_lines) + "\n" + Path(os.environ["USER_PROMPT_FILE"]).read_text(encoding="utf-8").strip() + "\n",
               encoding="utf-8",
           )
           PY
@@ -163,6 +178,10 @@ jobs:
           permission-profile: ':workspace'
           prompt-file: ${{ runner.temp }}/software-product-request.md
           working-directory: product
+
+      - name: Validate new GoodMorning module pins
+        if: steps.existing.outputs.pr_url == ''
+        run: python3 scripts/validate_module_install_refs.py --root product --registry modules/registry.json --base-ref HEAD
 
       - name: Validate changes and run product checks
         if: steps.existing.outputs.pr_url == ''
@@ -183,6 +202,25 @@ jobs:
                 ;;
             esac
           done
+
+      - name: Regenerate frontend package locks after approved dependency changes
+        if: steps.existing.outputs.pr_url == ''
+        shell: bash
+        working-directory: product
+        run: |
+          set -euo pipefail
+          for directory in frontend seo; do
+            [ -f "${directory}/package.json" ] || continue
+            if [ -n "$(git status --porcelain -- "${directory}/package.json")" ]; then
+              (cd "${directory}" && npm install --package-lock-only --ignore-scripts --no-audit --no-fund)
+            fi
+          done
+
+      - name: Run product checks
+        if: steps.existing.outputs.pr_url == ''
+        working-directory: product
+        run: |
+          set -euo pipefail
           if [ -f backend/requirements.txt ]; then
             python3 -m pip install --disable-pip-version-check -r backend/requirements.txt
             (cd backend && python3 -m pytest)
