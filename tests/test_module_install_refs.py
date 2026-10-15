@@ -1,7 +1,7 @@
 import json
+import tempfile
+import unittest
 from pathlib import Path
-
-import pytest
 
 from scripts.validate_module_install_refs import ModuleInstallPinError, validate_repository
 
@@ -33,35 +33,38 @@ def scan(tmp_path: Path, files: dict[str, str], base: dict[str, str] | None = No
     return validate_repository(root, REGISTRY, read_base=lambda path: (base or {}).get(path.relative_to(root).as_posix(), ""))
 
 
-def test_accepts_new_backend_dependency_only_when_it_matches_approved_sha(tmp_path):
-    checked = scan(tmp_path, {
-        "backend/requirements.txt": f"gm-payments @ git+https://github.com/goodmorning-mx/gm-payments.git@{SHA}\n"
-    })
-    assert checked == ["backend/requirements.txt:gm-payments"]
+class ModuleInstallPinTests(unittest.TestCase):
+    def scan_files(self, files, base=None):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        return scan(Path(temporary.name), files, base)
 
+    def test_accepts_new_backend_dependency_only_when_it_matches_approved_sha(self):
+        checked = self.scan_files({
+            "backend/requirements.txt": f"gm-payments @ git+https://github.com/goodmorning-mx/gm-payments.git@{SHA}\n"
+        })
+        self.assertEqual(checked, ["backend/requirements.txt:gm-payments"])
 
-def test_accepts_new_frontend_dependency_pinned_to_approved_sha(tmp_path):
-    value = {"dependencies": {"@goodmorning/gm-payments": f"git+https://github.com/goodmorning-mx/gm-payments.git#{SHA}"}}
-    checked = scan(tmp_path, {"frontend/package.json": json.dumps(value)})
-    assert checked == ["frontend/package.json:gm-payments"]
+    def test_accepts_new_frontend_dependency_pinned_to_approved_sha(self):
+        value = {"dependencies": {"@goodmorning/gm-payments": f"git+https://github.com/goodmorning-mx/gm-payments.git#{SHA}"}}
+        checked = self.scan_files({"frontend/package.json": json.dumps(value)})
+        self.assertEqual(checked, ["frontend/package.json:gm-payments"])
 
+    def test_rejects_unpinned_or_unapproved_backend_module_dependency(self):
+        requirements = [
+            "gm-payments>=0.1.1",
+            "gm-payments @ git+https://github.com/goodmorning-mx/gm-payments.git@v0.1.1",
+            "gm-payments @ git+https://github.com/goodmorning-mx/gm-payments.git@" + "b" * 40,
+        ]
+        for requirement in requirements:
+            with self.subTest(requirement=requirement), self.assertRaisesRegex(ModuleInstallPinError, "approved full GitHub commit SHA"):
+                self.scan_files({"backend/requirements.txt": requirement + "\n"})
 
-@pytest.mark.parametrize("requirement", [
-    "gm-payments>=0.1.1",
-    "gm-payments @ git+https://github.com/goodmorning-mx/gm-payments.git@v0.1.1",
-    "gm-payments @ git+https://github.com/goodmorning-mx/gm-payments.git@" + "b" * 40,
-])
-def test_rejects_unpinned_or_unapproved_backend_module_dependency(tmp_path, requirement):
-    with pytest.raises(ModuleInstallPinError, match="approved full GitHub commit SHA"):
-        scan(tmp_path, {"backend/requirements.txt": requirement + "\n"})
+    def test_existing_unpinned_module_dependencies_remain_unchanged(self):
+        old = "gm-payments>=0.1.1\n"
+        checked = self.scan_files({"backend/requirements.txt": old}, {"backend/requirements.txt": old})
+        self.assertEqual(checked, [])
 
-
-def test_existing_unpinned_module_dependencies_remain_unchanged(tmp_path):
-    old = "gm-payments>=0.1.1\n"
-    checked = scan(tmp_path, {"backend/requirements.txt": old}, {"backend/requirements.txt": old})
-    assert checked == []
-
-
-def test_blocks_new_module_dependencies_unknown_to_factory(tmp_path):
-    with pytest.raises(ModuleInstallPinError, match="not registered"):
-        scan(tmp_path, {"backend/requirements.txt": "gm-unknown @ git+https://github.com/goodmorning-mx/gm-unknown.git@" + SHA + "\n"})
+    def test_blocks_new_module_dependencies_unknown_to_factory(self):
+        with self.assertRaisesRegex(ModuleInstallPinError, "not registered"):
+            self.scan_files({"backend/requirements.txt": "gm-unknown @ git+https://github.com/goodmorning-mx/gm-unknown.git@" + SHA + "\n"})
