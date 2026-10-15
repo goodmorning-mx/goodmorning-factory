@@ -6,8 +6,9 @@ registers, and mounts them; it does not copy their implementation.
 Factory maintains reviewed release metadata in `modules/registry.json`. Every
 new or updated GoodMorning module dependency must match an approved formal
 release and a full source commit SHA. A mutable branch or semantic tag is not
-an installation pin. Currently `gm-payments` v`0.1.1` and `gm-mcp` v`0.3.2`
-are installable; other module releases remain blocked until reviewed.
+an installation pin. Currently `gm-payments` v`0.1.1`, `gm-mcp` v`0.3.2`, and
+`gm-billing` v`0.1.2` are installable; other module releases remain blocked
+until reviewed.
 
 ## Backend
 

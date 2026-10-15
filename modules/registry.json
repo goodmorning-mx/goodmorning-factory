@@ -193,6 +193,15 @@
             "formal_release_missing",
             "python_npm_versions_mismatch"
           ]
+        },
+        "0.1.2": {
+          "version": "0.1.2",
+          "tag": "v0.1.2",
+          "commit_sha": "11a0beafe3c7618b0cfc472f4c5b8619c98d1aab",
+          "formal_release": true,
+          "checks_passed": true,
+          "installable": true,
+          "blockers": []
         }
       }
     },
