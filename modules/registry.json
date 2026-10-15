@@ -8,15 +8,47 @@
       "frontend_package": "@goodmorning/gm-auth",
       "python_requires": ">=3.12",
       "node_requires": ">=20",
-      "deployment_modes": ["embedded", "service"],
+      "deployment_modes": [
+        "embedded",
+        "service"
+      ],
       "default_deployment_mode": "embedded",
-      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
-      ,"resource_requirements": [
-        {"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true}
+      "default_policy": {
+        "patch": "auto",
+        "minor": "manual",
+        "major": "blocked"
+      },
+      "resource_requirements": [
+        {
+          "name": "primary-db",
+          "kind": "postgresql",
+          "resource_name": "postgres",
+          "shared": true
+        }
       ],
       "bindings": [
-        {"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "backend"}
-      ]
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "requirement": "primary-db",
+          "target": "backend"
+        }
+      ],
+      "release_candidates": {
+        "0.1.4": {
+          "version": "0.1.4",
+          "tag": "v0.1.4",
+          "commit_sha": "efa3e3f631a7a124b79ee32f7b50163b49433d79",
+          "formal_release": false,
+          "checks_passed": false,
+          "installable": false,
+          "blockers": [
+            "formal_release_missing",
+            "checks_missing",
+            "package_versions_mismatch"
+          ]
+        }
+      }
     },
     {
       "name": "gm-agent",
@@ -25,30 +57,112 @@
       "frontend_package": "@goodmorning/gm-agent",
       "python_requires": ">=3.12",
       "node_requires": ">=20",
-      "deployment_modes": ["embedded", "service", "gateway"],
-      "default_deployment_mode": "embedded",
-      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
-      ,"resource_requirements": [
-        {"name": "agent-gateway", "kind": "gateway", "resource_name": "agent-gateway", "deployment_modes": ["gateway"], "port": 8100, "public": true}
+      "deployment_modes": [
+        "embedded",
+        "service",
+        "gateway"
       ],
-      "bindings": []
+      "default_deployment_mode": "embedded",
+      "default_policy": {
+        "patch": "auto",
+        "minor": "manual",
+        "major": "blocked"
+      },
+      "resource_requirements": [
+        {
+          "name": "agent-gateway",
+          "kind": "gateway",
+          "resource_name": "agent-gateway",
+          "deployment_modes": [
+            "gateway"
+          ],
+          "port": 8100,
+          "public": true
+        }
+      ],
+      "bindings": [],
+      "release_candidates": {
+        "0.1.5": {
+          "version": "0.1.5",
+          "tag": "v0.1.5",
+          "commit_sha": "c8dcf1abcae82617b0d37defcf2295524593a839",
+          "formal_release": true,
+          "checks_passed": true,
+          "installable": false,
+          "blockers": [
+            "python_npm_versions_mismatch",
+            "unverified_gm_billing_dependency"
+          ]
+        }
+      }
     },
     {
       "name": "gm-mcp",
       "repository": "goodmorning-mx/gm-mcp",
       "backend_package": "gm-mcp",
       "python_requires": ">=3.12",
-      "deployment_modes": ["embedded", "gateway"],
+      "deployment_modes": [
+        "embedded",
+        "gateway"
+      ],
       "default_deployment_mode": "embedded",
-      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
-      ,"resource_requirements": [
-        {"name": "primary-db", "kind": "postgresql", "resource_name": "postgres", "shared": true, "deployment_modes": ["gateway"]},
-        {"name": "mcp-gateway", "kind": "gateway", "resource_name": "mcp-gateway", "shared": true, "deployment_modes": ["gateway"], "base_directory": "/backend", "dockerfile": "/Dockerfile.mcp", "port": 8200, "public": true, "health_path": "/health"}
+      "default_policy": {
+        "patch": "auto",
+        "minor": "manual",
+        "major": "blocked"
+      },
+      "resource_requirements": [
+        {
+          "name": "primary-db",
+          "kind": "postgresql",
+          "resource_name": "postgres",
+          "shared": true,
+          "deployment_modes": [
+            "gateway"
+          ]
+        },
+        {
+          "name": "mcp-gateway",
+          "kind": "gateway",
+          "resource_name": "mcp-gateway",
+          "shared": true,
+          "deployment_modes": [
+            "gateway"
+          ],
+          "base_directory": "/backend",
+          "dockerfile": "/Dockerfile.mcp",
+          "port": 8200,
+          "public": true,
+          "health_path": "/health"
+        }
       ],
       "bindings": [
-        {"key": "DATABASE_URL", "source": "database_url", "requirement": "primary-db", "target": "mcp-gateway", "driver": "psycopg"},
-        {"key": "MCP_OAUTH_SECRET", "source": "generated_secret", "target": "mcp-gateway"}
-      ]
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "requirement": "primary-db",
+          "target": "mcp-gateway",
+          "driver": "psycopg"
+        },
+        {
+          "key": "MCP_OAUTH_SECRET",
+          "source": "generated_secret",
+          "target": "mcp-gateway"
+        }
+      ],
+      "release_candidates": {
+        "0.3.2": {
+          "version": "0.3.2",
+          "tag": "v0.3.2",
+          "commit_sha": "631dee26fc057d10a4cc09ff8f3f89dfaa8a08bc",
+          "formal_release": false,
+          "checks_passed": true,
+          "installable": false,
+          "blockers": [
+            "formal_release_missing"
+          ]
+        }
+      }
     },
     {
       "name": "gm-billing",
@@ -57,22 +171,63 @@
       "frontend_package": "@goodmorning/gm-billing",
       "python_requires": ">=3.12",
       "node_requires": ">=20",
-      "deployment_modes": ["embedded", "service"],
+      "deployment_modes": [
+        "embedded",
+        "service"
+      ],
       "default_deployment_mode": "embedded",
-      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
-      ,"resource_requirements": [],
-      "bindings": []
+      "default_policy": {
+        "patch": "auto",
+        "minor": "manual",
+        "major": "blocked"
+      },
+      "resource_requirements": [],
+      "bindings": [],
+      "release_candidates": {
+        "0.1.1": {
+          "version": "0.1.1",
+          "tag": "v0.1.1",
+          "commit_sha": "72a978f5f7089fb04fe820f3f3591f75faaaac04",
+          "formal_release": false,
+          "checks_passed": true,
+          "installable": false,
+          "blockers": [
+            "formal_release_missing",
+            "python_npm_versions_mismatch"
+          ]
+        }
+      }
     },
     {
       "name": "gm-pwa",
       "repository": "goodmorning-mx/gm-pwa",
       "frontend_package": "@goodmorning/gm-pwa",
       "node_requires": ">=20",
-      "deployment_modes": ["embedded"],
+      "deployment_modes": [
+        "embedded"
+      ],
       "default_deployment_mode": "embedded",
-      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"}
-      ,"resource_requirements": [],
-      "bindings": []
+      "default_policy": {
+        "patch": "auto",
+        "minor": "manual",
+        "major": "blocked"
+      },
+      "resource_requirements": [],
+      "bindings": [],
+      "release_candidates": {
+        "0.1.4": {
+          "version": "0.1.4",
+          "tag": "v0.1.4",
+          "commit_sha": "f3f0986f7cd30deb33b233670760fff580cad191",
+          "formal_release": true,
+          "checks_passed": false,
+          "installable": false,
+          "blockers": [
+            "tag_checks_missing",
+            "consumer_build_missing"
+          ]
+        }
+      }
     },
     {
       "name": "gm-payments",
@@ -80,22 +235,70 @@
       "version": "0.1.1",
       "backend_package": "gm-payments",
       "python_requires": ">=3.12",
-      "deployment_modes": ["embedded", "service"],
+      "deployment_modes": [
+        "embedded",
+        "service"
+      ],
       "default_deployment_mode": "embedded",
-      "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"},
+      "default_policy": {
+        "patch": "auto",
+        "minor": "manual",
+        "major": "blocked"
+      },
       "dependencies": [],
       "required_secrets": {
-        "STRIPE_SECRET_KEY": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/stripe-secret-key", "target": "backend"},
-        "STRIPE_WEBHOOK_SECRET": {"source": "GOODMORNING_MANAGED", "binding": "goodmorning/stripe-webhook-secret", "target": "backend"}
+        "STRIPE_SECRET_KEY": {
+          "source": "GOODMORNING_MANAGED",
+          "binding": "goodmorning/stripe-secret-key",
+          "target": "backend"
+        },
+        "STRIPE_WEBHOOK_SECRET": {
+          "source": "GOODMORNING_MANAGED",
+          "binding": "goodmorning/stripe-webhook-secret",
+          "target": "backend"
+        }
       },
-      "migrations": {"mode": "sql", "path": "migrations", "minimum_schema": 1},
-      "compatibility": {"python": ">=3.12", "factory_api": "^1.0", "products": ["*"]},
+      "migrations": {
+        "mode": "sql",
+        "path": "migrations",
+        "minimum_schema": 1
+      },
+      "compatibility": {
+        "python": ">=3.12",
+        "factory_api": "^1.0",
+        "products": [
+          "*"
+        ]
+      },
       "resource_requirements": [
-        {"name": "postgres", "kind": "postgresql", "resource_name": "product-postgres", "shared": true}
+        {
+          "name": "postgres",
+          "kind": "postgresql",
+          "resource_name": "product-postgres",
+          "shared": true
+        }
       ],
       "bindings": [
-        {"key": "DATABASE_URL", "source": "database_url", "requirement": "postgres", "target": "backend"}
-      ]
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "requirement": "postgres",
+          "target": "backend"
+        }
+      ],
+      "release_candidates": {
+        "0.1.1": {
+          "version": "0.1.1",
+          "tag": "v0.1.1",
+          "commit_sha": "77502f1d732f9c33bb145c90d2af13ec076be0d6",
+          "formal_release": true,
+          "checks_passed": true,
+          "installable": true,
+          "blockers": []
+        }
+      }
     }
-  ]
+  ],
+  "reviewed_at": "2026-10-15",
+  "review_method": "GitHub tags, release records, tagged-commit check runs, and package manifests"
 }

@@ -1,6 +1,6 @@
 import unittest
 
-from scripts.module_contract import ModuleContractError, compile_installation, compose_resources_v3, validate_product_modules
+from scripts.module_contract import ModuleContractError, compile_installation, compose_resources_v3, load_module_release_registry, validate_product_modules
 from scripts import reconcile_resource_product as resources_contract
 
 
@@ -40,11 +40,68 @@ def modules():
 
 
 class ModuleContractTests(unittest.TestCase):
+    def test_current_registry_compiles_the_approved_payment_release_by_sha(self):
+        registry = load_module_release_registry()
+        payment = {
+            "name": "gm-payments", "version": "0.1.1",
+            "source_commit": "77502f1d732f9c33bb145c90d2af13ec076be0d6",
+            "kind": "backend", "backend_package": "gm-payments", "dependencies": [],
+        }
+        result = compile_installation([payment], require_source_commits=True, release_registry=registry)
+        self.assertEqual(result["python_install_requirements"], [
+            "gm-payments @ git+https://github.com/goodmorning-mx/gm-payments.git@77502f1d732f9c33bb145c90d2af13ec076be0d6"
+        ])
+        payment["source_commit"] = "0" * 40
+        with self.assertRaisesRegex(ModuleContractError, "approved release source commit"):
+            compile_installation([payment], release_registry=registry)
+
     def test_compiles_packages_and_migrations(self):
         result = compile_installation(modules())
         self.assertEqual(["gm-agent", "gm-billing", "gm-mcp"], [m["name"] for m in result["modules"]])
         self.assertEqual(result["python_packages"], ["gm-agent", "gm-billing", "gm-mcp"])
         self.assertEqual(result["migration_order"], ["gm-agent", "gm-billing"])
+        self.assertEqual(result["python_install_requirements"], [])
+
+    def test_compiles_source_sha_pinned_package_references(self):
+        value = modules()
+        for index, module in enumerate(value, start=1):
+            module["source_commit"] = f"{index:040x}"
+        registry = {
+            "schema": 1,
+            "modules": [{
+                "name": module["name"],
+                "release_candidates": {"0.1.0": {
+                    "version": "0.1.0", "commit_sha": module["source_commit"], "installable": True,
+                    "formal_release": True, "checks_passed": True, "blockers": [],
+                }},
+            } for module in value],
+        }
+        result = compile_installation(value, require_source_commits=True, release_registry=registry)
+        self.assertIn("gm-agent @ git+https://github.com/goodmorning-mx/gm-agent.git@" + "0" * 39 + "1", result["python_install_requirements"])
+        self.assertEqual(
+            result["node_install_dependencies"]["@goodmorning/gm-agent"],
+            "git+https://github.com/goodmorning-mx/gm-agent.git#" + "0" * 39 + "1",
+        )
+
+    def test_can_require_immutable_module_source_commits(self):
+        value = modules()
+        with self.assertRaisesRegex(ModuleContractError, "source_commit"):
+            validate_product_modules(value, require_source_commits=True)
+        value[0]["source_commit"] = "v0.1.5"
+        with self.assertRaisesRegex(ModuleContractError, "40-character"):
+            validate_product_modules(value)
+
+    def test_product_manifest_source_pin_must_match_an_approved_release(self):
+        value = modules()
+        value[0]["version"] = "0.1.0"
+        value[0]["source_commit"] = "a" * 40
+        registry = {"schema": 1, "modules": [{"name": "gm-agent", "release_candidates": {
+            "0.1.0": {"version": "0.1.0", "formal_release": True, "checks_passed": True, "installable": True, "blockers": [], "commit_sha": "a" * 40}
+        }}]}
+        self.assertEqual(validate_product_modules(value, release_registry=registry)[0]["source_commit"], "a" * 40)
+        registry["modules"][0]["release_candidates"]["0.1.0"]["commit_sha"] = "b" * 40
+        with self.assertRaisesRegex(ModuleContractError, "approved release source commit"):
+            validate_product_modules(value, release_registry=registry)
 
     def test_rejects_unknown_dependency(self):
         value = modules()[:1]

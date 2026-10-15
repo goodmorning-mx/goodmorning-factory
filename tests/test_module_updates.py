@@ -21,6 +21,12 @@ REGISTRY = {
         "frontend_package": "@goodmorning/gm-pwa",
         "node_requires": ">=20",
         "default_policy": {"patch": "auto", "minor": "manual", "major": "blocked"},
+        "release_candidates": {
+            "0.1.3": {
+                "version": "0.1.3", "tag": "v0.1.3", "commit_sha": "b" * 40,
+                "formal_release": True, "checks_passed": True, "installable": True, "blockers": [],
+            }
+        },
     }],
 }
 
@@ -86,11 +92,25 @@ class ModuleUpdateTests(unittest.TestCase):
             registry_module = REGISTRY["modules"][0]
             changed = apply_update(consumer, value, registry_module, "0.1.3")
             self.assertEqual(len(changed), 2)
-            self.assertIn("v0.1.3", (consumer / "frontend" / "package.json").read_text())
-            self.assertIn("v0.1.3", (consumer / "backend" / "requirements.txt").read_text())
+            self.assertIn("#" + "b" * 40, (consumer / "frontend" / "package.json").read_text())
+            self.assertIn("@" + "b" * 40, (consumer / "backend" / "requirements.txt").read_text())
             self.assertFalse((consumer / "gm-pwa").exists())
-            update_factory_manifest(value, "gm-pwa", "0.1.3")
+            update_factory_manifest(value, "gm-pwa", "0.1.3", REGISTRY["modules"][0])
             self.assertIn('"version": "0.1.3"', manifest.read_text())
+            self.assertIn('"source_commit": "' + "b" * 40 + '"', manifest.read_text())
+
+    def test_module_without_reviewed_installable_release_is_blocked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); products = root / "products"; products.mkdir()
+            value = product(products / "demo.json")
+            (products / "demo.json").write_text(json.dumps(value), encoding="utf-8")
+            registry_value = json.loads(json.dumps(REGISTRY))
+            registry_value["modules"][0]["release_candidates"]["0.1.3"]["installable"] = False
+            registry = root / "registry.json"; registry.write_text(json.dumps(registry_value), encoding="utf-8")
+            planned = plan_updates(products, registry, releases={"gm-pwa": "0.1.3"})["plans"][0]
+            self.assertEqual(planned["action"], "blocked")
+            self.assertIn("release_not_installable", planned["blockers"])
+            self.assertIsNone(planned["available_source_commit"])
 
     def test_apply_refuses_manual_policy(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -7,7 +7,9 @@ the runtime composes them through the generated configuration.
 """
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
 from typing import Any
 
 MODULE_RE = re.compile(r"^[a-z][a-z0-9-]{1,62}$")
@@ -190,12 +192,24 @@ def _version(value: Any, field: str = "version") -> str:
     return value
 
 
+def load_module_release_registry(path: str | Path | None = None) -> dict[str, Any]:
+    """Load the reviewed module release pins tracked by Factory."""
+    registry_path = Path(path) if path else Path(__file__).resolve().parents[1] / "modules" / "registry.json"
+    try:
+        registry = json.loads(registry_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ModuleContractError(f"Unable to load module release registry: {exc}") from exc
+    _require(isinstance(registry, dict) and registry.get("schema") == 1 and isinstance(registry.get("modules"), list), "Module release registry must use schema 1.")
+    return registry
+
+
 def validate_module(raw: Any) -> dict[str, Any]:
     _require(isinstance(raw, dict), "Module declarations must be objects.")
     allowed = {
         "name", "version", "kind", "backend_package", "frontend_package",
         "python_requires", "node_requires", "env", "dependencies", "migrations",
         "compatibility", "entrypoints", "required_secrets", "pwa",
+        "source_commit",
         "deployment_modes", "default_deployment_mode", "deployment_mode",
         "resource_requirements", "bindings",
     }
@@ -204,6 +218,9 @@ def validate_module(raw: Any) -> dict[str, Any]:
     name = _string(raw.get("name"), "Module name is required.")
     _require(MODULE_RE.fullmatch(name) is not None, "Invalid module name.")
     version = _version(raw.get("version"))
+    source_commit = raw.get("source_commit")
+    if source_commit is not None:
+        _require(isinstance(source_commit, str) and re.fullmatch(r"[0-9a-f]{40}", source_commit) is not None, "source_commit must be a full 40-character lowercase Git SHA.")
     kind = raw.get("kind")
     _require(kind in ALLOWED_KINDS, "Module kind must be backend, frontend, or full-stack.")
 
@@ -297,6 +314,7 @@ def validate_module(raw: Any) -> dict[str, Any]:
     return {
         "name": name,
         "version": version,
+        **({"source_commit": source_commit} if source_commit else {}),
         "kind": kind,
         "backend_package": backend,
         "frontend_package": frontend,
@@ -317,10 +335,40 @@ def validate_module(raw: Any) -> dict[str, Any]:
     }
 
 
-def validate_product_modules(raw: Any) -> list[dict[str, Any]]:
+def validate_product_modules(
+    raw: Any,
+    *,
+    require_source_commits: bool = False,
+    release_registry: dict[str, Any] | None = None,
+) -> list[dict[str, Any]]:
     """Validate a product's module list and return it in deterministic order."""
     _require(isinstance(raw, list), "Product modules must be a list.")
     modules = [validate_module(item) for item in raw]
+    if release_registry is None and any(module.get("source_commit") for module in modules):
+        release_registry = load_module_release_registry()
+    if require_source_commits:
+        for module in modules:
+            _require(bool(module.get("source_commit")), f"Module {module['name']!r} must be pinned to a full source_commit SHA.")
+    if release_registry is not None:
+        _require(isinstance(release_registry, dict) and isinstance(release_registry.get("modules"), list), "Module release registry is invalid.")
+        registered = {item.get("name"): item for item in release_registry["modules"] if isinstance(item, dict)}
+        for module in modules:
+            source_commit = module.get("source_commit")
+            if not source_commit:
+                continue  # Unpinned declarations remain readable for existing products.
+            registry_module = registered.get(module["name"])
+            candidates = registry_module.get("release_candidates", {}) if isinstance(registry_module, dict) else {}
+            record = candidates.get(module["version"]) if isinstance(candidates, dict) else None
+            _require(
+                isinstance(record, dict)
+                and record.get("version") == module["version"]
+                and record.get("installable") is True
+                and record.get("formal_release") is True
+                and record.get("checks_passed") is True
+                and not record.get("blockers")
+                and record.get("commit_sha") == source_commit,
+                f"Module {module['name']!r} v{module['version']} does not match an approved release source commit.",
+            )
     names = [module["name"] for module in modules]
     _require(len(names) == len(set(names)), "Product modules must have unique names.")
     known = set(names)
@@ -361,7 +409,7 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
     duplicated when a module marks a requirement as shared.
     """
     _require(isinstance(manifest, dict), "Product manifest must be an object.")
-    modules = validate_product_modules(manifest.get("modules", []))
+    modules = validate_product_modules(manifest.get("modules", []), release_registry=load_module_release_registry())
     result = {key: value for key, value in manifest.items()}
     result["modules"] = modules
     result["module_dependency_order"] = module_dependency_order(modules)
@@ -646,11 +694,24 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
     return result
 
 
-def compile_installation(raw: Any) -> dict[str, Any]:
+def compile_installation(
+    raw: Any,
+    *,
+    require_source_commits: bool = False,
+    release_registry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """Compile declarations into package and runtime configuration inputs."""
-    modules = validate_product_modules(raw)
+    modules = validate_product_modules(raw, require_source_commits=require_source_commits, release_registry=release_registry)
     python_packages = [m["backend_package"] for m in modules if m["backend_package"]]
     node_packages = [m["frontend_package"] for m in modules if m["frontend_package"]]
+    python_install_requirements = [
+        f"{module['backend_package']} @ git+https://github.com/goodmorning-mx/{module['name']}.git@{module['source_commit']}"
+        for module in modules if module["backend_package"] and module.get("source_commit")
+    ]
+    node_install_dependencies = {
+        module["frontend_package"]: f"git+https://github.com/goodmorning-mx/{module['name']}.git#{module['source_commit']}"
+        for module in modules if module["frontend_package"] and module.get("source_commit")
+    }
     env = [entry for module in modules for entry in module["env"]]
     secret_bindings = [
         {"module": module["name"], "key": key, **binding}
@@ -661,6 +722,8 @@ def compile_installation(raw: Any) -> dict[str, Any]:
         "modules": modules,
         "python_packages": python_packages,
         "node_packages": node_packages,
+        "python_install_requirements": python_install_requirements,
+        "node_install_dependencies": node_install_dependencies,
         "environment": env,
         "secret_bindings": secret_bindings,
         "migration_order": [m["name"] for m in modules if m["migrations"]["mode"] != "none"],

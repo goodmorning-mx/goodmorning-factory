@@ -34,6 +34,11 @@ class SoftwareProductChangeWorkflowTests(unittest.TestCase):
         self.assertIn("openai/codex-action@a8d8be6ee028bea4525bc722d16f36687b408c81", workflow)
         self.assertIn("permission-profile: ':workspace'", workflow)
         self.assertIn("Do not push or merge.", workflow)
+        self.assertIn("Validate new GoodMorning module pins", workflow)
+        self.assertIn("validate_module_install_refs.py --root product", workflow)
+        self.assertIn("Regenerate frontend package locks after approved dependency changes", workflow)
+        self.assertIn("npm install --package-lock-only --ignore-scripts", workflow)
+        self.assertIn("exact approved source SHA", workflow)
         self.assertNotIn("      prompt:\n", workflow)
 
         agent = workflow.index("Implement request in the isolated workspace")
@@ -43,6 +48,14 @@ class SoftwareProductChangeWorkflowTests(unittest.TestCase):
         self.assertLess(agent, validation)
         self.assertLess(validation, write_token)
         self.assertLess(write_token, open_pr)
+
+    def test_module_update_workflow_installs_from_pinned_sha_and_refreshes_package_lock(self):
+        workflow = (ROOT / ".github/workflows/module-update.yml").read_text()
+        updater = (ROOT / "scripts/module_updates.py").read_text()
+        self.assertIn("npm --prefix \"${root}/frontend\" install --package-lock-only --ignore-scripts", workflow)
+        self.assertIn("approved_release(module, target)", updater)
+        self.assertIn("source_commit = release[\"commit_sha\"]", updater)
+        self.assertIn('declaration["source_commit"] = release["commit_sha"]', updater)
 
     def test_only_reviewed_factory_workflows_can_use_portal_oidc(self):
         manifest = (ROOT / "products/software.json").read_text()

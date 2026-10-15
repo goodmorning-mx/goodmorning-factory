@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 SEMVER_RE = re.compile(r"^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$")
 SAFE_SLUG = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+COMMIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 POLICIES = {"auto", "manual", "blocked"}
 INFRASTRUCTURE_FIELDS = ("deployment_modes", "default_deployment_mode", "resource_requirements", "bindings")
 
@@ -61,6 +62,27 @@ def load_registry(path: str | Path) -> dict[str, dict[str, Any]]:
         policy = item.get("default_policy", {})
         if not isinstance(policy, dict) or set(policy) != {"patch", "minor", "major"} or any(v not in POLICIES for v in policy.values()):
             raise ModuleUpdateError(f"Invalid default policy for {item['name']!r}.")
+        candidates = item.get("release_candidates", {})
+        if not isinstance(candidates, dict):
+            raise ModuleUpdateError(f"Invalid release candidates for {item['name']!r}.")
+        for version, record in candidates.items():
+            try:
+                normalized = normalize_version(version)
+            except (ModuleUpdateError, AttributeError):
+                raise ModuleUpdateError(f"Invalid release candidate version for {item['name']!r}.") from None
+            if normalized != version or not isinstance(record, dict) or record.get("version") != version:
+                raise ModuleUpdateError(f"Invalid release candidate record for {item['name']!r} v{version}.")
+            if not isinstance(record.get("tag"), str) or normalize_version(record["tag"]) != version:
+                raise ModuleUpdateError(f"Release tag does not match version for {item['name']!r} v{version}.")
+            if not isinstance(record.get("commit_sha"), str) or not COMMIT_SHA_RE.fullmatch(record["commit_sha"]):
+                raise ModuleUpdateError(f"Release candidate for {item['name']!r} v{version} must have a full commit SHA.")
+            if any(not isinstance(record.get(field), bool) for field in ("formal_release", "checks_passed", "installable")):
+                raise ModuleUpdateError(f"Release evidence flags for {item['name']!r} v{version} must be boolean.")
+            blockers = record.get("blockers", [])
+            if not isinstance(blockers, list) or any(not isinstance(value, str) or not value for value in blockers):
+                raise ModuleUpdateError(f"Release blockers for {item['name']!r} v{version} must be strings.")
+            if record["installable"] and (not record["formal_release"] or not record["checks_passed"] or blockers):
+                raise ModuleUpdateError(f"Installable release {item['name']!r} v{version} requires a formal release, passing checks, and no blockers.")
         result[item["name"]] = dict(item)
     return result
 
@@ -93,6 +115,17 @@ def latest_release(module: dict[str, Any], opener: Callable[[str], Any] | None =
     if not tags:
         raise ModuleUpdateError(f"No semantic release tags found for {module['name']!r}.")
     return normalize_version(max(tags, key=version_tuple))
+
+
+def approved_release(module: dict[str, Any], version: str) -> dict[str, Any] | None:
+    records = module.get("release_candidates", {})
+    record = records.get(normalize_version(version)) if isinstance(records, dict) else None
+    if not isinstance(record, dict) or record.get("version") != normalize_version(version):
+        return None
+    sha = record.get("commit_sha")
+    if not isinstance(sha, str) or not COMMIT_SHA_RE.fullmatch(sha):
+        return None
+    return record
 
 
 def product_policy(product: dict[str, Any], module: str, default: dict[str, str]) -> dict[str, str]:
@@ -198,20 +231,35 @@ def plan_updates(products_dir: str | Path, registry_path: str | Path, releases: 
                 continue
             policy = product_policy(product, name, module["default_policy"])
             blockers = compatibility_blockers(product, module, available)
+            release = approved_release(module, available)
+            if release is None:
+                blockers.append("release_source_commit_not_reviewed")
+            else:
+                blockers.extend(release.get("blockers", []))
+                if not release.get("formal_release"):
+                    blockers.append("formal_release_missing")
+                if not release.get("checks_passed"):
+                    blockers.append("release_checks_missing")
+                if not release.get("installable"):
+                    blockers.append("release_not_installable")
             infrastructure = infrastructure_plan(product, module)
             blockers.extend(f"infrastructure_{item}" for item in infrastructure["breaking"])
             action = "blocked" if blockers or policy[change] == "blocked" else policy[change]
-            plans.append({"product": product["product"], "module": name, "installed": installed.get("version"), "available": available, "change": change, "policy": policy[change], "action": action, "blockers": blockers, "infrastructure": infrastructure})
+            plans.append({"product": product["product"], "module": name, "installed": installed.get("version"), "installed_source_commit": installed.get("source_commit"), "available": available, "available_source_commit": release.get("commit_sha") if release and release.get("installable") else None, "change": change, "policy": policy[change], "action": action, "blockers": sorted(set(blockers)), "infrastructure": infrastructure})
     return {"schema": 1, "plans": plans, "consumer_count": len({item["product"] for item in plans})}
 
 
-def _replace_ref(value: str, repository: str, target: str) -> str:
+def _replace_ref(value: str, repository: str, source_commit: str) -> str:
     pattern = rf"(github:|git\+https://github\.com/){re.escape(repository)}(?:\.git)?(?:#|@)v?[^\"'\s]+"
-    return re.sub(pattern, lambda match: match.group(0)[:match.group(0).rfind("#")] + "#v" + target if "#" in match.group(0) else match.group(0)[:match.group(0).rfind("@")] + "@v" + target, value)
+    return re.sub(pattern, lambda match: match.group(0)[:match.group(0).rfind("#")] + "#" + source_commit if "#" in match.group(0) else match.group(0)[:match.group(0).rfind("@")] + "@" + source_commit, value)
 
 
 def apply_update(product_root: str | Path, product: dict[str, Any], module: dict[str, Any], target: str) -> list[str]:
     target = normalize_version(target)
+    release = approved_release(module, target)
+    if not release or not release.get("installable") or not release.get("formal_release") or not release.get("checks_passed") or release.get("blockers"):
+        raise ModuleUpdateError(f"Release {module.get('name')!r} {target} is not approved for installation.")
+    source_commit = release["commit_sha"]
     installed = next((item for item in product.get("modules", []) if isinstance(item, dict) and item.get("name") == module["name"]), None)
     if not installed:
         raise ModuleUpdateError(f"Product does not declare {module['name']!r}.")
@@ -225,14 +273,15 @@ def apply_update(product_root: str | Path, product: dict[str, Any], module: dict
     root = Path(product_root)
     changed: list[str] = []
     installed["version"] = target
+    installed["source_commit"] = source_commit
     repository = module["repository"]
     reference_found = False
     for path in [root / "backend" / "requirements.txt", root / "requirements.txt"]:
         if path.exists():
             text = path.read_text(encoding="utf-8")
-            updated = _replace_ref(text, repository, target)
+            updated = _replace_ref(text, repository, source_commit)
             backend_package = module.get("backend_package")
-            reference_found = reference_found or (isinstance(backend_package, str) and backend_package in text and (f"#v{target}" in text or f"@v{target}" in text))
+            reference_found = reference_found or (isinstance(backend_package, str) and backend_package in text and source_commit in text)
             if updated != text:
                 path.write_text(updated, encoding="utf-8")
                 changed.append(str(path))
@@ -243,8 +292,8 @@ def apply_update(product_root: str | Path, product: dict[str, Any], module: dict
         for section in ("dependencies", "devDependencies", "peerDependencies", "optionalDependencies"):
             for key, value in list(data.get(section, {}).items()):
                 if key in {module.get("frontend_package"), module["name"]} and isinstance(value, str):
-                    replacement = _replace_ref(value, repository, target)
-                    reference_found = reference_found or (f"#v{target}" in value or f"@v{target}" in value)
+                    replacement = _replace_ref(value, repository, source_commit)
+                    reference_found = reference_found or source_commit in value
                     if replacement != value:
                         data[section][key] = replacement; touched = True
         if touched:
@@ -273,6 +322,9 @@ def update_factory_manifest(product: dict[str, Any], module_name: str, target: s
         for field in INFRASTRUCTURE_FIELDS:
             if field in module_metadata:
                 declaration[field] = module_metadata[field]
+        release = approved_release(module_metadata, target)
+        if release and release.get("installable") and release.get("formal_release") and release.get("checks_passed") and not release.get("blockers"):
+            declaration["source_commit"] = release["commit_sha"]
         updated = json.dumps(document, indent=2) + "\n"
     path.write_text(updated, encoding="utf-8")
     return str(path)
