@@ -6,6 +6,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class SoftwareProductChangeWorkflowTests(unittest.TestCase):
+    def test_queue_runs_retention_and_aggregate_health_monitor(self):
+        workflow = (ROOT / ".github/workflows/software-factory-queue.yml").read_text()
+        self.assertIn("issues: write", workflow)
+        self.assertIn("Check portal retention and operation health", workflow)
+        self.assertIn("/internal/factory/maintenance", workflow)
+        self.assertIn("core.getIDToken(process.env.PORTAL_OIDC_AUDIENCE)", workflow)
+        self.assertIn("stuck_operations", workflow)
+        self.assertIn("runtime_version_mismatches", workflow)
+        self.assertIn("aggregate counts only", workflow)
+        self.assertIn("[automation] Software Factory operation health", workflow)
+
     def test_queue_dispatches_only_operation_id_for_code_changes(self):
         workflow = (ROOT / ".github/workflows/software-factory-queue.yml").read_text()
         self.assertIn("operation.kind === 'code.change'", workflow)

@@ -9,6 +9,7 @@ permissions:
   actions: write
   contents: write
   id-token: write
+  issues: write
 
 concurrency:
   group: software-factory-operation-queue
@@ -20,6 +21,75 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
+      - name: Check portal retention and operation health
+        uses: actions/github-script@v7
+        env:
+          PORTAL_OIDC_AUDIENCE: software.goodmorning.mx
+        with:
+          script: |
+            const token = await core.getIDToken(process.env.PORTAL_OIDC_AUDIENCE);
+            core.setSecret(token);
+            const portals = [
+              { environment: 'dev', url: 'https://api.dev.software.goodmorning.mx' },
+              { environment: 'production', url: 'https://api.software.goodmorning.mx' },
+            ];
+            const totals = {
+              stuck_operations: 0,
+              recent_failed_operations: 0,
+              runtime_version_mismatches: 0,
+              runtime_failures: 0,
+              unreachable_portals: 0,
+            };
+            const observations = [];
+            for (const portal of portals) {
+              try {
+                const response = await fetch(`${portal.url}/internal/factory/maintenance`, {
+                  method: 'POST',
+                  headers: { authorization: `Bearer ${token}` },
+                  signal: AbortSignal.timeout(10000),
+                });
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const result = await response.json();
+                observations.push({ environment: portal.environment, alerts: result.alerts });
+                for (const [key, value] of Object.entries(result.alerts || {})) {
+                  if (Object.hasOwn(totals, key) && Number.isFinite(value)) totals[key] += value;
+                }
+              } catch {
+                totals.unreachable_portals += 1;
+                observations.push({ environment: portal.environment, unavailable: true });
+                core.warning(`Portal maintenance check failed for ${portal.environment}.`);
+              }
+            }
+
+            const title = '[automation] Software Factory operation health';
+            const count = Object.values(totals).reduce((sum, value) => sum + value, 0);
+            const { data: issues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              state: 'open',
+              per_page: 100,
+            });
+            const existing = issues.find(issue => !issue.pull_request && issue.title === title);
+            if (count > 0) {
+              const body = [
+                'The scheduled Software Factory monitor found operational alerts.',
+                '',
+                ...observations.map(item => `- ${item.environment}: ${item.unavailable ? 'portal unavailable' : Object.entries(item.alerts).map(([key, value]) => `${key}=${value}`).join(', ')}`),
+                '',
+                `Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`,
+                '',
+                'This report contains aggregate counts only; customer and product identifiers are intentionally omitted.',
+              ].join('\n');
+              if (existing) {
+                await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, body });
+              } else {
+                await github.rest.issues.create({ owner: context.repo.owner, repo: context.repo.repo, title, body });
+              }
+            } else if (existing) {
+              await github.rest.issues.update({ owner: context.repo.owner, repo: context.repo.repo, issue_number: existing.number, state: 'closed', state_reason: 'completed' });
+            }
+            core.info(`Portal maintenance completed; aggregate alerts: ${count}.`);
+
       - name: Claim one product operation
         id: claim
         uses: actions/github-script@v7
