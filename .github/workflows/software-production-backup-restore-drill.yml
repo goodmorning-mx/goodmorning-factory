@@ -1,0 +1,126 @@
+name: Restore isolated Software production backup
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type restore-drill:software:production exactly.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: software-production-backup-restore-drill
+  cancel-in-progress: false
+
+jobs:
+  restore-isolated-copy:
+    if: github.ref == 'refs/heads/dev' && inputs.confirmation == 'restore-drill:software:production'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: production
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: software_restore
+          POSTGRES_USER: restore_drill
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 127.0.0.1:54329:5432
+        options: >-
+          --health-cmd "pg_isready -U restore_drill -d software_restore"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      COOLIFY_BASE_URL: ${{ vars.COOLIFY_BASE_URL }}
+      COOLIFY_API_TOKEN: ${{ secrets.COOLIFY_API_TOKEN }}
+      OCI_S3_ACCESS_KEY: ${{ secrets.OCI_S3_ACCESS_KEY }}
+      OCI_S3_SECRET_KEY: ${{ secrets.OCI_S3_SECRET_KEY }}
+      OCI_S3_BUCKET: ${{ vars.OCI_S3_BUCKET }}
+      OCI_S3_REGION: ${{ vars.OCI_S3_REGION }}
+      OCI_S3_ENDPOINT: ${{ vars.OCI_S3_ENDPOINT }}
+      RESTORE_DATABASE_URL: postgresql://restore_drill@127.0.0.1:54329/software_restore
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate prerequisites and isolate credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in COOLIFY_API_TOKEN OCI_S3_ACCESS_KEY OCI_S3_SECRET_KEY OCI_S3_BUCKET OCI_S3_REGION OCI_S3_ENDPOINT; do
+            test -n "${!name}"
+          done
+          echo "::add-mask::${COOLIFY_API_TOKEN}"
+          echo "::add-mask::${OCI_S3_ACCESS_KEY}"
+          echo "::add-mask::${OCI_S3_SECRET_KEY}"
+          echo "::add-mask::${RESTORE_DATABASE_URL}"
+          sudo apt-get update -qq
+          sudo apt-get install --no-install-recommends -y postgresql-client
+
+      - name: Resolve the latest successful, verified production backup
+        id: backup
+        run: python scripts/prepare_software_backup_restore_drill.py --manifest production/software.json
+
+      - name: Download and restore into the isolated temporary PostgreSQL
+        shell: bash
+        env:
+          BACKUP_KEY: ${{ steps.backup.outputs.backup_key }}
+          BACKUP_SIZE: ${{ steps.backup.outputs.backup_size }}
+          BACKUP_NAME: ${{ steps.backup.outputs.backup_name }}
+        run: |
+          set -euo pipefail
+          aws_config="${RUNNER_TEMP}/oracle-aws-config"
+          cat > "${aws_config}" <<EOF
+          [default]
+          region = ${OCI_S3_REGION}
+          s3 =
+              addressing_style = path
+          EOF
+          export AWS_CONFIG_FILE="${aws_config}"
+          export AWS_ACCESS_KEY_ID="${OCI_S3_ACCESS_KEY}"
+          export AWS_SECRET_ACCESS_KEY="${OCI_S3_SECRET_KEY}"
+          export AWS_DEFAULT_REGION="${OCI_S3_REGION}"
+          export AWS_EC2_METADATA_DISABLED=true
+          backup_file="${RUNNER_TEMP}/software-production-restore.dmp"
+          aws s3api get-object \
+            --endpoint-url "${OCI_S3_ENDPOINT}" \
+            --bucket "${OCI_S3_BUCKET}" \
+            --key "${BACKUP_KEY}" \
+            --region "${OCI_S3_REGION}" \
+            "${backup_file}" >/dev/null
+          actual_size="$(stat -c '%s' "${backup_file}")"
+          test "${actual_size}" = "${BACKUP_SIZE}"
+          pg_restore --list "${backup_file}" >/dev/null
+          pg_restore --no-owner --no-privileges --exit-on-error \
+            --dbname "${RESTORE_DATABASE_URL}" "${backup_file}"
+          revision="$(psql "${RESTORE_DATABASE_URL}" -Atqc 'SELECT version_num FROM alembic_version LIMIT 1')"
+          test "${revision}" = "202610150002"
+          tables="$(psql "${RESTORE_DATABASE_URL}" -Atqc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE' AND table_name IN ('software_audit_events','software_request_rate_limits','software_products','software_operations','software_environment_versions')")"
+          test "${tables}" = "5"
+          echo "Restored ${BACKUP_NAME} (${actual_size} bytes); Alembic revision=${revision}; checked tables=${tables}."
+
+      - name: Remove the downloaded backup file
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/software-production-restore.dmp" "${RUNNER_TEMP}/oracle-aws-config"
+
+      - name: Publish restore drill result
+        if: success()
+        shell: bash
+        env:
+          BACKUP_NAME: ${{ steps.backup.outputs.backup_name }}
+          BACKUP_SIZE: ${{ steps.backup.outputs.backup_size }}
+        run: |
+          {
+            echo "## Isolated Software PROD backup restore passed"
+            echo
+            echo "- Source backup: `${BACKUP_NAME}` (${BACKUP_SIZE} bytes)"
+            echo "- Destination: ephemeral PostgreSQL 16 service on the GitHub runner"
+            echo "- Alembic schema revision and five portal tables verified"
+            echo "- No Coolify resource or production database was modified"
+          } >> "${GITHUB_STEP_SUMMARY}"
