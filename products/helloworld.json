@@ -107,6 +107,26 @@
           "key": "TELEGRAM_CHAT_ID",
           "source": "managed_secret",
           "binding": "GOODMORNING_HELLOWORLD_TELEGRAM_CHAT_ID"
+        },
+        {
+          "key": "TELEGRAM_SIGNAL_NOTIFICATIONS_ENABLED",
+          "source": "literal",
+          "value": "false"
+        },
+        {
+          "key": "TELEGRAM_COMMANDS_ENABLED",
+          "source": "literal",
+          "value": "true"
+        },
+        {
+          "key": "TELEGRAM_COMMAND_USER_ID",
+          "source": "managed_secret",
+          "binding": "GOODMORNING_HELLOWORLD_TELEGRAM_COMMAND_USER_ID"
+        },
+        {
+          "key": "TELEGRAM_COMMAND_SENDER_ID",
+          "source": "managed_secret",
+          "binding": "GOODMORNING_HELLOWORLD_TELEGRAM_COMMAND_SENDER_ID"
         }
       ]
     },
