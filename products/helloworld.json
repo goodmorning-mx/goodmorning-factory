@@ -92,7 +92,23 @@
       "domain": "https://api.dev.helloworld.goodmorning.mx",
       "health_path": "/health",
       "auto_deploy": true,
-      "environment": []
+      "environment": [
+        {
+          "key": "TELEGRAM_ENABLED",
+          "source": "literal",
+          "value": "true"
+        },
+        {
+          "key": "TELEGRAM_BOT_TOKEN",
+          "source": "managed_secret",
+          "binding": "GOODMORNING_HELLOWORLD_TELEGRAM_BOT_TOKEN"
+        },
+        {
+          "key": "TELEGRAM_CHAT_ID",
+          "source": "managed_secret",
+          "binding": "GOODMORNING_HELLOWORLD_TELEGRAM_CHAT_ID"
+        }
+      ]
     },
     {
       "name": "frontend",
