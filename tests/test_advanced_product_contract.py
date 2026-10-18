@@ -225,6 +225,38 @@ class AdvancedProductContractTests(unittest.TestCase):
         with self.assertRaises(contract.ContractError):
             contract.validate_manifest(value)
 
+    def test_internal_user_id_is_a_managed_secret_not_a_manifest_literal(self):
+        value = manifest()
+        value["applications"][0]["environment"] = [{
+            "key": "TELEGRAM_COMMAND_USER_ID",
+            "source": "managed_secret",
+            "binding": "GOODMORNING_HELLOWORLD_TELEGRAM_COMMAND_USER_ID",
+        }]
+        normalized = contract.validate_manifest(value)
+        self.assertEqual(normalized["applications"][0]["environment"][0]["source"], "managed_secret")
+
+        value["applications"][0]["environment"][0] = {
+            "key": "TELEGRAM_COMMAND_USER_ID", "source": "literal", "value": "user-id",
+        }
+        with self.assertRaises(contract.ContractError):
+            contract.validate_manifest(value)
+
+    def test_telegram_sender_id_is_a_managed_secret_not_a_manifest_literal(self):
+        value = manifest()
+        value["applications"][0]["environment"] = [{
+            "key": "TELEGRAM_COMMAND_SENDER_ID",
+            "source": "managed_secret",
+            "binding": "GOODMORNING_HELLOWORLD_TELEGRAM_COMMAND_SENDER_ID",
+        }]
+        normalized = contract.validate_manifest(value)
+        self.assertEqual(normalized["applications"][0]["environment"][0]["source"], "managed_secret")
+
+        value["applications"][0]["environment"][0] = {
+            "key": "TELEGRAM_COMMAND_SENDER_ID", "source": "literal", "value": "sender-id",
+        }
+        with self.assertRaises(contract.ContractError):
+            contract.validate_manifest(value)
+
     def test_application_dependency_cycles_are_rejected(self):
         value = manifest()
         value["applications"][0]["dependencies"] = ["mobile"]

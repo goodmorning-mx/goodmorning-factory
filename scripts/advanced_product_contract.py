@@ -36,7 +36,7 @@ ALLOWED_ENV_SOURCES = {
     "generated_secret",
 }
 ALLOWED_FRONTEND_PROFILES = {"react", "next", "hybrid"}
-SENSITIVE_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL|CHAT_ID)", re.I)
+SENSITIVE_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL|CHAT_ID|USER_ID|SENDER_ID)", re.I)
 
 
 class ContractError(ValueError):
