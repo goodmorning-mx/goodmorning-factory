@@ -198,6 +198,8 @@ jobs:
         shell: bash
         env:
           COOLIFY_ALLOW_ADVANCED_WRITES: "true"
+          GOODMORNING_HELLOWORLD_TELEGRAM_BOT_TOKEN: ${{ secrets.GOODMORNING_HELLOWORLD_TELEGRAM_BOT_TOKEN }}
+          GOODMORNING_HELLOWORLD_TELEGRAM_CHAT_ID: ${{ secrets.GOODMORNING_HELLOWORLD_TELEGRAM_CHAT_ID }}
         run: |
           set -euo pipefail
           while IFS= read -r manifest; do

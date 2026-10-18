@@ -209,6 +209,22 @@ class AdvancedProductContractTests(unittest.TestCase):
             "goodmorning/openai-default",
         )
 
+    def test_chat_id_is_a_sensitive_managed_secret(self):
+        value = manifest()
+        value["applications"][0]["environment"] = [{
+            "key": "TELEGRAM_CHAT_ID",
+            "source": "managed_secret",
+            "binding": "GOODMORNING_HELLOWORLD_TELEGRAM_CHAT_ID",
+        }]
+        normalized = contract.validate_manifest(value)
+        self.assertEqual(normalized["applications"][0]["environment"][0]["source"], "managed_secret")
+
+        value["applications"][0]["environment"][0] = {
+            "key": "TELEGRAM_CHAT_ID", "source": "literal", "value": "12345",
+        }
+        with self.assertRaises(contract.ContractError):
+            contract.validate_manifest(value)
+
     def test_application_dependency_cycles_are_rejected(self):
         value = manifest()
         value["applications"][0]["dependencies"] = ["mobile"]
