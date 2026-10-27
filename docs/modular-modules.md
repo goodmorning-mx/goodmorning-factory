@@ -55,9 +55,10 @@ kind/package mismatches. A `source_commit`, when present, must be a full
 40-character lowercase Git SHA and must match an installable, formally released,
 tested version in `modules/registry.json`. Legacy manifests can omit this field;
 new module dependency changes in prompt-generated PRs must use an approved SHA.
-`compile_installation` emits direct Python and npm Git references pinned to that
-commit, in addition to package names, environment, secret-binding, and migration
-inputs. The prompt workflow validates changed module references before running
+`compile_installation` emits direct Python Git references and npm source archives
+pinned to that commit, in addition to package names, environment, secret-binding,
+and migration inputs. The frontend archive is built by the product's postinstall
+step, so Docker builds do not need SSH credentials or a Git client. The prompt workflow validates changed module references before running
 product tests and regenerates package lockfiles itself; generated code cannot
 edit dependency lockfiles.
 

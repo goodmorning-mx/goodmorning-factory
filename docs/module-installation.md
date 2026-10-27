@@ -48,7 +48,7 @@ their backend module, where applicable. Use the exact source SHA recorded in
 the Factory registry rather than a version tag:
 
 ```bash
-npm install "@goodmorning/gm-example@git+https://github.com/goodmorning-mx/gm-example.git#<approved-40-character-sha>"
+npm install "@goodmorning/gm-example@https://github.com/goodmorning-mx/gm-example/archive/<approved-40-character-sha>.tar.gz"
 ```
 
 For example, `gm-pwa` v`0.1.5` is pinned to

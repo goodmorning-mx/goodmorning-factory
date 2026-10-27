@@ -1,5 +1,5 @@
 {
-  "frontend_profile": "react",
+  "frontend_profile": "hybrid",
   "topology": "resources-v3",
   "product": "arcoenergy",
   "repository": "goodmorning-mx/arcoenergy",
@@ -18,10 +18,42 @@
       "auto_deploy": true,
       "environment": [
         {
-          "key": "DATABASE_URL",
-          "source": "database_url",
-          "resource": "postgres",
-          "driver": "psycopg"
+          "key": "APP_NAME",
+          "source": "literal",
+          "value": "ArcoEnergy API"
+        },
+        {
+          "key": "APP_ENV",
+          "source": "literal",
+          "value": "dev"
+        },
+        {
+          "key": "ORGANIZATION_ID",
+          "source": "literal",
+          "value": "arcoenergy"
+        },
+        {
+          "key": "CORS_ORIGINS",
+          "source": "literal",
+          "value": "https://dev.arcoenergy.goodmorning.mx"
+        },
+        {
+          "key": "AUTH_JWT_SECRET",
+          "source": "generated_secret"
+        },
+        {
+          "key": "ADMIN_BOOTSTRAP_EMAIL",
+          "source": "literal",
+          "value": "admin@arcoenergy.mx"
+        },
+        {
+          "key": "ADMIN_BOOTSTRAP_PASSWORD",
+          "source": "generated_secret"
+        },
+        {
+          "key": "SITE_URL",
+          "source": "literal",
+          "value": "https://dev.arcoenergy.goodmorning.mx"
         }
       ]
     },
@@ -31,16 +63,72 @@
       "base_directory": "/frontend",
       "dockerfile": "/Dockerfile",
       "port": 80,
-      "domain": "https://dev.arcoenergy.goodmorning.mx",
+      "domain": null,
       "health_path": "/",
       "auto_deploy": true,
       "environment": [
         {
           "key": "VITE_API_URL",
           "source": "literal",
-          "value": "https://api.dev.arcoenergy.goodmorning.mx"
+          "value": "/api"
+        },
+        {
+          "key": "VITE_BASE_PATH",
+          "source": "literal",
+          "value": "/app/"
         }
       ]
+    },
+    {
+      "name": "seo",
+      "role": "frontend",
+      "base_directory": "/seo",
+      "dockerfile": "/Dockerfile",
+      "port": 3000,
+      "domain": null,
+      "health_path": "/health",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "SITE_URL",
+          "source": "literal",
+          "value": "https://dev.arcoenergy.goodmorning.mx"
+        },
+        {
+          "key": "SITE_NAME",
+          "source": "literal",
+          "value": "ArcoEnergy | Paneles solares en Tamaulipas"
+        },
+        {
+          "key": "SITE_DESCRIPTION",
+          "source": "literal",
+          "value": "Cotiza e instala paneles solares para tu hogar o empresa en Tampico, Ciudad Madero y Altamira."
+        },
+        {
+          "key": "SITE_INDEXABLE",
+          "source": "literal",
+          "value": "false"
+        }
+      ],
+      "dependencies": []
+    },
+    {
+      "name": "crm",
+      "role": "frontend",
+      "base_directory": "/crm",
+      "dockerfile": "/Dockerfile",
+      "port": 80,
+      "domain": null,
+      "health_path": "/",
+      "auto_deploy": true,
+      "environment": [
+        {
+          "key": "VITE_API_URL",
+          "source": "literal",
+          "value": "/api"
+        }
+      ],
+      "dependencies": []
     }
   ],
   "databases": [
@@ -63,5 +151,133 @@
     "s3_retention_count": 7,
     "s3_retention_days": 7,
     "timeout_seconds": 1800
+  },
+  "modules": [
+    {
+      "name": "gm-auth",
+      "version": "0.1.5",
+      "source_commit": "138d66cb44a94781e0d38d8afd1be2dbf718c294",
+      "kind": "full-stack",
+      "backend_package": "gm-auth",
+      "frontend_package": "@goodmorning/gm-auth",
+      "python_requires": [
+        ">=3.12"
+      ],
+      "node_requires": [
+        "react>=18"
+      ],
+      "deployment_modes": [
+        "embedded",
+        "service"
+      ],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [
+        {
+          "name": "primary-db",
+          "kind": "postgresql",
+          "resource_name": "postgres",
+          "shared": true
+        }
+      ],
+      "bindings": [
+        {
+          "key": "DATABASE_URL",
+          "source": "database_url",
+          "requirement": "primary-db",
+          "target": "backend"
+        }
+      ],
+      "dependencies": [],
+      "env": [],
+      "required_secrets": {},
+      "migrations": {
+        "mode": "sql",
+        "path": "migrations",
+        "minimum_schema": 1
+      },
+      "compatibility": {
+        "python": ">=3.12",
+        "node": ">=20",
+        "factory_api": "^1.0",
+        "products": [
+          "arcoenergy"
+        ]
+      }
+    },
+    {
+      "name": "gm-pwa",
+      "version": "0.1.5",
+      "source_commit": "67e08f85f8c12f5953ee819c391bec050e227a64",
+      "kind": "frontend",
+      "frontend_package": "@goodmorning/gm-pwa",
+      "node_requires": [
+        "react>=18"
+      ],
+      "deployment_modes": [
+        "embedded"
+      ],
+      "default_deployment_mode": "embedded",
+      "resource_requirements": [],
+      "bindings": [],
+      "dependencies": [],
+      "env": [],
+      "required_secrets": {},
+      "migrations": {
+        "mode": "none"
+      },
+      "pwa": {
+        "manifest_required": true,
+        "service_worker_required": true,
+        "update_mode": "prompt",
+        "api_auth_cache": "network-only"
+      },
+      "compatibility": {
+        "node": ">=20",
+        "factory_api": "^1.0",
+        "products": [
+          "arcoenergy"
+        ]
+      }
+    }
+  ],
+  "connections": [
+    {
+      "target": "frontend-gateway",
+      "key": "CRM_UPSTREAM",
+      "source": {
+        "type": "application",
+        "resource": "crm"
+      }
+    }
+  ],
+  "routing": {
+    "mode": "hybrid",
+    "host": "https://dev.arcoenergy.goodmorning.mx",
+    "gateway": {
+      "required": true,
+      "public_application": "frontend-gateway",
+      "routes": [
+        {
+          "path": "/",
+          "application": "seo"
+        },
+        {
+          "path": "/seo",
+          "application": "seo"
+        },
+        {
+          "path": "/app",
+          "application": "frontend"
+        },
+        {
+          "path": "/api",
+          "application": "api"
+        },
+        {
+          "path": "/crm",
+          "application": "crm"
+        }
+      ]
+    }
   }
 }
