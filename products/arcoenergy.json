@@ -184,7 +184,8 @@
           "key": "DATABASE_URL",
           "source": "database_url",
           "requirement": "primary-db",
-          "target": "backend"
+          "target": "backend",
+          "driver": "psycopg"
         }
       ],
       "dependencies": [],
