@@ -160,3 +160,40 @@ class FrontendProfileTests(unittest.TestCase):
         self.assertEqual({(item["target"], item["key"]) for item in inline_result["connections"]}, {
             ("frontend", "NEXT_UPSTREAM"), ("frontend", "API_UPSTREAM"),
         })
+
+    def test_hybrid_supports_an_independent_crm_frontend_route(self):
+        value = base_manifest()
+        value["modules"] = []
+        value["frontend_profile"] = "hybrid"
+        value["applications"].append({
+            "name": "crm", "role": "frontend", "base_directory": "/crm", "dockerfile": "/Dockerfile",
+            "port": 80, "domain": None, "health_path": "/", "auto_deploy": True, "environment": [],
+        })
+        value["routing"] = {
+            "mode": "hybrid", "host": "https://dev.profile-test.goodmorning.mx",
+            "gateway": {"required": True, "public_application": "frontend-gateway", "routes": [
+                {"path": "/", "application": "seo"}, {"path": "/seo", "application": "seo"},
+                {"path": "/app", "application": "frontend"}, {"path": "/api", "application": "api"},
+                {"path": "/crm", "application": "crm"},
+            ]},
+        }
+        normalized = validate_manifest(value)
+        self.assertIn("crm", {item["name"] for item in normalized["applications"]})
+        self.assertIn({"path": "/crm", "application": "crm"}, normalized["routing"]["gateway"]["routes"])
+        self.assertIn(
+            {"target": "frontend-gateway", "key": "CRM_UPSTREAM", "source": {"type": "application", "resource": "crm"}},
+            normalized["connections"],
+        )
+        gateway = next(item for item in normalized["applications"] if item["name"] == "frontend-gateway")
+        self.assertIn({"type": "application", "name": "crm"}, gateway["dependencies"])
+
+    def test_hybrid_rejects_an_unrouted_extra_frontend(self):
+        value = base_manifest()
+        value["modules"] = []
+        value["frontend_profile"] = "hybrid"
+        value["applications"].append({
+            "name": "crm", "role": "frontend", "base_directory": "/crm", "dockerfile": "/Dockerfile",
+            "port": 80, "domain": None, "health_path": "/", "auto_deploy": True, "environment": [],
+        })
+        with self.assertRaises(ContractError):
+            validate_manifest(value)

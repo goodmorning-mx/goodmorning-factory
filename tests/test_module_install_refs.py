@@ -50,6 +50,11 @@ class ModuleInstallPinTests(unittest.TestCase):
         checked = self.scan_files({"frontend/package.json": json.dumps(value)})
         self.assertEqual(checked, ["frontend/package.json:gm-payments"])
 
+    def test_accepts_frontend_source_archive_pinned_to_approved_sha(self):
+        value = {"dependencies": {"@goodmorning/gm-payments": f"https://github.com/goodmorning-mx/gm-payments/archive/{SHA}.tar.gz"}}
+        checked = self.scan_files({"crm/package.json": json.dumps(value)})
+        self.assertEqual(checked, ["crm/package.json:gm-payments"])
+
     def test_rejects_unpinned_or_unapproved_backend_module_dependency(self):
         requirements = [
             "gm-payments>=0.1.1",

@@ -106,6 +106,7 @@ def _validate_npm_dependency(module_name: str, value: str, module: dict[str, Any
     patterns = (
         rf"git\+https://github\.com/goodmorning-mx/{re.escape(module_name)}\.git#([0-9a-f]{{40}})",
         rf"github:goodmorning-mx/{re.escape(module_name)}#([0-9a-f]{{40}})",
+        rf"https://github\.com/goodmorning-mx/{re.escape(module_name)}/archive/([0-9a-f]{{40}})\.tar\.gz",
     )
     sha = next((match.group(1) for pattern in patterns if (match := re.fullmatch(pattern, value, flags=re.IGNORECASE))), None)
     if not sha or not _approved_commit(module, sha):

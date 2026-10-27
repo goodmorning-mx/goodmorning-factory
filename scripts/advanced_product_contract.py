@@ -233,21 +233,41 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         else:
             gateway_metadata = routing.get("gateway")
             public_application = gateway_metadata.get("public_application") if isinstance(gateway_metadata, dict) else None
+            routes = gateway_metadata.get("routes") if isinstance(gateway_metadata, dict) else None
+            required_routes = [
+                {"path": "/", "application": "seo"},
+                {"path": "/seo", "application": "seo"},
+                {"path": "/app", "application": "frontend"},
+                {"path": "/api", "application": "api"},
+            ]
             _require(
-                routing == {
-                    "mode": "hybrid",
-                    "host": f"https://{public_host}",
-                        "gateway": {
-                            "required": True,
-                            "public_application": public_application,
-                            "routes": [
-                                {"path": "/", "application": "seo"},
-                                {"path": "/seo", "application": "seo"},
-                                {"path": "/app", "application": "frontend"},
-                                {"path": "/api", "application": "api"},
-                            ],
-                        },
-                },
+                isinstance(gateway_metadata, dict)
+                and set(routing) == {"mode", "host", "gateway"}
+                and set(gateway_metadata) == {"required", "public_application", "routes"}
+                and gateway_metadata.get("required") is True
+                and isinstance(routes, list)
+                and routes[: len(required_routes)] == required_routes,
+                "Hybrid routing metadata is invalid.",
+            )
+            paths = [route.get("path") for route in routes if isinstance(route, dict)]
+            _require(
+                len(routes) == len(paths)
+                and len(paths) == len(set(paths))
+                and all(
+                    isinstance(route, dict)
+                    and set(route) == {"path", "application"}
+                    and isinstance(route.get("path"), str)
+                    and re.fullmatch(r"/[a-z0-9][a-z0-9-]*", route["path"]) is not None
+                    and isinstance(route.get("application"), str)
+                    and PRODUCT_RE.fullmatch(route["application"]) is not None
+                    for route in routes[len(required_routes):]
+                ),
+                "Additional hybrid routes must use unique simple paths and application names.",
+            )
+            _require(
+                routing.get("mode") == "hybrid"
+                and routing.get("host") == f"https://{public_host}"
+                and public_application in {"frontend", "frontend-gateway"},
                 "Hybrid routing metadata is invalid.",
             )
 
@@ -376,7 +396,7 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         domain = item.get("domain")
         if role == "worker":
             _require(domain is None and port == 8000, "Workers must remain private and use the reviewed placeholder port.")
-        elif domain is None and frontend_profile == "hybrid" and role == "frontend" and name in {"frontend", "seo"}:
+        elif domain is None and frontend_profile == "hybrid" and role == "frontend":
             pass
         else:
             domain = _clean_https_domain(domain, product=product, production=production)
@@ -435,6 +455,17 @@ def validate_manifest(raw: Any) -> dict[str, Any]:
         if routing is not None:
             expected_gateway_name = "frontend" if inline_gateway else "frontend-gateway"
             _require(routing["gateway"]["public_application"] == expected_gateway_name, "Hybrid routing must point to its declared public gateway.")
+            routed_frontends = set()
+            for route in routing["gateway"]["routes"]:
+                target = applications_by_name.get(route["application"])
+                _require(target is not None, f"Hybrid route {route['path']!r} references an undeclared application.")
+                if route["path"] not in {"/", "/seo", "/app", "/api"}:
+                    _require(target.get("role") == "frontend", "Additional hybrid routes must target frontend applications.")
+                    _require(target.get("domain") is None, "Additional hybrid route applications must remain private behind the gateway.")
+                    routed_frontends.add(target["name"])
+            for application in applications:
+                if application.get("role") == "frontend" and application.get("name") not in {"frontend", "seo"}:
+                    _require(application["name"] in routed_frontends, f"Hybrid frontend {application['name']!r} must have a gateway route.")
     bound_hosts: set[str] = set(public_domains)
     domain_bindings: list[dict[str, Any]] = []
     for binding in domain_bindings_raw:

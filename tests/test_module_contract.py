@@ -53,7 +53,7 @@ class ModuleContractTests(unittest.TestCase):
             "gm-auth @ git+https://github.com/goodmorning-mx/gm-auth.git@138d66cb44a94781e0d38d8afd1be2dbf718c294"
         ])
         self.assertEqual(result["node_install_dependencies"], {
-            "@goodmorning/gm-auth": "git+https://github.com/goodmorning-mx/gm-auth.git#138d66cb44a94781e0d38d8afd1be2dbf718c294"
+            "@goodmorning/gm-auth": "https://github.com/goodmorning-mx/gm-auth/archive/138d66cb44a94781e0d38d8afd1be2dbf718c294.tar.gz"
         })
 
     def test_current_registry_compiles_the_approved_pwa_release_by_sha(self):
@@ -65,7 +65,7 @@ class ModuleContractTests(unittest.TestCase):
         }
         result = compile_installation([pwa], require_source_commits=True, release_registry=registry)
         self.assertEqual(result["node_install_dependencies"], {
-            "@goodmorning/gm-pwa": "git+https://github.com/goodmorning-mx/gm-pwa.git#67e08f85f8c12f5953ee819c391bec050e227a64"
+            "@goodmorning/gm-pwa": "https://github.com/goodmorning-mx/gm-pwa/archive/67e08f85f8c12f5953ee819c391bec050e227a64.tar.gz"
         })
 
     def test_current_registry_compiles_the_approved_agent_release_by_sha(self):
@@ -81,7 +81,7 @@ class ModuleContractTests(unittest.TestCase):
             "gm-agent @ git+https://github.com/goodmorning-mx/gm-agent.git@06500d8c935ea2cbe5a146b4703f06e3fedceb7f"
         ])
         self.assertEqual(result["node_install_dependencies"], {
-            "@goodmorning/gm-agent": "git+https://github.com/goodmorning-mx/gm-agent.git#06500d8c935ea2cbe5a146b4703f06e3fedceb7f"
+            "@goodmorning/gm-agent": "https://github.com/goodmorning-mx/gm-agent/archive/06500d8c935ea2cbe5a146b4703f06e3fedceb7f.tar.gz"
         })
 
     def test_current_registry_compiles_the_approved_billing_release_by_sha(self):
@@ -97,7 +97,7 @@ class ModuleContractTests(unittest.TestCase):
             "gm-billing @ git+https://github.com/goodmorning-mx/gm-billing.git@11a0beafe3c7618b0cfc472f4c5b8619c98d1aab"
         ])
         self.assertEqual(result["node_install_dependencies"], {
-            "@goodmorning/gm-billing": "git+https://github.com/goodmorning-mx/gm-billing.git#11a0beafe3c7618b0cfc472f4c5b8619c98d1aab"
+            "@goodmorning/gm-billing": "https://github.com/goodmorning-mx/gm-billing/archive/11a0beafe3c7618b0cfc472f4c5b8619c98d1aab.tar.gz"
         })
 
     def test_current_registry_compiles_the_approved_mcp_release_by_sha(self):
@@ -152,7 +152,7 @@ class ModuleContractTests(unittest.TestCase):
         self.assertIn("gm-agent @ git+https://github.com/goodmorning-mx/gm-agent.git@" + "0" * 39 + "1", result["python_install_requirements"])
         self.assertEqual(
             result["node_install_dependencies"]["@goodmorning/gm-agent"],
-            "git+https://github.com/goodmorning-mx/gm-agent.git#" + "0" * 39 + "1",
+            "https://github.com/goodmorning-mx/gm-agent/archive/" + "0" * 39 + "1.tar.gz",
         )
 
     def test_can_require_immutable_module_source_commits(self):

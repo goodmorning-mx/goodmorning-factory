@@ -17,6 +17,15 @@ frontend_profile accepts three values:
   that application serves /app and forwards / and /seo to Next and /api to the
   API.
 
+The hybrid profile is a base topology, not a limit on product-owned frontends.
+Resources V3 products may declare additional independent frontend applications
+and add explicit gateway routes for them. Each extra route must target a
+declared private frontend application, use a unique simple path, and be served
+through the public gateway. Factory creates a typed `<APP_NAME>_UPSTREAM`
+service binding and dependency for each routed application. For example, a
+separate CRM can be deployed at `/crm` while the PWA remains at `/app` and the
+Next.js public site owns `/`.
+
 All profiles keep the API at api.{slug}.goodmorning.mx and keep the canonical
 frontend domain at {slug}.goodmorning.mx (or the dev. equivalent). Factory
 never creates an app subdomain. Hybrid gateway upstreams are internal

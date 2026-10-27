@@ -300,7 +300,7 @@ def validate_module(raw: Any) -> dict[str, Any]:
 
     pwa_raw = raw.get("pwa")
     pwa: dict[str, Any] = {}
-    if pwa_raw is not None:
+    if pwa_raw:
         _require(kind in {"frontend", "full-stack"}, "PWA requirements apply only to frontend modules.")
         _require(isinstance(pwa_raw, dict) and set(pwa_raw) <= {"manifest_required", "service_worker_required", "update_mode", "api_auth_cache"}, "Invalid PWA requirements declaration.")
         for field in ("manifest_required", "service_worker_required"):
@@ -420,6 +420,12 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
         return result
 
     applications = [dict(item) for item in manifest.get("applications", []) if isinstance(item, dict)]
+    supplied_routes: list[dict[str, Any]] = []
+    supplied_routing = manifest.get("routing")
+    if isinstance(supplied_routing, dict) and isinstance(supplied_routing.get("gateway"), dict):
+        routes_raw = supplied_routing["gateway"].get("routes", [])
+        if isinstance(routes_raw, list):
+            supplied_routes = [dict(item) for item in routes_raw if isinstance(item, dict)]
     databases = [dict(item) for item in manifest.get("databases", []) if isinstance(item, dict)]
     redis = [dict(item) for item in manifest.get("redis", []) if isinstance(item, dict)]
     connections = [dict(item) for item in manifest.get("connections", []) if isinstance(item, dict)]
@@ -506,12 +512,15 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
         ensure_frontend_application("seo", next_app=True, public=True)
         result["routing"] = {"mode": "next", "host": f"https://{public_host}", "application": "seo"}
     elif frontend_profile == "hybrid":
-        applications = [
-            item for item in applications
-            if item.get("role") != "frontend" or item.get("name") in {"frontend", "seo"}
-        ]
+        # Preserve product-owned frontend applications. The profile supplies
+        # the SEO and PWA base surfaces; additional frontends must be explicitly
+        # routed by the hybrid gateway contract.
         app_by_name = {item.get("name"): item for item in applications}
         inline_gateway = app_by_name.get("frontend", {}).get("role") == "gateway"
+        additional_frontends = [
+            item for item in applications
+            if item.get("role") == "frontend" and item.get("name") not in {"frontend", "seo"}
+        ]
         if inline_gateway:
             existing_gateway = app_by_name["frontend"]
             _require(existing_gateway.get("base_directory") == "/frontend", "Inline hybrid gateway must use the /frontend base directory.")
@@ -521,6 +530,7 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
             expected_dependencies = [
                 {"type": "application", "name": "api"},
                 {"type": "application", "name": "seo"},
+                *[{"type": "application", "name": item["name"]} for item in additional_frontends],
             ]
             _require(existing_gateway.get("dependencies") == expected_dependencies, "Inline hybrid gateway dependencies are incompatible.")
         else:
@@ -528,7 +538,10 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
         ensure_frontend_application("seo", next_app=True, public=False)
         if inline_gateway:
             gateway_name = "frontend"
-            upstreams = (("NEXT_UPSTREAM", "seo"), ("API_UPSTREAM", "api"))
+            upstreams = (("NEXT_UPSTREAM", "seo"), ("API_UPSTREAM", "api")) + tuple(
+                (f"{item['name'].replace('-', '_').upper()}_UPSTREAM", item["name"])
+                for item in additional_frontends
+            )
         else:
             gateway = {
                 "name": "frontend-gateway",
@@ -544,6 +557,7 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
                     {"type": "application", "name": "frontend"},
                     {"type": "application", "name": "seo"},
                     {"type": "application", "name": "api"},
+                    *[{"type": "application", "name": item["name"]} for item in additional_frontends],
                 ],
             }
             existing_gateway = app_by_name.get("frontend-gateway")
@@ -558,22 +572,32 @@ def compose_resources_v3(manifest: dict[str, Any]) -> dict[str, Any]:
                 _require(existing_gateway.get("health_path") == "/health", "Hybrid gateway has an incompatible health path.")
                 _require(existing_gateway.get("dependencies") == gateway["dependencies"], "Hybrid gateway dependencies are incompatible.")
             gateway_name = "frontend-gateway"
-            upstreams = (("REACT_UPSTREAM", "frontend"), ("NEXT_UPSTREAM", "seo"), ("API_UPSTREAM", "api"))
+            upstreams = (("REACT_UPSTREAM", "frontend"), ("NEXT_UPSTREAM", "seo"), ("API_UPSTREAM", "api")) + tuple(
+                (f"{item['name'].replace('-', '_').upper()}_UPSTREAM", item["name"])
+                for item in additional_frontends
+            )
         for key, source in upstreams:
             if not any(item.get("target") == gateway_name and item.get("key") == key for item in connections):
                 connections.append({"target": gateway_name, "key": key, "source": {"type": "application", "resource": source}})
+        routes = [
+            {"path": "/", "application": "seo"},
+            {"path": "/seo", "application": "seo"},
+            {"path": "/app", "application": "frontend"},
+            {"path": "/api", "application": "api"},
+        ]
+        route_pairs = {(item["path"], item["application"]) for item in routes}
+        for item in supplied_routes:
+            pair = (item.get("path"), item.get("application"))
+            if pair not in route_pairs:
+                routes.append(item)
+                route_pairs.add(pair)
         result["routing"] = {
             "mode": "hybrid",
             "host": f"https://{public_host}",
             "gateway": {
                 "required": True,
                 "public_application": gateway_name,
-                "routes": [
-                    {"path": "/", "application": "seo"},
-                    {"path": "/seo", "application": "seo"},
-                    {"path": "/app", "application": "frontend"},
-                    {"path": "/api", "application": "api"},
-                ],
+                "routes": routes,
             },
         }
     else:
@@ -709,7 +733,7 @@ def compile_installation(
         for module in modules if module["backend_package"] and module.get("source_commit")
     ]
     node_install_dependencies = {
-        module["frontend_package"]: f"git+https://github.com/goodmorning-mx/{module['name']}.git#{module['source_commit']}"
+        module["frontend_package"]: f"https://github.com/goodmorning-mx/{module['name']}/archive/{module['source_commit']}.tar.gz"
         for module in modules if module["frontend_package"] and module.get("source_commit")
     }
     env = [entry for module in modules for entry in module["env"]]

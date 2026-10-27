@@ -64,6 +64,12 @@ The hybrid routing metadata identifies the gateway as the public entrypoint.
 Its declared routes are `/` and `/seo` to Next, `/app` to React, and `/api` to
 the API. Gateway upstreams are typed application connections and reconcile to
 internal resource URLs; they do not expose private application domains.
+Hybrid products may add independent desktop frontends with explicit routes,
+such as `/crm`. Every extra route must be unique and target a declared private
+frontend application. Factory adds the matching typed gateway connection and
+application dependency; an undeclared or unrouted frontend fails manifest
+validation. This supports SEO/marketing, an installable PWA, and a desktop CRM
+as separate applications that share the product API and data contract.
 
 ## Environment sources
 
