@@ -59,6 +59,15 @@
           "key": "OPENAI_API_KEY",
           "source": "managed_secret",
           "binding": "goodmorning/openai-default"
+        },
+        {
+          "key": "WEB_PUSH_VAPID_SECRET",
+          "source": "generated_secret"
+        },
+        {
+          "key": "WEB_PUSH_SUBJECT",
+          "source": "literal",
+          "value": "mailto:admin@arcoenergy.mx"
         }
       ]
     },
