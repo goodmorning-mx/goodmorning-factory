@@ -413,5 +413,6 @@
         }
       ]
     }
-  }
+  },
+  "expected_schema_revision": "202611090074"
 }
