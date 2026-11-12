@@ -36,7 +36,7 @@ ALLOWED_ENV_SOURCES = {
     "generated_secret",
 }
 ALLOWED_FRONTEND_PROFILES = {"react", "next", "hybrid"}
-SENSITIVE_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL|CHAT_ID|USER_ID|SENDER_ID)", re.I)
+SENSITIVE_KEY_RE = re.compile(r"(PASSWORD|SECRET|TOKEN|KEY|CREDENTIAL|CHAT_ID|USER_ID|SENDER_ID|SERVICE_ACCOUNT)", re.I)
 
 
 class ContractError(ValueError):
@@ -85,7 +85,7 @@ def _validate_environment(item: Any, *, database_names: set[str], redis_names: s
     _require(isinstance(item, dict), "Application environment entries must be objects.")
     _require(
         set(item)
-        <= {"key", "source", "value", "resource", "legacy_key", "driver", "binding"},
+        <= {"key", "source", "value", "resource", "legacy_key", "driver", "binding", "optional"},
         "Unknown application environment field.",
     )
     key = item.get("key")
@@ -132,7 +132,7 @@ def _validate_environment(item: Any, *, database_names: set[str], redis_names: s
         return {"key": key, "source": source, "resource": resource}
     if source == "managed_secret":
         _require(
-            set(item) <= {"key", "source", "binding"},
+            set(item) <= {"key", "source", "binding", "optional"},
             f"Managed secret {key!r} contains unrelated fields.",
         )
         binding = item.get("binding")
@@ -145,7 +145,9 @@ def _validate_environment(item: Any, *, database_names: set[str], redis_names: s
             f"Managed secret binding for {key!r} is invalid.",
         )
         _require(SENSITIVE_KEY_RE.search(key) is not None, f"Managed secret target {key!r} is not sensitive.")
-        return {"key": key, "source": source, "binding": binding}
+        optional = item.get("optional", False)
+        _require(isinstance(optional, bool), f"Optional flag for {key!r} must be boolean.")
+        return {"key": key, "source": source, "binding": binding, **({"optional": True} if optional else {})}
     if source == "generated_secret":
         _require(
             set(item) <= {"key", "source"},
