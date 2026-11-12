@@ -482,6 +482,28 @@ class ReconcileAdvancedProductTests(unittest.TestCase):
                 {"MCP_AUTH_TOKEN": {"key": "MCP_AUTH_TOKEN", "value": "********"}},
             )
 
+    def test_optional_managed_secret_is_skipped_until_configured_and_redacted(self):
+        app = {
+            "environment": [{
+                "key": "GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON",
+                "source": "managed_secret",
+                "binding": "GOODMORNING_MANAGED_ARCOENERGY_DRIVE_SERVICE_ACCOUNT_JSON",
+                "optional": True,
+            }]
+        }
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(advanced._environment_values(app, {}, {}, {}), [])
+
+        private_credential = '{"private_key":"drive-private-key"}'
+        with patch.dict(os.environ, {
+            "GOODMORNING_MANAGED_ARCOENERGY_DRIVE_SERVICE_ACCOUNT_JSON": private_credential,
+        }, clear=True):
+            values = advanced._environment_values(app, {}, {}, {})
+        self.assertEqual(values[0]["key"], "GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON")
+        self.assertEqual(values[0]["value"], private_credential)
+        self.assertTrue(values[0]["is_shown_once"])
+        self.assertNotIn("drive-private-key", str(advanced._redacted({"environment": values})))
+
     def test_managed_secret_resolves_only_from_factory_binding_environment(self):
         app = {
             "environment": [

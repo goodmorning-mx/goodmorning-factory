@@ -41,7 +41,7 @@ TIMEOUT = 30
 DEFAULT_DEPLOYMENT_TIMEOUT_SECONDS = 900
 TERMINAL_DEPLOYMENT = {"finished", "failed", "cancelled", "canceled"}
 SUCCESS_DEPLOYMENT = {"finished"}
-SENSITIVE_NAME = ("PASSWORD", "SECRET", "TOKEN", "KEY", "DATABASE_URL", "REDIS_URL")
+SENSITIVE_NAME = ("PASSWORD", "SECRET", "TOKEN", "KEY", "CREDENTIAL", "SERVICE_ACCOUNT", "DATABASE_URL", "REDIS_URL")
 MANAGED_SECRET_BINDINGS = {
     "goodmorning/openai-default": "GOODMORNING_MANAGED_OPENAI_API_KEY",
     "goodmorning/stripe-secret-key": "GOODMORNING_MANAGED_STRIPE_SECRET_KEY",
@@ -745,6 +745,8 @@ def _environment_values(
         else:
             value = legacy_values.get(item["legacy_key"])
         if not isinstance(value, str) or (source != "literal" and not value):
+            if source == "managed_secret" and item.get("optional"):
+                continue
             raise ReconcileError(f"Environment source for {item['key']!r} is unavailable.")
         values.append(
             {

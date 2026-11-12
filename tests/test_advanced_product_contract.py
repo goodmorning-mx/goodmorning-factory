@@ -195,6 +195,32 @@ class AdvancedProductContractTests(unittest.TestCase):
             [{"type": "application", "name": "api"}, {"type": "database", "name": "timescaledb"}],
         )
 
+    def test_optional_managed_secret_is_valid_and_service_account_is_sensitive(self):
+        value = manifest()
+        value["applications"][0]["environment"] = [{
+            "key": "GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON",
+            "source": "managed_secret",
+            "binding": "GOODMORNING_MANAGED_ARCOENERGY_DRIVE_SERVICE_ACCOUNT_JSON",
+            "optional": True,
+        }]
+        normalized = contract.validate_manifest(value)
+        self.assertTrue(normalized["applications"][0]["environment"][0]["optional"])
+
+        value["applications"][0]["environment"][0] = {
+            "key": "GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON", "source": "literal", "value": "{secret}",
+        }
+        with self.assertRaises(contract.ContractError):
+            contract.validate_manifest(value)
+
+        value["applications"][0]["environment"][0] = {
+            "key": "GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON",
+            "source": "managed_secret",
+            "binding": "GOODMORNING_MANAGED_ARCOENERGY_DRIVE_SERVICE_ACCOUNT_JSON",
+            "optional": "yes",
+        }
+        with self.assertRaises(contract.ContractError):
+            contract.validate_manifest(value)
+
     def test_managed_secret_is_a_reference_without_a_literal(self):
         value = manifest()
         value["applications"][0]["environment"] = [{
