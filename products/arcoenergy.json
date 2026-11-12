@@ -56,6 +56,17 @@
           "value": "https://dev.arcoenergy.goodmorning.mx"
         },
         {
+          "key": "GOOGLE_DRIVE_FOLDER_ID",
+          "source": "literal",
+          "value": ""
+        },
+        {
+          "key": "GOOGLE_DRIVE_SERVICE_ACCOUNT_JSON",
+          "source": "managed_secret",
+          "binding": "GOODMORNING_MANAGED_ARCOENERGY_DRIVE_SERVICE_ACCOUNT_JSON",
+          "optional": true
+        },
+        {
           "key": "OPENAI_API_KEY",
           "source": "managed_secret",
           "binding": "goodmorning/openai-default"
