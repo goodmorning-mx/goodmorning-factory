@@ -79,6 +79,11 @@
           "key": "WEB_PUSH_SUBJECT",
           "source": "literal",
           "value": "mailto:admin@arcoenergy.mx"
+        },
+        {
+          "key": "AUTH_REFRESH_DAYS",
+          "source": "literal",
+          "value": "36500"
         }
       ]
     },
@@ -425,5 +430,5 @@
       ]
     }
   },
-  "expected_schema_revision": "202611130144"
+  "expected_schema_revision": "202611130145"
 }
